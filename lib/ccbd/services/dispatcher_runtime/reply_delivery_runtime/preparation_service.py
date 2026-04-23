@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import collections
+from datetime import datetime, timedelta, timezone
+import json
 import logging
+import os
+from pathlib import Path
 import time
 
+from ccbd.system import parse_utc_timestamp
 from mailbox_kernel import InboundEventStatus, InboundEventType
 from message_bureau.reply_payloads import reply_id_from_payload
 
@@ -29,6 +34,9 @@ _CMD_PANE_CACHE_TTL = 30.0
 # on the next tick, which is visually annoying but never unsafe (cmd text
 # inject is an at-least-once delivery, not exactly-once).
 _CMD_INJECTED_CACHE_MAX = 256
+_CMD_DELIVERED_CACHE_MAX_DISK = 10_000
+_CMD_DELIVERED_CACHE_TTL_SECONDS = 48 * 3600
+_CMD_DELIVERED_CACHE_FILENAME = 'cmd-delivered-cache.jsonl'
 
 
 def prepare_reply_deliveries(dispatcher):
@@ -192,23 +200,153 @@ def _deliver_cmd_replies(dispatcher):
     # Mark as injected so subsequent ticks don't re-inject before the user
     # calls ack. Added AFTER the inject succeeds so a transient send failure
     # triggers retry on the next tick.
-    injected_cache[reply_id] = None  # OrderedDict used as LRU set
+    injected_at = _normalize_cache_timestamp(dispatcher._clock())
+    injected_cache[reply_id] = injected_at
     while len(injected_cache) > _CMD_INJECTED_CACHE_MAX:
         injected_cache.popitem(last=False)
+    _persist_injected_reply(dispatcher, reply_id, injected_at)
 
 
 def _get_injected_cache(dispatcher):
     cache = getattr(dispatcher, '_cmd_injected_replies', None)
     if cache is None:
-        cache = collections.OrderedDict()
+        cache = _load_injected_cache(dispatcher)
         try:
             dispatcher._cmd_injected_replies = cache
         except AttributeError:
             # Attribute assignment failed (e.g., dispatcher uses __slots__)
-            # — fall back to a throwaway cache so inject still works; the
-            # tradeoff is we may re-inject more often than necessary.
-            return collections.OrderedDict()
+            # — fall back to the loaded cache for this call only; future
+            # calls may reload from disk and re-inject more often.
+            return cache
     return cache
+
+
+def _load_injected_cache(dispatcher):
+    cache = collections.OrderedDict()
+    cache_path = _cmd_delivered_cache_path(_resolve_project_root(dispatcher))
+    if cache_path is None or not cache_path.exists():
+        return cache
+
+    cutoff = _cache_reference_time(dispatcher) - timedelta(seconds=_CMD_DELIVERED_CACHE_TTL_SECONDS)
+    line_count = 0
+    saw_expired = False
+
+    try:
+        with cache_path.open('r', encoding='utf-8') as handle:
+            for raw_line in handle:
+                line_count += 1
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    _logger.warning('cmd injected cache line decode failed', exc_info=True)
+                    continue
+
+                reply_id = str(payload.get('reply_id', '') or '').strip()
+                injected_at = str(payload.get('injected_at', '') or '').strip()
+                if not reply_id or not injected_at:
+                    _logger.debug('cmd injected cache record missing fields: %r', payload)
+                    continue
+                try:
+                    injected_dt = _parse_cache_timestamp(injected_at)
+                except Exception:
+                    _logger.debug('cmd injected cache timestamp parse failed', exc_info=True)
+                    continue
+                if injected_dt < cutoff:
+                    saw_expired = True
+                    continue
+
+                if reply_id in cache:
+                    cache.pop(reply_id, None)
+                cache[reply_id] = injected_dt.isoformat().replace('+00:00', 'Z')
+                while len(cache) > _CMD_DELIVERED_CACHE_MAX_DISK:
+                    cache.popitem(last=False)
+    except Exception:
+        _logger.warning('cmd injected cache load failed', exc_info=True)
+        return cache
+
+    if line_count > _CMD_DELIVERED_CACHE_MAX_DISK or saw_expired:
+        _compact_injected_cache_file(cache_path, cache)
+    return cache
+
+
+def _persist_injected_reply(dispatcher, reply_id: str, injected_at: str) -> None:
+    cache_path = _cmd_delivered_cache_path(_resolve_project_root(dispatcher))
+    if cache_path is None:
+        return
+
+    record = json.dumps(
+        {
+            'reply_id': str(reply_id or '').strip(),
+            'injected_at': _normalize_cache_timestamp(injected_at),
+        },
+        separators=(',', ':'),
+    )
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, 'a', encoding='utf-8') as handle:
+            handle.write(record)
+            handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        _logger.debug('cmd injected cache persist failed', exc_info=True)
+
+
+def _compact_injected_cache_file(path: Path, cache) -> None:
+    tmp_path = path.with_name(f'{path.name}.tmp.{os.getpid()}')
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tmp_path.open('w', encoding='utf-8') as handle:
+            for reply_id, injected_at in cache.items():
+                handle.write(
+                    json.dumps(
+                        {'reply_id': reply_id, 'injected_at': injected_at},
+                        separators=(',', ':'),
+                    )
+                )
+                handle.write('\n')
+        os.replace(tmp_path, path)
+    except Exception:
+        _logger.warning('cmd injected cache compaction failed', exc_info=True)
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
+
+def _cmd_delivered_cache_path(project_root) -> Path | None:
+    if project_root is None:
+        return None
+    return Path(project_root) / '.ccb' / 'ccbd' / _CMD_DELIVERED_CACHE_FILENAME
+
+
+def _cache_reference_time(dispatcher) -> datetime:
+    clock = getattr(dispatcher, '_clock', None)
+    if callable(clock):
+        try:
+            return _parse_cache_timestamp(clock())
+        except Exception:
+            _logger.debug('cmd injected cache clock parse failed', exc_info=True)
+    return datetime.now(timezone.utc)
+
+
+def _normalize_cache_timestamp(value: str) -> str:
+    try:
+        return _parse_cache_timestamp(value).isoformat().replace('+00:00', 'Z')
+    except Exception:
+        return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def _parse_cache_timestamp(value: str) -> datetime:
+    parsed = parse_utc_timestamp(str(value or '').strip())
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 # Fix #3: TTL-based cache instead of permanent.
@@ -257,13 +395,15 @@ def _resolve_project_id(dispatcher, layout) -> str | None:
     if project_id:
         return project_id
     try:
-        from project.ids import compute_project_id
-        return compute_project_id(layout.project_root)
+        from project.ids import compute_project_id as _compute_project_id
+
+        return _compute_project_id(layout.project_root)
     except Exception:
         pass
     try:
-        from storage.paths_ccbd import compute_project_id
-        return compute_project_id(layout.project_root)
+        from ccbd.keeper_runtime.state import compute_project_id as _compute_project_id
+
+        return _compute_project_id(layout.project_root)
     except Exception:
         return None
 

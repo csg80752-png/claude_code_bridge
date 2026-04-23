@@ -17,9 +17,12 @@ deterministically.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import logging
 
 import pytest
 
@@ -94,6 +97,7 @@ def _make_dispatcher(
     project_root=None,
     job_id='job-1',
     task_id='task-1',
+    clock='2026-04-23T00:00:00+00:00',
 ):
     """Wire up a dispatcher SimpleNamespace with the minimum surface area
     that _deliver_cmd_replies and its helpers reach for."""
@@ -110,7 +114,7 @@ def _make_dispatcher(
     dispatcher = SimpleNamespace(
         _message_bureau_control=control,
         _layout=layout,
-        _clock=lambda: '2026-04-23T00:00:00+00:00',
+        _clock=lambda: clock,
         get_job=lambda jid: SimpleNamespace(job_id=job_id, request=SimpleNamespace(task_id=task_id)),
     )
     # Attach helpers to the dispatcher so the production code's
@@ -126,6 +130,31 @@ def _stub_pane_and_backend(monkeypatch):
     monkeypatch.setattr(preparation_service, '_discover_cmd_pane_id', lambda d: '%1')
     monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend)
     return backend
+
+
+def _cache_path(project_root: Path) -> Path:
+    return project_root / '.ccb' / 'ccbd' / preparation_service._CMD_DELIVERED_CACHE_FILENAME
+
+
+def _write_cache_records(project_root: Path, records: list[dict[str, str]]) -> Path:
+    path = _cache_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w', encoding='utf-8') as handle:
+        for record in records:
+            handle.write(json.dumps(record, separators=(',', ':')))
+            handle.write('\n')
+    return path
+
+
+def _cache_lines(project_root: Path) -> list[str]:
+    path = _cache_path(project_root)
+    if not path.exists():
+        return []
+    return [line for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
+
+
+def _cache_record(reply_id: str, injected_at: str) -> dict[str, str]:
+    return {'reply_id': reply_id, 'injected_at': injected_at}
 
 
 # --- Happy path ---
@@ -159,6 +188,272 @@ def test_idempotent_no_reinject_on_second_call(_stub_pane_and_backend):
 
     assert len(_stub_pane_and_backend.injected) == 1, 'should inject exactly once for the same reply_id'
     assert kernel.calls == []
+
+
+# --- Persisted injected cache ---
+
+def test_injected_cache_cold_start_missing_file_returns_empty(tmp_path):
+    dispatcher, _kernel = _make_dispatcher(
+        head=_make_head(),
+        reply=_make_reply(),
+        backend=None,
+        project_root=tmp_path,
+        clock='2026-04-24T00:00:00Z',
+    )
+
+    cache = preparation_service._get_injected_cache(dispatcher)
+
+    assert list(cache.items()) == []
+    assert not _cache_path(tmp_path).exists()
+
+
+def test_injected_cache_cold_start_loads_existing_entries(tmp_path):
+    _write_cache_records(
+        tmp_path,
+        [
+            _cache_record('rep-1', '2026-04-23T22:00:00Z'),
+            _cache_record('rep-2', '2026-04-23T22:10:00Z'),
+            _cache_record('rep-3', '2026-04-23T22:20:00Z'),
+        ],
+    )
+    dispatcher, _kernel = _make_dispatcher(
+        head=_make_head(),
+        reply=_make_reply(),
+        backend=None,
+        project_root=tmp_path,
+        clock='2026-04-24T00:00:00Z',
+    )
+
+    cache = preparation_service._get_injected_cache(dispatcher)
+
+    assert list(cache.keys()) == ['rep-1', 'rep-2', 'rep-3']
+
+
+def test_injected_cache_cold_start_filters_expired_entries(tmp_path):
+    _write_cache_records(
+        tmp_path,
+        [
+            _cache_record('rep-expired', '2026-04-21T23:59:59Z'),
+            _cache_record('rep-live', '2026-04-23T23:00:00Z'),
+        ],
+    )
+    dispatcher, _kernel = _make_dispatcher(
+        head=_make_head(),
+        reply=_make_reply(),
+        backend=None,
+        project_root=tmp_path,
+        clock='2026-04-24T00:00:00Z',
+    )
+
+    cache = preparation_service._get_injected_cache(dispatcher)
+
+    assert list(cache.keys()) == ['rep-live']
+
+
+def test_warm_restart_uses_persisted_cache_to_skip_reinject(monkeypatch, tmp_path):
+    reply = _make_reply(reply_id='rep-warm', body='first inject')
+
+    backend_a = _RecordingBackend()
+    monkeypatch.setattr(preparation_service, '_discover_cmd_pane_id', lambda d: '%1')
+    monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend_a)
+    dispatcher_a, _kernel_a = _make_dispatcher(
+        head=_make_head(payload_ref='reply:rep-warm'),
+        reply=reply,
+        backend=backend_a,
+        project_root=tmp_path,
+        clock='2026-04-24T00:00:00Z',
+    )
+
+    preparation_service._deliver_cmd_replies(dispatcher_a)
+    assert len(backend_a.injected) == 1
+
+    backend_b = _RecordingBackend()
+    monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend_b)
+    dispatcher_b, kernel_b = _make_dispatcher(
+        head=_make_head(payload_ref='reply:rep-warm'),
+        reply=reply,
+        backend=backend_b,
+        project_root=tmp_path,
+        clock='2026-04-24T00:05:00Z',
+    )
+
+    preparation_service._deliver_cmd_replies(dispatcher_b)
+
+    assert backend_b.injected == []
+    assert kernel_b.calls == []
+
+
+def test_injected_cache_corrupt_line_skips_with_warning(tmp_path, caplog):
+    path = _cache_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"reply_id":"rep-1","injected_at":"2026-04-23T23:00:00Z"}\n'
+        '{bad json\n'
+        '{"reply_id":"rep-2","injected_at":"2026-04-23T23:10:00Z"}\n',
+        encoding='utf-8',
+    )
+    dispatcher, _kernel = _make_dispatcher(
+        head=_make_head(),
+        reply=_make_reply(),
+        backend=None,
+        project_root=tmp_path,
+        clock='2026-04-24T00:00:00Z',
+    )
+
+    with caplog.at_level(logging.WARNING):
+        cache = preparation_service._get_injected_cache(dispatcher)
+
+    assert list(cache.keys()) == ['rep-1', 'rep-2']
+    assert 'cmd injected cache line decode failed' in caplog.text
+
+
+def test_injected_cache_invalid_timestamp_skips_with_debug(tmp_path, caplog):
+    _write_cache_records(
+        tmp_path,
+        [
+            _cache_record('rep-bad', 'not-a-timestamp'),
+            _cache_record('rep-good', '2026-04-23T23:00:00Z'),
+        ],
+    )
+    dispatcher, _kernel = _make_dispatcher(
+        head=_make_head(),
+        reply=_make_reply(),
+        backend=None,
+        project_root=tmp_path,
+        clock='2026-04-24T00:00:00Z',
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        cache = preparation_service._get_injected_cache(dispatcher)
+
+    assert list(cache.keys()) == ['rep-good']
+    assert 'cmd injected cache timestamp parse failed' in caplog.text
+
+
+def test_injected_cache_concurrent_persist_merges_all_reply_ids(tmp_path):
+    dispatcher, _kernel = _make_dispatcher(
+        head=_make_head(),
+        reply=_make_reply(),
+        backend=None,
+        project_root=tmp_path,
+        clock='2026-04-24T00:00:00Z',
+    )
+
+    def _persist(reply_id: str) -> None:
+        preparation_service._persist_injected_reply(
+            dispatcher, reply_id, f'2026-04-24T00:00:{reply_id[-2:]}Z'
+        )
+
+    reply_ids = [f'rep-{index:02d}' for index in range(10)]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(_persist, reply_ids))
+
+    reloaded, _kernel = _make_dispatcher(
+        head=_make_head(),
+        reply=_make_reply(),
+        backend=None,
+        project_root=tmp_path,
+        clock='2026-04-24T01:00:00Z',
+    )
+    cache = preparation_service._get_injected_cache(reloaded)
+
+    assert set(cache.keys()) == set(reply_ids)
+
+
+def test_injected_cache_compacts_on_load_when_file_exceeds_cap(tmp_path):
+    base = datetime(2026, 4, 23, 0, 0, tzinfo=timezone.utc)
+    records = [
+        _cache_record(
+            f'rep-{index:05d}',
+            (base + timedelta(seconds=index)).isoformat().replace('+00:00', 'Z'),
+        )
+        for index in range(11_000)
+    ]
+    path = _write_cache_records(tmp_path, records)
+    dispatcher, _kernel = _make_dispatcher(
+        head=_make_head(),
+        reply=_make_reply(),
+        backend=None,
+        project_root=tmp_path,
+        clock='2026-04-24T00:00:00Z',
+    )
+
+    cache = preparation_service._get_injected_cache(dispatcher)
+
+    assert len(cache) == 10_000
+    assert next(iter(cache)) == 'rep-01000'
+    assert list(cache.keys())[-1] == 'rep-10999'
+    compacted_lines = [line for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    assert len(compacted_lines) == 10_000
+
+
+def test_send_failure_does_not_persist_cache_file(monkeypatch, tmp_path):
+    reply = _make_reply(reply_id='rep-send-fail')
+    head = _make_head(payload_ref='reply:rep-send-fail')
+    backend = _RecordingBackend(send_raises=True)
+    monkeypatch.setattr(preparation_service, '_discover_cmd_pane_id', lambda d: '%1')
+    monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend)
+    dispatcher, _kernel = _make_dispatcher(
+        head=head,
+        reply=reply,
+        backend=backend,
+        project_root=tmp_path,
+        clock='2026-04-24T00:00:00Z',
+    )
+
+    preparation_service._deliver_cmd_replies(dispatcher)
+
+    assert _cache_lines(tmp_path) == []
+
+
+def test_persist_failure_is_tolerated_and_keeps_in_memory_cache(monkeypatch, tmp_path, caplog):
+    reply = _make_reply(reply_id='rep-persist-fail')
+    head = _make_head(payload_ref='reply:rep-persist-fail')
+    backend = _RecordingBackend()
+    monkeypatch.setattr(preparation_service, '_discover_cmd_pane_id', lambda d: '%1')
+    monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend)
+
+    monkeypatch.setattr(preparation_service.os, 'fsync', lambda _fd: (_ for _ in ()).throw(PermissionError('read-only')))
+    dispatcher, _kernel = _make_dispatcher(
+        head=head,
+        reply=reply,
+        backend=backend,
+        project_root=tmp_path,
+        clock='2026-04-24T00:00:00Z',
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        preparation_service._deliver_cmd_replies(dispatcher)
+
+    cache = preparation_service._get_injected_cache(dispatcher)
+    assert len(backend.injected) == 1
+    assert reply.reply_id in cache
+    assert 'cmd injected cache persist failed' in caplog.text
+
+
+def test_injected_cache_load_caps_to_most_recent_ten_thousand(tmp_path):
+    base = datetime(2026, 4, 23, 0, 0, tzinfo=timezone.utc)
+    records = [
+        _cache_record(
+            f'rep-{index:05d}',
+            (base + timedelta(seconds=index)).isoformat().replace('+00:00', 'Z'),
+        )
+        for index in range(20_000)
+    ]
+    _write_cache_records(tmp_path, records)
+    dispatcher, _kernel = _make_dispatcher(
+        head=_make_head(),
+        reply=_make_reply(),
+        backend=None,
+        project_root=tmp_path,
+        clock='2026-04-24T12:00:00Z',
+    )
+
+    cache = preparation_service._get_injected_cache(dispatcher)
+
+    assert len(cache) == 10_000
+    assert next(iter(cache)) == 'rep-10000'
+    assert list(cache.keys())[-1] == 'rep-19999'
 
 
 # --- Permanent failure: malformed payload ---
