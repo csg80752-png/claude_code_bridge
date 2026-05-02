@@ -38,12 +38,24 @@ def latest_log(reader) -> Path | None:
 def _preferred_is_bound(reader, preferred: Path | None) -> bool:
     if preferred is None or not preferred.exists():
         return False
-    from ..state import follow_workspace_sessions
+    from ..state import follow_workspace_sessions, isolated_to_root
 
+    if isolated_to_root(reader):
+        return False
     return bool(reader._session_id_filter and not follow_workspace_sessions(reader))
 
 
 def _select_preferred_or_latest(reader, preferred: Path, latest: Path | None) -> Path | None:
+    from ..state import isolated_to_root
+
+    if isolated_to_root(reader):
+        if latest is None:
+            debug_log_reader("Ignoring preferred log outside isolated root")
+            reader._preferred_log = None
+            return None
+        reader._preferred_log = latest
+        debug_log_reader(f"Using isolated-root latest log: {latest}")
+        return latest
     if latest is None or latest == preferred:
         debug_log_reader(f"Using preferred log: {preferred}")
         return preferred

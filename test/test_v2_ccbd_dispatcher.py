@@ -280,7 +280,7 @@ def test_dispatcher_submit_tick_complete_roundtrip(tmp_path: Path) -> None:
     assert runtime is not None and runtime.state is AgentState.IDLE and runtime.queue_depth == 0
 
 
-def test_dispatcher_rejects_email_sender(tmp_path: Path) -> None:
+def test_dispatcher_rejects_unknown_sender(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-reject-email-sender'
     ctx = _bootstrap_test_project(project_root)
     layout = PathLayout(project_root)
@@ -294,16 +294,16 @@ def test_dispatcher_rejects_email_sender(tmp_path: Path) -> None:
             MessageEnvelope(
                 project_id=ctx.project_id,
                 to_agent='codex',
-                from_actor='email',
+                from_actor='unknown-external',
                 body='hello',
-                task_id='email-req-1',
+                task_id='unknown-sender-req-1',
                 reply_to=None,
                 message_type='ask',
                 delivery_scope=DeliveryScope.SINGLE,
             )
         )
 
-    assert str(exc_info.value) == 'unknown sender agent: email'
+    assert str(exc_info.value) == 'unknown sender agent: unknown-external'
 
 
 def test_dispatcher_does_not_overwrite_terminal_snapshot_with_non_terminal_tracker_view(tmp_path: Path) -> None:

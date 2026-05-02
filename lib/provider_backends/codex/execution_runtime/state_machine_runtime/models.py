@@ -21,6 +21,11 @@ class CodexPollState:
     last_assistant_message: str
     last_assistant_signature: str
     session_path: str
+    current_turn_id: str = ""
+    current_task_id: str = ""
+    current_turn_started: bool = False
+    bound_turn_started: bool = False
+    bound_turn_contaminated: bool = False
     items: list[CompletionItem] = field(default_factory=list)
     reached_terminal: bool = False
 
@@ -40,6 +45,11 @@ def build_poll_state(submission: ProviderSubmission) -> CodexPollState:
         last_assistant_message=str(submission.runtime_state.get("last_assistant_message") or ""),
         last_assistant_signature=str(submission.runtime_state.get("last_assistant_signature") or ""),
         session_path=str(submission.runtime_state.get("session_path") or ""),
+        current_turn_id=str(submission.runtime_state.get("current_turn_id") or ""),
+        current_task_id=str(submission.runtime_state.get("current_task_id") or ""),
+        current_turn_started=bool(submission.runtime_state.get("current_turn_started", False)),
+        bound_turn_started=bool(submission.runtime_state.get("bound_turn_started", False)),
+        bound_turn_contaminated=bool(submission.runtime_state.get("bound_turn_contaminated", False)),
     )
 
 
@@ -69,6 +79,11 @@ def apply_session_rotation(
     poll.anchor_seen = bool(submission.runtime_state.get("no_wrap", False))
     poll.bound_turn_id = ""
     poll.bound_task_id = ""
+    poll.current_turn_id = ""
+    poll.current_task_id = ""
+    poll.current_turn_started = False
+    poll.bound_turn_started = False
+    poll.bound_turn_contaminated = False
     poll.reply_buffer = ""
     poll.last_agent_message = ""
     poll.last_final_answer = ""

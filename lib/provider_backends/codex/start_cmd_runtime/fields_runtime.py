@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import shlex
 from typing import Mapping
 
-from .parsing import extract_resume_session_id, looks_like_bare_resume_cmd
+from .parsing import extract_resume_session_id, find_codex_token_index, looks_like_bare_resume_cmd
 from .rewriting import build_resume_start_cmd
 
 
@@ -27,6 +28,21 @@ def persist_resume_start_cmd_fields(data: dict[str, object], session_id: object)
     data["codex_start_cmd"] = resume_start_cmd
     data["start_cmd"] = resume_start_cmd
     return resume_start_cmd
+
+
+def strip_resume_start_cmd(command: object) -> str:
+    raw = str(command or "").strip()
+    if not raw:
+        return ""
+    shell_prefix, separator, tail = raw.rpartition(";")
+    segment = tail.strip() if separator else raw
+    stripped_segment = _strip_resume_from_segment(segment)
+    if separator:
+        prefix = shell_prefix.strip()
+        if stripped_segment:
+            return f"{prefix}; {stripped_segment}" if prefix else stripped_segment
+        return prefix
+    return stripped_segment
 
 
 def resume_template_command(data: Mapping[str, object]) -> str:
@@ -72,4 +88,24 @@ def should_rebuild_resume_command(*, session_id: str, start_cmd: str, codex_star
     )
 
 
-__all__ = ["effective_start_cmd", "persist_resume_start_cmd_fields", "resume_template_command"]
+def _strip_resume_from_segment(segment: str) -> str:
+    try:
+        tokens = shlex.split(segment)
+    except Exception:
+        return segment
+    codex_index = find_codex_token_index(tokens)
+    if codex_index is None:
+        return segment
+    result: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if index > codex_index and token == "resume":
+            index += 2
+            continue
+        result.append(token)
+        index += 1
+    return " ".join(shlex.quote(str(token)) for token in result)
+
+
+__all__ = ["effective_start_cmd", "persist_resume_start_cmd_fields", "resume_template_command", "strip_resume_start_cmd"]

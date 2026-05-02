@@ -16,7 +16,12 @@ class MessageStore:
         self._store.append(self._layout.ccbd_messages_path, record, serializer=lambda value: value.to_record())
 
     def list_all(self) -> list[MessageRecord]:
-        return self._store.read_all(self._layout.ccbd_messages_path, loader=MessageRecord.from_record)
+        path = self._layout.ccbd_messages_path
+        return self._store.read_all_cached(
+            path,
+            loader=MessageRecord.from_record,
+            cache_key=('messages', str(path)),
+        )
 
     def get_latest(self, message_id: str) -> MessageRecord | None:
         for record in reversed(self.list_all()):
@@ -37,7 +42,12 @@ class AttemptStore:
         self._store.append(self._layout.ccbd_attempts_path, record, serializer=lambda value: value.to_record())
 
     def list_all(self) -> list[AttemptRecord]:
-        return self._store.read_all(self._layout.ccbd_attempts_path, loader=AttemptRecord.from_record)
+        path = self._layout.ccbd_attempts_path
+        return self._store.read_all_cached(
+            path,
+            loader=AttemptRecord.from_record,
+            cache_key=('attempts', str(path)),
+        )
 
     def get_latest(self, attempt_id: str) -> AttemptRecord | None:
         for record in reversed(self.list_all()):
@@ -68,7 +78,12 @@ class ReplyStore:
         self._store.append(self._layout.ccbd_replies_path, record, serializer=lambda value: value.to_record())
 
     def list_all(self) -> list[ReplyRecord]:
-        return self._store.read_all(self._layout.ccbd_replies_path, loader=ReplyRecord.from_record)
+        path = self._layout.ccbd_replies_path
+        return self._store.read_all_cached(
+            path,
+            loader=ReplyRecord.from_record,
+            cache_key=('replies', str(path)),
+        )
 
     def get_latest(self, reply_id: str) -> ReplyRecord | None:
         for record in reversed(self.list_all()):

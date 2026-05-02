@@ -13,11 +13,15 @@ def test_load_resume_session_id_prefers_session_field_then_start_cmd(tmp_path: P
     agent_dir.mkdir(parents=True, exist_ok=True)
     session_file = ccb_dir / ".codex-agent1-session"
     session_file.write_text(json.dumps({"codex_session_id": "sid-1"}), encoding="utf-8")
+    sessions_root = agent_dir / "codex-home" / "sessions"
+    sessions_root.mkdir(parents=True, exist_ok=True)
+    (sessions_root / "rollout-sid-1.jsonl").write_text("", encoding="utf-8")
 
     spec = SimpleNamespace(name="agent1")
 
     assert load_resume_session_id(spec, agent_dir) == "sid-1"
 
     session_file.write_text(json.dumps({"start_cmd": "codex resume sid-2"}), encoding="utf-8")
+    (sessions_root / "rollout-sid-2.jsonl").write_text("", encoding="utf-8")
 
     assert load_resume_session_id(spec, agent_dir) == "sid-2"

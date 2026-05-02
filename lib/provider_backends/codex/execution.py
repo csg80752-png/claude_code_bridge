@@ -9,6 +9,8 @@ from provider_execution.common import request_anchor_from_runtime_state
 from terminal_runtime import get_backend_for_session
 
 from .comm import CodexLogReader
+from .comm_runtime.follow_gate import workspace_follow_enabled
+from .comm_runtime.paths import SESSION_ROOT
 from .execution_runtime import poll_submission as _poll_submission
 from .execution_runtime import resume_submission as _resume_submission
 from .execution_runtime import start_active_submission as _start_active_submission
@@ -45,6 +47,11 @@ class CodexProviderAdapter:
             'no_wrap': submission.runtime_state.get('no_wrap'),
             'bound_turn_id': submission.runtime_state.get('bound_turn_id'),
             'bound_task_id': submission.runtime_state.get('bound_task_id'),
+            'current_turn_id': submission.runtime_state.get('current_turn_id'),
+            'current_task_id': submission.runtime_state.get('current_task_id'),
+            'current_turn_started': submission.runtime_state.get('current_turn_started'),
+            'bound_turn_started': submission.runtime_state.get('bound_turn_started'),
+            'bound_turn_contaminated': submission.runtime_state.get('bound_turn_contaminated'),
             'reply_buffer': submission.runtime_state.get('reply_buffer'),
             'last_agent_message': submission.runtime_state.get('last_agent_message'),
             'last_final_answer': submission.runtime_state.get('last_final_answer'),
@@ -74,11 +81,32 @@ class CodexProviderAdapter:
 
 
 def _reader_factory(session, preferred_log: Path | None):
+    root = SESSION_ROOT
+    isolated = False
+    own_session_file = getattr(session, 'session_file', None)
+    try:
+        from provider_backends.codex.launcher_runtime.codex_namespace_isolation import (
+            codex_runtime_dir_from_session_file,
+            resolve_codex_sessions_root,
+        )
+        from provider_profiles.materializer import load_resolved_provider_profile
+
+        runtime_dir = codex_runtime_dir_from_session_file(own_session_file)
+        if runtime_dir is not None:
+            resolved = resolve_codex_sessions_root(runtime_dir, profile=load_resolved_provider_profile(runtime_dir))
+            root = resolved.path
+            isolated = resolved.is_isolated
+    except Exception:
+        root = SESSION_ROOT
+        isolated = False
     return CodexLogReader(
+        root=root,
         log_path=preferred_log if preferred_log is not None else (Path(session.codex_session_path).expanduser() if session.codex_session_path else None),
         session_id_filter=session.codex_session_id or None,
         work_dir=Path(session.work_dir),
-        follow_workspace_sessions=True,
+        follow_workspace_sessions=workspace_follow_enabled(),
+        isolated_to_root=isolated,
+        own_session_file=own_session_file,
     )
 
 

@@ -51,9 +51,11 @@ class InboundEventStore:
         )
 
     def list_agent(self, agent_name: str) -> list[InboundEventRecord]:
-        return self._store.read_all(
-            self._layout.agent_inbox_path(agent_name),
+        path = self._layout.agent_inbox_path(agent_name)
+        return self._store.read_all_cached(
+            path,
             loader=InboundEventRecord.from_record,
+            cache_key=('inbound', str(path)),
         )
 
     def read_since(self, agent_name: str, start_line: int = 0) -> tuple[int, list[InboundEventRecord]]:

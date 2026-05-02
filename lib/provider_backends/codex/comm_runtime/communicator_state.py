@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from provider_core.runtime_specs import provider_marker_prefix
+from provider_backends.codex.comm_runtime.follow_gate import workspace_follow_enabled
 
 
 def initialize_state(
@@ -112,11 +113,32 @@ def _terminal_name(session_info: dict) -> str:
 
 
 def _log_reader_kwargs(comm) -> dict[str, object]:
+    root = None
+    isolated = False
+    session_file = getattr(comm, "project_session_file", None) or comm.session_info.get("_session_file")
+    try:
+        from provider_backends.codex.launcher_runtime.codex_namespace_isolation import (
+            codex_runtime_dir_from_session_file,
+            resolve_codex_sessions_root,
+        )
+        from provider_profiles.materializer import load_resolved_provider_profile
+
+        runtime_dir = codex_runtime_dir_from_session_file(session_file)
+        if runtime_dir is not None:
+            resolved = resolve_codex_sessions_root(runtime_dir, profile=load_resolved_provider_profile(runtime_dir))
+            root = resolved.path
+            isolated = resolved.is_isolated
+    except Exception:
+        root = None
+        isolated = False
     return {
+        **({"root": root} if root is not None else {}),
         "log_path": comm.session_info.get("codex_session_path"),
         "session_id_filter": comm.session_info.get("codex_session_id"),
         "work_dir": _work_dir_path(comm.session_info),
-        "follow_workspace_sessions": True,
+        "follow_workspace_sessions": workspace_follow_enabled(),
+        "isolated_to_root": isolated,
+        "own_session_file": session_file,
     }
 
 

@@ -20,6 +20,10 @@ _logger = logging.getLogger(__name__)
 #                                   project_root_unavailable, ...)
 #   cmd_phase2_failure           claim succeeded but plan or inject raised;
 #                                reply is either recoverable on disk or lost
+#   cmd_delivery_success         pane inject proceeded because foreground cmd
+#                                was on the safe allowlist and ready
+#   cmd_delivery_held            pane inject was intentionally held because
+#                                the consumer was unsafe or not ready
 #
 # Without these fallback/failure events, the 1-2 week observation window can
 # silently lie about rollout health — a degrade or a crash would look like a
@@ -115,8 +119,48 @@ def record_phase2_failure(
     })
 
 
+def record_cmd_delivery_success(
+    project_root: Optional[Path],
+    *,
+    reply_id: str,
+    foreground_command: str,
+    delivered_at: str,
+    body_char_count: int,
+) -> None:
+    _append_record(project_root, {
+        'schema_version': 1,
+        'event': 'cmd_delivery_success',
+        'reply_id': reply_id,
+        'foreground_command': foreground_command,
+        'body_char_count': body_char_count,
+        'delivered_at': delivered_at,
+    })
+
+
+def record_cmd_delivery_held(
+    project_root: Optional[Path],
+    *,
+    reply_id: str,
+    foreground_command: str,
+    held_at: str,
+    body_char_count: int,
+    held_reason: str = 'not_safe_consumer',
+) -> None:
+    _append_record(project_root, {
+        'schema_version': 1,
+        'event': 'cmd_delivery_held',
+        'reply_id': reply_id,
+        'foreground_command': foreground_command,
+        'held_reason': held_reason,
+        'body_char_count': body_char_count,
+        'held_at': held_at,
+    })
+
+
 __all__ = [
     'metrics_path',
+    'record_cmd_delivery_held',
+    'record_cmd_delivery_success',
     'record_header_only_dispatch',
     'record_long_reply_fallback',
     'record_phase2_failure',

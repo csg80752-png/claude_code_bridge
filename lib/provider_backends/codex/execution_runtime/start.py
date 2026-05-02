@@ -44,6 +44,27 @@ def start_active_submission(
     prompt = job.request.body if no_wrap else wrap_prompt_fn(job.request.body, request_anchor)
     send_prompt_to_runtime_target(prepared.backend, prepared.pane_id, prompt)
 
+    runtime_state = {
+        'mode': 'active',
+        'reader': reader,
+        'state': state,
+        'backend': prepared.backend,
+        'pane_id': prepared.pane_id,
+        'request_anchor': request_anchor,
+        'next_seq': 1,
+        'anchor_seen': no_wrap,
+        'bound_turn_id': '',
+        'bound_task_id': '',
+        'reply_buffer': '',
+        'last_agent_message': '',
+        'last_final_answer': '',
+        'last_assistant_message': '',
+        'last_assistant_signature': '',
+        'session_path': state_session_path(state),
+        'no_wrap': no_wrap,
+    }
+    _stash_reader_freshness(runtime_state, prepared.session)
+
     return ProviderSubmission(
         job_id=job.job_id,
         agent_name=job.agent_name,
@@ -53,25 +74,7 @@ def start_active_submission(
         source_kind=CompletionSourceKind.PROTOCOL_EVENT_STREAM,
         reply='',
         diagnostics={'provider': adapter.provider, 'mode': 'active', 'workspace_path': str(prepared.work_dir)},
-        runtime_state={
-            'mode': 'active',
-            'reader': reader,
-            'state': state,
-            'backend': prepared.backend,
-            'pane_id': prepared.pane_id,
-            'request_anchor': request_anchor,
-            'next_seq': 1,
-            'anchor_seen': no_wrap,
-            'bound_turn_id': '',
-            'bound_task_id': '',
-            'reply_buffer': '',
-            'last_agent_message': '',
-            'last_final_answer': '',
-            'last_assistant_message': '',
-            'last_assistant_signature': '',
-            'session_path': state_session_path(state),
-            'no_wrap': no_wrap,
-        },
+        runtime_state=runtime_state,
     )
 
 
@@ -101,16 +104,18 @@ def resume_submission(
         return None
     preferred_log = preferred_log_path(state)
     reader = reader_factory(session, preferred_log)
+    new_runtime_state = {
+        **state,
+        'reader': reader,
+        'backend': backend,
+        'pane_id': str(pane_or_err),
+        'mode': 'active',
+        'session_path': state.get('session_path') or (str(preferred_log) if preferred_log else ''),
+    }
+    _stash_reader_freshness(new_runtime_state, session)
     return replace(
         submission,
-        runtime_state={
-            **state,
-            'reader': reader,
-            'backend': backend,
-            'pane_id': str(pane_or_err),
-            'mode': 'active',
-            'session_path': state.get('session_path') or (str(preferred_log) if preferred_log else ''),
-        },
+        runtime_state=new_runtime_state,
     )
 
 
@@ -137,6 +142,19 @@ def preferred_log_path(state: dict[str, object]) -> Path | None:
 
 def state_session_path(state: dict[str, object]) -> str:
     return normalize_session_path(state.get('log_path'))
+
+
+def _stash_reader_freshness(runtime_state: dict[str, object], session) -> None:
+    try:
+        from .reader_freshness import stash_reader_freshness
+
+        stash_reader_freshness(
+            runtime_state,
+            session_file=getattr(session, 'session_file', None),
+            session_id=getattr(session, 'codex_session_id', None),
+        )
+    except Exception:
+        return
 
 
 __all__ = [

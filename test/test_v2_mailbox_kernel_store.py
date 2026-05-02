@@ -168,3 +168,29 @@ def test_mailbox_store_supports_cmd_mailbox_owner(tmp_path: Path) -> None:
     loaded_lease = lease_store.load('cmd')
     assert loaded_lease is not None
     assert loaded_lease.agent_name == 'cmd'
+
+
+
+def test_inbound_event_store_cache_mode_preserves_existing_store_semantics(monkeypatch, tmp_path):
+    monkeypatch.setenv('CCB_CCBD_READAMP_CACHE', '1')
+    layout = PathLayout(tmp_path / 'repo')
+    store = InboundEventStore(layout)
+    record = InboundEventRecord(
+        inbound_event_id='evt-cache-mode',
+        agent_name='agent1',
+        event_type=InboundEventType.TASK_REPLY,
+        message_id='msg-cache-mode',
+        attempt_id='attempt-cache-mode',
+        payload_ref='reply:cache-mode',
+        priority=10,
+        status=InboundEventStatus.QUEUED,
+        created_at='2026-04-30T00:00:00Z',
+    )
+
+    store.append(record)
+    first = store.list_agent('agent1')
+    second = store.list_agent('agent1')
+
+    assert second is first
+    assert [item.inbound_event_id for item in second] == ['evt-cache-mode']
+    assert store.get_latest('agent1', 'evt-cache-mode').status == InboundEventStatus.QUEUED

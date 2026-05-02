@@ -7,6 +7,8 @@ from provider_backends.opencode.comm import OpenCodeCommunicator
 
 
 def test_opencode_comm_load_session_info_backfills_project_fields(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("CCB_SESSION_ID", raising=False)
+    monkeypatch.delenv("OPENCODE_RUNTIME_DIR", raising=False)
     session_file = tmp_path / ".opencode-session"
     runtime_dir = tmp_path / "run"
     runtime_dir.mkdir()

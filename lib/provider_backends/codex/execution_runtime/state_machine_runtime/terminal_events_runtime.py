@@ -5,6 +5,7 @@ from provider_execution.base import ProviderSubmission
 from provider_execution.common import build_item
 
 from ..reply_logic import abort_status, clean_codex_reply_text, select_reply
+from .binding import terminal_entry_matches_bound_turn
 from .models import CodexPollState
 
 
@@ -15,6 +16,8 @@ def handle_terminal_entry(
     *,
     now: str,
 ) -> None:
+    if not terminal_entry_matches_bound_turn(poll, entry):
+        return
     payload_type = terminal_payload_type(entry)
     if payload_type == "task_complete":
         append_task_complete_item(submission, poll, entry=entry, now=now)
@@ -104,8 +107,8 @@ def selected_reply(poll: CodexPollState) -> str:
 
 
 def add_binding_payload(payload: dict[str, object], poll: CodexPollState) -> None:
-    if poll.bound_turn_id or poll.request_anchor:
-        payload["turn_id"] = poll.bound_turn_id or poll.request_anchor
+    if poll.bound_turn_id:
+        payload["turn_id"] = poll.bound_turn_id
     if poll.bound_task_id:
         payload["task_id"] = poll.bound_task_id
     if poll.session_path:

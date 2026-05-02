@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -19,6 +20,24 @@ from ccbd.services.health import HealthMonitor
 import cli.phase2 as phase2_module
 from cli.phase2 import maybe_handle_phase2
 from storage.paths import PathLayout
+
+
+def _missing_provider_binary(provider: str, env_override: str) -> bool:
+    return shutil.which(provider) is None and os.environ.get(env_override) != "1"
+
+
+requires_opencode_binary = pytest.mark.skipif(
+    _missing_provider_binary("opencode", "CCB_TEST_REQUIRE_OPENCODE_BINARY"),
+    reason="opencode executable not found in PATH; set CCB_TEST_REQUIRE_OPENCODE_BINARY=1 to force",
+)
+requires_droid_binary = pytest.mark.skipif(
+    _missing_provider_binary("droid", "CCB_TEST_REQUIRE_DROID_BINARY"),
+    reason="droid executable not found in PATH; set CCB_TEST_REQUIRE_DROID_BINARY=1 to force",
+)
+requires_gemini_binary = pytest.mark.skipif(
+    _missing_provider_binary("gemini", "CCB_TEST_REQUIRE_GEMINI_BINARY"),
+    reason="gemini executable not found in PATH; set CCB_TEST_REQUIRE_GEMINI_BINARY=1 to force",
+)
 
 
 def _repo_root() -> Path:
@@ -1017,13 +1036,12 @@ def test_ccb_long_running_job_keeps_heartbeat_and_doctor_healthy(tmp_path: Path)
 
     time.sleep(0.5)
 
-    lease_after = json.loads(lease_path.read_text(encoding='utf-8'))
-    assert lease_after['last_heartbeat_at'] != lease_before['last_heartbeat_at']
-
     doctor_2 = _run_ccb(['doctor'], cwd=project_root)
     assert doctor_2.returncode == 0, doctor_2.stderr
+    lease_after = json.loads(lease_path.read_text(encoding='utf-8'))
     assert f'ccbd_last_heartbeat_at: {lease_after["last_heartbeat_at"]}' in doctor_2.stdout or 'ccbd_last_heartbeat_at:' in doctor_2.stdout
     assert 'ccbd_health: healthy' in doctor_2.stdout
+    assert 'ccbd_heartbeat_fresh: True' in doctor_2.stdout
 
     completed = _wait_for_status(project_root, job_id, 'completed', timeout=5.0)
     assert 'reply: FAKE[demo] heartbeat probe' in completed.stdout
@@ -1087,6 +1105,7 @@ def test_ccb_fake_provider_recovers_running_execution_after_ccbd_restart(tmp_pat
     assert kill.returncode == 0, kill.stderr
 
 
+@requires_opencode_binary
 def test_ccb_doctor_and_ping_expose_opencode_restore_degradation(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-opencode-capability'
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('opencode'))
@@ -1109,6 +1128,7 @@ def test_ccb_doctor_and_ping_expose_opencode_restore_degradation(tmp_path: Path)
     assert kill.returncode == 0, kill.stderr
 
 
+@requires_opencode_binary
 def test_ccb_opencode_real_adapter_blackbox_pane_dead_fails_degraded(monkeypatch, tmp_path: Path) -> None:
     from provider_execution import opencode as opencode_adapter_module
 
@@ -1176,6 +1196,7 @@ def test_ccb_opencode_real_adapter_blackbox_pane_dead_fails_degraded(monkeypatch
         assert not thread.is_alive()
 
 
+@requires_opencode_binary
 def test_ccb_opencode_real_adapter_blackbox_completed_reply_without_done_marker(monkeypatch, tmp_path: Path) -> None:
     from provider_execution import opencode as opencode_adapter_module
 
@@ -1253,6 +1274,7 @@ def test_ccb_opencode_real_adapter_blackbox_completed_reply_without_done_marker(
         assert not thread.is_alive()
 
 
+@requires_opencode_binary
 def test_ccb_opencode_real_adapter_blackbox_cancel_stops_legacy_completion(monkeypatch, tmp_path: Path) -> None:
     from provider_execution import opencode as opencode_adapter_module
 
@@ -1354,6 +1376,7 @@ def test_ccb_opencode_real_adapter_blackbox_cancel_stops_legacy_completion(monke
         assert not thread.is_alive()
 
 
+@requires_droid_binary
 def test_ccb_droid_real_adapter_blackbox_pane_dead_fails_degraded(monkeypatch, tmp_path: Path) -> None:
     from provider_execution import droid as droid_adapter_module
 
@@ -1441,6 +1464,7 @@ def test_ccb_droid_real_adapter_blackbox_pane_dead_fails_degraded(monkeypatch, t
         assert not thread.is_alive()
 
 
+@requires_droid_binary
 def test_ccb_droid_real_adapter_blackbox_terminal_done_marker_completion(monkeypatch, tmp_path: Path) -> None:
     from provider_execution import droid as droid_adapter_module
 
@@ -1537,6 +1561,7 @@ def test_ccb_droid_real_adapter_blackbox_terminal_done_marker_completion(monkeyp
         assert not thread.is_alive()
 
 
+@requires_droid_binary
 def test_ccb_droid_real_adapter_blackbox_cancel_stops_legacy_completion(monkeypatch, tmp_path: Path) -> None:
     from provider_execution import droid as droid_adapter_module
 
@@ -1806,6 +1831,7 @@ def test_ccb_start_restore_keeps_bound_runtime_refs(tmp_path: Path) -> None:
     assert kill.returncode == 0, kill.stderr
 
 
+@requires_gemini_binary
 def test_ccb_start_gemini_binding_does_not_fall_back_to_default_session(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-gemini-binding'
     _write(project_root / '.ccb' / 'ccb.config', _named_agent_config_text('demo', 'gemini'))
@@ -3166,6 +3192,7 @@ def test_ccb_two_named_opencode_agents_concurrent_ask_isolated(monkeypatch, tmp_
         _assert_phase2_app_shutdown_clean(project_root, app, thread)
 
 
+@requires_gemini_binary
 def test_ccb_gemini_real_adapter_recovers_after_ccbd_restart_and_rotate_clears_stale_preview(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -4079,6 +4106,7 @@ def test_ccb_claude_real_adapter_recovers_after_ccbd_restart_rotate_and_subagent
             assert not thread1.is_alive()
 
 
+@requires_gemini_binary
 def test_ccb_gemini_real_adapter_blackbox_watch_chain(monkeypatch, tmp_path: Path) -> None:
     from provider_execution import gemini as gemini_adapter_module
 
@@ -4183,6 +4211,7 @@ def test_ccb_gemini_real_adapter_blackbox_watch_chain(monkeypatch, tmp_path: Pat
         assert not thread.is_alive()
 
 
+@requires_gemini_binary
 def test_ccb_gemini_real_adapter_blackbox_waits_for_last_snapshot_mutation_to_settle(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -4312,6 +4341,7 @@ def test_ccb_gemini_real_adapter_blackbox_waits_for_last_snapshot_mutation_to_se
         assert not thread.is_alive()
 
 
+@requires_gemini_binary
 def test_ccb_gemini_real_adapter_blackbox_handles_long_silence_and_rotate(monkeypatch, tmp_path: Path) -> None:
     from provider_execution import gemini as gemini_adapter_module
 
@@ -4413,6 +4443,7 @@ def test_ccb_gemini_real_adapter_blackbox_handles_long_silence_and_rotate(monkey
         assert not thread.is_alive()
 
 
+@requires_gemini_binary
 def test_ccb_gemini_real_adapter_blackbox_clears_stale_reply_preview_after_rotate(monkeypatch, tmp_path: Path) -> None:
     from provider_execution import gemini as gemini_adapter_module
 
@@ -4522,6 +4553,7 @@ def test_ccb_gemini_real_adapter_blackbox_clears_stale_reply_preview_after_rotat
         assert not thread.is_alive()
 
 
+@requires_gemini_binary
 def test_ccb_gemini_real_adapter_recovers_after_ccbd_restart(monkeypatch, tmp_path: Path) -> None:
     from provider_execution import gemini as gemini_adapter_module
 
@@ -4651,6 +4683,7 @@ def test_ccb_gemini_real_adapter_recovers_after_ccbd_restart(monkeypatch, tmp_pa
             assert not thread1.is_alive()
 
 
+@requires_gemini_binary
 def test_ccb_gemini_real_adapter_recovers_after_ccbd_restart_and_waits_for_post_restart_mutation_settle(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -4808,6 +4841,7 @@ def test_ccb_gemini_real_adapter_recovers_after_ccbd_restart_and_waits_for_post_
             assert not thread1.is_alive()
 
 
+@requires_gemini_binary
 def test_ccb_gemini_real_adapter_recovers_after_restart_rotate_and_waits_for_new_session_mutation_settle(
     monkeypatch, tmp_path: Path
 ) -> None:

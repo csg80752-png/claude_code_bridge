@@ -18,23 +18,32 @@ def test_extract_reply_for_req_uses_begin_and_done_window() -> None:
     assert extract_reply_for_req(text, 'job_new123') == 'new reply line 1\nnew reply line 2'
 
 
-def test_wrap_claude_prompt_includes_language_and_markdown_hint(monkeypatch) -> None:
+def test_wrap_claude_prompt_does_not_inject_language_or_markdown_extras(monkeypatch) -> None:
     monkeypatch.setenv('CCB_REPLY_LANG', 'zh')
-    monkeypatch.setattr('provider_backends.claude.protocol_runtime.prompt.load_claude_skills', lambda: '')
 
     prompt = wrap_claude_prompt('Please return a markdown table', 'req_1')
 
-    assert 'Reply in Chinese.' in prompt
-    assert 'pipe-and-dash Markdown table syntax' in prompt
+    assert 'Reply in Chinese.' not in prompt
+    assert 'pipe-and-dash Markdown table syntax' not in prompt
     assert 'CCB_BEGIN: req_1' in prompt
     assert 'CCB_DONE: req_1' in prompt
 
 
-def test_wrap_claude_turn_prompt_prefixes_loaded_skills(monkeypatch) -> None:
+def test_wrap_claude_turn_prompt_does_not_prefix_loaded_skills(monkeypatch) -> None:
     monkeypatch.delenv('CCB_REPLY_LANG', raising=False)
     monkeypatch.delenv('CCB_LANG', raising=False)
-    monkeypatch.setattr('provider_backends.claude.protocol_runtime.prompt.load_claude_skills', lambda: 'SKILL BLOCK')
 
     prompt = wrap_claude_turn_prompt('hello', 'req_2')
 
-    assert prompt.startswith('CCB_REQ_ID: req_2\n\nSKILL BLOCK\n\nhello')
+    assert prompt.startswith('CCB_REQ_ID: req_2\n\nhello')
+    assert 'SKILL BLOCK' not in prompt
+    assert '# Async Ask' not in prompt
+
+
+def test_wrap_claude_prompt_does_not_leak_runtime_skill_to_receiver() -> None:
+    prompt = wrap_claude_prompt('hello user msg', 'req_3')
+
+    assert 'hello user msg' in prompt
+    assert '# Async Ask' not in prompt
+    assert 'After successful async submit' not in prompt
+    assert 'Use this only for' not in prompt

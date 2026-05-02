@@ -13,6 +13,7 @@ from provider_execution.common import no_wrap_requested, preferred_session_path,
 
 from ..protocol import wrap_claude_prompt, wrap_claude_turn_prompt
 from provider_hooks.artifacts import completion_dir_from_session_data
+from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_readiness_probes import claude_ready
 
 
 def load_session(load_project_session_fn, work_dir: Path, *, agent_name: str):
@@ -58,26 +59,8 @@ def resolved_ready_timeout(timeout_s: float = 8.0) -> float:
 
 
 def looks_ready(text: str) -> bool:
-    normalized = str(text or "")
-    lowered = normalized.lower()
-    if _has_prompt_line(normalized):
-        return True
-    if "type your message" in lowered or "esc to interrupt" in lowered:
-        return True
-    if "for shortcuts" in lowered:
-        return True
-    return False
+    return claude_ready(text)
 
-
-def _has_prompt_line(text: str) -> bool:
-    for line in str(text or "").splitlines():
-        stripped = line.lstrip()
-        if not stripped.startswith("❯"):
-            continue
-        tail = stripped[1:]
-        if not tail or tail.isspace():
-            return True
-    return False
 
 def wait_for_runtime_ready(backend: object, pane_id: str, *, timeout_s: float = 8.0) -> None:
     get_pane_content = getattr(backend, "get_pane_content", None)

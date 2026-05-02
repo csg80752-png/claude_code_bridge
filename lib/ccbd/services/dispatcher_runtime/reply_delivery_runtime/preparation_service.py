@@ -11,9 +11,18 @@ import time
 from ccbd.system import parse_utc_timestamp
 from mailbox_kernel import InboundEventStatus, InboundEventType
 from message_bureau.reply_payloads import reply_id_from_payload
+from terminal_runtime.tmux_backend_runtime.actions import (
+    capture_tmux_value as _capture_tmux_value,
+)
 
 from . import cmd_body_store
+from .cmd_readiness_probes import (
+    READINESS_PROBES as _READINESS_PROBES,
+    ReadinessOutcome,
+)
 from .cmd_delivery_telemetry import (
+    record_cmd_delivery_held,
+    record_cmd_delivery_success,
     record_header_only_dispatch,
     record_long_reply_fallback,
     record_phase2_failure,
@@ -27,6 +36,8 @@ from .repair import repair_reply_delivery_heads
 _logger = logging.getLogger(__name__)
 
 _CMD_PANE_CACHE_TTL = 30.0
+_PROBE_LINES = 20
+DEFAULT_CMD_SAFE_CONSUMERS = frozenset({'claude'})
 # In-memory LRU of reply_ids already injected into the cmd pane. Prevents
 # re-injecting the same reply on every tick while the head still waits for
 # `client.ack('cmd')` from the cmd user. Bounded so long-lived daemons do
@@ -104,7 +115,7 @@ def _deliver_cmd_replies(dispatcher):
 
     injected_cache = _get_injected_cache(dispatcher)
     if reply_id in injected_cache:
-        # Already handed this reply to the pane; waiting on human ack.
+        injected_cache.move_to_end(reply_id)
         return
 
     reply_store = getattr(control, '_reply_store', None)
@@ -113,6 +124,10 @@ def _deliver_cmd_replies(dispatcher):
     reply = reply_store.get_latest(reply_id)
     if reply is None:
         # Rare race with a concurrent reply writer; try again next tick.
+        return
+
+    if _should_suppress_cmd_reply(reply):
+        _try_ack(kernel, head, timestamp=dispatcher._clock())
         return
 
     project_root = _resolve_project_root(dispatcher)
@@ -138,6 +153,22 @@ def _deliver_cmd_replies(dispatcher):
         return
 
     body_char_count = len(reply.reply or '')
+    ready, foreground_command, held_reason = _cmd_delivery_gate(
+        backend,
+        cmd_pane_id,
+        project_root=project_root,
+    )
+    if not ready:
+        _hold_cmd_delivery(
+            dispatcher,
+            reply_id,
+            reply=reply,
+            project_root=project_root,
+            foreground_command=foreground_command,
+            body_char_count=body_char_count,
+            held_reason=held_reason,
+        )
+        return
 
     try:
         plan, fallback = plan_cmd_delivery(
@@ -170,6 +201,23 @@ def _deliver_cmd_replies(dispatcher):
             dispatched_at=dispatcher._clock(),
         )
 
+    ready, foreground_command, held_reason = _cmd_delivery_gate(
+        backend,
+        cmd_pane_id,
+        project_root=project_root,
+    )
+    if not ready:
+        _hold_cmd_delivery(
+            dispatcher,
+            reply_id,
+            reply=reply,
+            project_root=project_root,
+            foreground_command=foreground_command,
+            body_char_count=body_char_count,
+            held_reason=held_reason,
+        )
+        return
+
     try:
         backend.send_text_to_pane(cmd_pane_id, plan.body)
     except Exception:
@@ -197,11 +245,19 @@ def _deliver_cmd_replies(dispatcher):
             body_char_count=body_char_count,
         )
 
-    # Mark as injected so subsequent ticks don't re-inject before the user
-    # calls ack. Added AFTER the inject succeeds so a transient send failure
-    # triggers retry on the next tick.
+    record_cmd_delivery_success(
+        project_root,
+        reply_id=reply.reply_id,
+        foreground_command=foreground_command,
+        delivered_at=dispatcher._clock(),
+        body_char_count=body_char_count,
+    )
+
+    # Mark as injected so subsequent ticks don't re-inject. Added AFTER the
+    # inject succeeds so a transient send failure retries on the next tick.
     injected_at = _normalize_cache_timestamp(dispatcher._clock())
     injected_cache[reply_id] = injected_at
+    injected_cache.move_to_end(reply_id)
     while len(injected_cache) > _CMD_INJECTED_CACHE_MAX:
         injected_cache.popitem(last=False)
     _persist_injected_reply(dispatcher, reply_id, injected_at)
@@ -270,6 +326,155 @@ def _load_injected_cache(dispatcher):
     if line_count > _CMD_DELIVERED_CACHE_MAX_DISK or saw_expired:
         _compact_injected_cache_file(cache_path, cache)
     return cache
+
+
+def _try_ack(kernel, head, *, timestamp: str | None = None) -> bool:
+    try:
+        acked = kernel.ack_reply(
+            'cmd',
+            head.inbound_event_id,
+            started_at=timestamp,
+            finished_at=timestamp,
+        )
+    except Exception:
+        _logger.debug('cmd suppressed-reply ack failed', exc_info=True)
+        return False
+    return bool(
+        acked is not None
+        and getattr(acked, 'inbound_event_id', None) == head.inbound_event_id
+        and getattr(acked, 'status', None) is InboundEventStatus.CONSUMED
+    )
+
+
+def _should_suppress_cmd_reply(reply) -> bool:
+    if _is_heartbeat_notice(reply):
+        return True
+    if str(getattr(reply, 'reply', '') or '').strip():
+        return False
+    terminal_status = getattr(getattr(reply, 'terminal_status', None), 'value', None)
+    return str(terminal_status or '').strip() == 'cancelled'
+
+
+def _is_heartbeat_notice(reply) -> bool:
+    diagnostics = getattr(reply, 'diagnostics', None)
+    if not isinstance(diagnostics, dict):
+        return False
+    return (
+        diagnostics.get('notice') is True
+        and str(diagnostics.get('notice_kind') or '').strip() == 'heartbeat'
+    )
+
+
+def _hold_cmd_delivery(
+    dispatcher,
+    reply_id: str,
+    *,
+    reply,
+    project_root: Path | None,
+    foreground_command: str,
+    body_char_count: int,
+    held_reason: str,
+) -> None:
+    held_key = (reply_id, held_reason, foreground_command)
+    held_cache = getattr(dispatcher, '_cmd_held_replies', None)
+    if held_cache is None:
+        held_cache = set()
+        try:
+            dispatcher._cmd_held_replies = held_cache
+        except AttributeError:
+            held_cache = set()
+    if held_key in held_cache:
+        return
+    held_cache.add(held_key)
+    record_cmd_delivery_held(
+        project_root,
+        reply_id=reply.reply_id,
+        foreground_command=foreground_command,
+        held_at=dispatcher._clock(),
+        body_char_count=body_char_count,
+        held_reason=held_reason,
+    )
+
+
+def _cmd_delivery_gate(
+    backend,
+    pane_id: str,
+    *,
+    project_root: Path | None,
+) -> tuple[bool, str, str]:
+    foreground_command = _cmd_pane_foreground_command(backend, pane_id)
+    safe_consumers = _load_cmd_safe_consumers(project_root)
+    if foreground_command not in safe_consumers:
+        return False, foreground_command, 'not_safe_consumer'
+    readiness = _cmd_pane_readiness(backend, pane_id, foreground_command)
+    if readiness is not ReadinessOutcome.READY:
+        return False, foreground_command, readiness.value
+    return True, foreground_command, ''
+
+
+def _cmd_pane_foreground_command(backend, pane_id: str) -> str:
+    pane_id = str(pane_id or '').strip()
+    if backend is None or not pane_id:
+        return ''
+    try:
+        return str(
+            _capture_tmux_value(
+                backend,
+                pane_id,
+                "#{pane_current_command}",
+                timeout=1.0,
+            ) or ''
+        ).strip()
+    except Exception:
+        return ''
+
+
+def _cmd_pane_readiness(
+    backend,
+    pane_id: str,
+    foreground_command: str,
+) -> ReadinessOutcome:
+    probe = _READINESS_PROBES.get(foreground_command)
+    if probe is None:
+        return ReadinessOutcome.UNKNOWN_CONSUMER
+    if os.environ.get('CCB_CMD_READY_GATE', '1') == '0':
+        return ReadinessOutcome.READY
+    get_pane_content = getattr(backend, 'get_pane_content', None)
+    if not callable(get_pane_content):
+        return ReadinessOutcome.PROBE_UNAVAILABLE
+    try:
+        text = str(get_pane_content(pane_id, lines=_PROBE_LINES) or '')
+    except Exception:
+        return ReadinessOutcome.PROBE_UNAVAILABLE
+    if not probe(text):
+        return ReadinessOutcome.NOT_READY
+    try:
+        stable_text = str(get_pane_content(pane_id, lines=_PROBE_LINES) or '')
+    except Exception:
+        return ReadinessOutcome.PROBE_UNAVAILABLE
+    if stable_text != text:
+        return ReadinessOutcome.NOT_READY
+    return ReadinessOutcome.READY if probe(stable_text) else ReadinessOutcome.NOT_READY
+
+
+def _load_cmd_safe_consumers(project_root: Path | None) -> frozenset[str]:
+    env_val = str(os.environ.get('CCB_CMD_SAFE_CONSUMERS', '') or '').strip()
+    if env_val:
+        return frozenset(name.strip() for name in env_val.split(',') if name.strip())
+    if project_root is not None:
+        config_file = Path(project_root) / '.ccb' / 'cmd-safe-consumers.txt'
+        if config_file.exists():
+            try:
+                consumers = []
+                for line in config_file.read_text(encoding='utf-8').splitlines():
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith('#'):
+                        consumers.append(stripped)
+                if consumers:
+                    return frozenset(consumers)
+            except OSError:
+                _logger.debug('failed to read cmd safe-consumer allowlist: %s', config_file, exc_info=True)
+    return DEFAULT_CMD_SAFE_CONSUMERS
 
 
 def _persist_injected_reply(dispatcher, reply_id: str, injected_at: str) -> None:

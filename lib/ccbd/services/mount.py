@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from ccbd.models import CcbdLease, MountState, SCHEMA_VERSION
 from ccbd.system import current_uid, read_boot_id, utc_now
+from runtime_env import env_default_on
 from storage.json_store import JsonStore
 from storage.paths import PathLayout
+
+_DIRTY_CHECK_ENV = 'CCB_CCBD_DIRTY_CHECK'
+# Must stay strictly less than OwnershipGuard's 15s heartbeat_grace_seconds; the
+# 10s margin gives a stalled writer one full flush cycle before grace expires.
+_LEASE_HEARTBEAT_FLUSH_INTERVAL_S = 5.0
 
 
 class MountManager:
@@ -23,6 +30,13 @@ class MountManager:
         self._clock = clock
         self._uid_getter = uid_getter
         self._boot_id_getter = boot_id_getter
+        # Lock-free; assumes the mount lifecycle is driven from a single loop.
+        self._last_heartbeat_flush_at: float | None = None
+
+    def _save_lease(self, lease: CcbdLease) -> CcbdLease:
+        self._store.save(self._layout.ccbd_lease_path, lease, serializer=lambda value: value.to_record())
+        self._last_heartbeat_flush_at = time.monotonic()
+        return lease
 
     def load_state(self) -> CcbdLease | None:
         path = self._layout.ccbd_lease_path
@@ -57,8 +71,7 @@ class MountManager:
             keeper_pid=int(keeper_pid) if keeper_pid else None,
             daemon_instance_id=(str(daemon_instance_id).strip() or None) if daemon_instance_id is not None else None,
         )
-        self._store.save(self._layout.ccbd_lease_path, lease, serializer=lambda value: value.to_record())
-        return lease
+        return self._save_lease(lease)
 
     def refresh_heartbeat(self) -> CcbdLease:
         lease = self.load_state()
@@ -67,16 +80,18 @@ class MountManager:
         if lease.mount_state is not MountState.MOUNTED:
             return lease
         updated = lease.with_heartbeat(self._clock())
-        self._store.save(self._layout.ccbd_lease_path, updated, serializer=lambda value: value.to_record())
-        return updated
+        if env_default_on(_DIRTY_CHECK_ENV):
+            last = self._last_heartbeat_flush_at
+            if last is not None and (time.monotonic() - last) < _LEASE_HEARTBEAT_FLUSH_INTERVAL_S:
+                return updated
+        return self._save_lease(updated)
 
     def mark_unmounted(self) -> CcbdLease | None:
         lease = self.load_state()
         if lease is None:
             return None
         updated = lease.with_mount_state(MountState.UNMOUNTED, heartbeat_at=self._clock())
-        self._store.save(self._layout.ccbd_lease_path, updated, serializer=lambda value: value.to_record())
-        return updated
+        return self._save_lease(updated)
 
 
 def _lease_from_record(record: dict) -> CcbdLease:

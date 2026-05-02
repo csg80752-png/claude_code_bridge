@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 
 from agents.models import AgentState
 from provider_core.session_binding_evidence import session_ref
+from runtime_env import env_default_on
 
 from .common import drop_explicit_runtime_fields, runtime_fields_from_facts
+
+# Any future AgentRuntime field that rebind sets on every cycle without semantic
+# change must be added here AND covered by a flag-on no-op rebind test.
+_REBIND_HEARTBEAT_ONLY_FIELDS = frozenset({'last_seen_at'})
+_DIRTY_CHECK_ENV = 'CCB_CCBD_DIRTY_CHECK'
 
 
 def rebind_runtime(
@@ -43,6 +49,16 @@ def rebind_runtime(
         last_seen_at=monitor._clock(),
         **updated_fields,
     )
+
+    if env_default_on(_DIRTY_CHECK_ENV):
+        changed = any(
+            getattr(runtime, f.name) != getattr(updated, f.name)
+            for f in fields(runtime)
+            if f.name not in _REBIND_HEARTBEAT_ONLY_FIELDS
+        )
+        if not changed:
+            return monitor._registry.update_cache_only(updated)
+
     return monitor._registry.upsert(updated)
 
 
