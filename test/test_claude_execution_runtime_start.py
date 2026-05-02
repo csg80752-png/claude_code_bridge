@@ -32,7 +32,7 @@ def test_looks_ready_accepts_idle_prompt_with_shortcuts() -> None:
     assert looks_ready(text) is True
 
 
-def test_looks_ready_accepts_busy_prompt() -> None:
+def test_looks_ready_rejects_busy_prompt() -> None:
     text = """
 ❯ 1+1=
 
@@ -44,4 +44,4 @@ def test_looks_ready_accepts_busy_prompt() -> None:
   esc to interrupt
 """
 
-    assert looks_ready(text) is True
+    assert looks_ready(text) is False

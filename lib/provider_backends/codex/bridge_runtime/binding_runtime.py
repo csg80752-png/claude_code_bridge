@@ -6,6 +6,7 @@ import threading
 import time
 
 from provider_backends.codex.comm_runtime.binding import extract_session_id
+from provider_backends.codex.comm_runtime.follow_gate import workspace_follow_enabled
 from provider_backends.codex.comm_runtime.log_reader_facade import CodexLogReader
 from provider_backends.codex.session import CodexProjectSession
 
@@ -76,12 +77,36 @@ def refresh_context(session_file: Path | None) -> dict[str, object] | None:
 
 
 def current_log_path(data: dict[str, object]) -> Path | None:
+    own = session_file_from_env()
+    root = session_root(data)
+    isolated = False
+    try:
+        from provider_backends.codex.launcher_runtime.codex_namespace_isolation import (
+            codex_runtime_dir_from_session_file,
+            resolve_codex_sessions_root,
+        )
+        from provider_profiles.materializer import load_resolved_provider_profile
+
+        runtime_dir = codex_runtime_dir_from_session_file(own)
+        if runtime_dir is not None:
+            resolved = resolve_codex_sessions_root(
+                runtime_dir,
+                profile=load_resolved_provider_profile(runtime_dir),
+                explicit_env=data,
+            )
+            root = resolved.path
+            isolated = resolved.is_isolated
+    except Exception:
+        isolated = False
+
     log_reader = CodexLogReader(
-        root=session_root(data),
+        root=root,
         log_path=path_or_none(data.get("codex_session_path")),
         session_id_filter=str(data.get("codex_session_id") or "").strip() or None,
         work_dir=session_work_dir(data),
-        follow_workspace_sessions=True,
+        follow_workspace_sessions=workspace_follow_enabled(),
+        isolated_to_root=isolated,
+        own_session_file=own,
     )
     log_path = log_reader.current_log_path()
     if log_path is None or not log_path.is_file():

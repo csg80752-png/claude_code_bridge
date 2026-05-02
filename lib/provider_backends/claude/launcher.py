@@ -100,26 +100,42 @@ def _resolve_claude_restore_target(
     runtime_dir: Path,
     restore: bool,
     workspace_path: Path | None = None,
+    home_dir: Path | None = None,
 ) -> ProviderRestoreTarget:
+    def project_session_restore_target_fn(workspace_path: Path, session_instance: str | None):
+        return _project_session_restore_target(
+            workspace_path,
+            session_instance,
+            home_dir=home_dir,
+        )
+
+    def claude_history_state_fn(**kwargs):
+        return _claude_history_state(**kwargs, home_dir=home_dir)
+
     return _resolve_claude_restore_target_impl(
         spec=spec,
         runtime_dir=runtime_dir,
         restore=restore,
         workspace_path=workspace_path,
-        project_session_restore_target_fn=_project_session_restore_target,
-        claude_history_state_fn=_claude_history_state,
+        project_session_restore_target_fn=project_session_restore_target_fn,
+        claude_history_state_fn=claude_history_state_fn,
     )
 
 
 def _project_session_restore_target(
     workspace_path: Path,
     session_instance: str | None,
+    *,
+    home_dir: Path | None = None,
 ) -> ProviderRestoreTarget | None:
+    def claude_history_state_fn(**kwargs):
+        return _claude_history_state(**kwargs, home_dir=home_dir)
+
     return _project_session_restore_target_impl(
         workspace_path,
         session_instance,
         load_project_session_fn=load_project_session,
-        claude_history_state_fn=_claude_history_state,
+        claude_history_state_fn=claude_history_state_fn,
     )
 
 
@@ -128,12 +144,13 @@ def _claude_history_state(
     invocation_dir: Path,
     project_root: Path,
     include_env_pwd: bool,
+    home_dir: Path | None = None,
 ) -> tuple[str | None, bool, Path | None]:
     return _claude_history_state_impl(
         invocation_dir=invocation_dir,
         project_root=project_root,
         env=os.environ if include_env_pwd else {},
-        home_dir=Path.home(),
+        home_dir=home_dir or Path.home(),
     )
 
 

@@ -15,6 +15,16 @@ def env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
+def env_default_on(name: str) -> bool:
+    """Production-default kill switch — True unless name is set to 0/false/no/off.
+
+    Use for flags shipped default-ON in v8.1+ (CCB_CCBD_DIRTY_CHECK,
+    CCB_CCBD_READAMP_CACHE, etc.) where unsetting the env should keep the
+    feature enabled and explicit rollback requires a falsy token.
+    """
+    return env_bool(name, default=True)
+
+
 def env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -35,4 +45,4 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
-__all__ = ['env_bool', 'env_float', 'env_int']
+__all__ = ['env_bool', 'env_default_on', 'env_float', 'env_int']

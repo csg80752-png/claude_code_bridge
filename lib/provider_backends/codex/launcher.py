@@ -7,6 +7,8 @@ from cli.context import CliContext
 from cli.models import ParsedStartCommand
 from provider_core.contracts import ProviderRuntimeLauncher
 from workspace.models import WorkspacePlan
+from provider_profiles import load_resolved_provider_profile
+from .launcher_runtime.codex_namespace_isolation import codex_home_session_payload
 from .launcher_runtime import build_start_cmd as _build_start_cmd_impl
 from .launcher_runtime import post_launch as _post_launch_impl
 from .launcher_runtime import prepare_runtime as _prepare_runtime_impl
@@ -45,6 +47,11 @@ def build_session_payload(
 ) -> dict[str, object]:
     input_fifo = Path(prepared_state['input_fifo'])
     output_fifo = Path(prepared_state['output_fifo'])
+    profile = load_resolved_provider_profile(runtime_dir)
+    explicit_env: dict[str, object] = {}
+    if profile is not None:
+        explicit_env.update(getattr(profile, 'env', {}) or {})
+    explicit_env.update(spec.env)
     return {
         'ccb_session_id': launch_session_id,
         'agent_name': spec.name,
@@ -63,6 +70,7 @@ def build_session_payload(
         'start_dir': str(context.project.project_root),
         'codex_start_cmd': start_cmd,
         'start_cmd': start_cmd,
+        **codex_home_session_payload(runtime_dir, profile=profile, explicit_env=explicit_env),
     }
 
 

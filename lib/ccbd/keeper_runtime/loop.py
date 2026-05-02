@@ -147,6 +147,7 @@ def cleanup_transient_keeper_files(app, *, lock_path: Path) -> None:
         app.paths.ccbd_keeper_path,
         app.paths.ccbd_dir / 'keeper.stdout.log',
         app.paths.ccbd_dir / 'keeper.stderr.log',
+        app.paths.ccbd_dir / 'state-mutation.lock',
         Path(lock_path),
     ):
         try:

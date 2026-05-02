@@ -111,7 +111,7 @@ def test_handle_assistant_entry_records_final_answer() -> None:
     handle_assistant_entry(
         _submission(),
         poll,
-        {"text": "final answer", "phase": "final_answer", "id": "evt-1"},
+        {"text": "final answer", "phase": "final_answer", "id": "evt-1", "turn_id": "turn-1", "task_id": "task-1"},
         now="2026-04-06T00:01:00Z",
     )
 
@@ -140,7 +140,13 @@ def test_handle_terminal_entry_emits_turn_aborted_payload() -> None:
     handle_terminal_entry(
         _submission(),
         poll,
-        {"payload_type": "turn_aborted", "reason": "cancelled", "text": "user cancelled"},
+        {
+            "payload_type": "turn_aborted",
+            "reason": "cancelled",
+            "text": "user cancelled",
+            "turn_id": "turn-1",
+            "task_id": "task-1",
+        },
         now="2026-04-06T00:01:00Z",
     )
 

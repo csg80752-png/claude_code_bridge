@@ -6,6 +6,7 @@ from provider_execution.common import build_item
 
 from ..event_reading import assistant_signature
 from ..reply_logic import clean_codex_reply_text
+from .binding import assistant_entry_matches_bound_turn
 from .models import CodexPollState
 
 
@@ -16,6 +17,8 @@ def handle_assistant_entry(
     *,
     now: str,
 ) -> None:
+    if not assistant_entry_matches_bound_turn(poll, entry):
+        return
     if is_duplicate_assistant_entry(poll, entry):
         return
     cleaned = cleaned_reply_text(entry, request_anchor=poll.request_anchor)

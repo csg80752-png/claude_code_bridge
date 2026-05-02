@@ -34,12 +34,16 @@ class CodexLogReader:
         session_id_filter: str | None = None,
         work_dir: Path | None = None,
         follow_workspace_sessions: bool = False,
+        isolated_to_root: bool = False,
+        own_session_file: Path | str | None = None,
     ):
         self.root = Path(root).expanduser()
         self._preferred_log = self._normalize_path(log_path)
         self._session_id_filter = session_id_filter
         self._work_dir = self._normalize_work_dir(work_dir)
         self._follow_workspace_sessions = bool(follow_workspace_sessions and self._work_dir)
+        self._isolated_to_root = bool(isolated_to_root)
+        self._own_session_file = self._normalize_path(own_session_file or os.environ.get("CCB_SESSION_FILE"))
         try:
             poll = float(os.environ.get("CODEX_POLL_INTERVAL", "0.05"))
         except Exception:

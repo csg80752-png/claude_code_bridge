@@ -122,3 +122,67 @@ def test_attempt_and_reply_stores_support_message_and_agent_queries(tmp_path: Pa
     assert latest_reply is not None
     assert latest_reply.agent_name == 'agent1'
     assert [reply.reply_id for reply in reply_store.list_message('msg-1')] == ['rep-1']
+
+
+
+
+def test_message_bureau_stores_cache_mode_preserves_existing_store_semantics(monkeypatch, tmp_path):
+    monkeypatch.setenv('CCB_CCBD_READAMP_CACHE', '1')
+    layout = PathLayout(tmp_path / 'repo')
+    messages = MessageStore(layout)
+    attempts = AttemptStore(layout)
+    replies = ReplyStore(layout)
+
+    message = MessageRecord(
+        message_id='msg-cache-mode',
+        origin_message_id=None,
+        from_actor='cmd',
+        target_scope='single',
+        target_agents=('agent1',),
+        message_class='task_request',
+        reply_policy={'mode': 'one'},
+        retry_policy={'mode': 'manual'},
+        priority=50,
+        payload_ref='payload://cache-mode',
+        submission_id='sub-cache-mode',
+        created_at='2026-04-30T00:00:00Z',
+        updated_at='2026-04-30T00:00:00Z',
+        message_state=MessageState.CREATED,
+    )
+    attempt = AttemptRecord(
+        attempt_id='attempt-cache-mode',
+        message_id='msg-cache-mode',
+        agent_name='agent1',
+        provider='codex',
+        job_id='job-cache-mode',
+        retry_index=0,
+        health_snapshot_ref=None,
+        started_at='2026-04-30T00:00:01Z',
+        updated_at='2026-04-30T00:00:01Z',
+        attempt_state=AttemptState.RUNNING,
+    )
+    reply = ReplyRecord(
+        reply_id='reply-cache-mode',
+        message_id='msg-cache-mode',
+        attempt_id='attempt-cache-mode',
+        agent_name='agent1',
+        terminal_status=ReplyTerminalStatus.COMPLETED,
+        reply='done',
+        diagnostics={},
+        finished_at='2026-04-30T00:00:02Z',
+    )
+
+    messages.append(message)
+    attempts.append(attempt)
+    replies.append(reply)
+
+    first_messages = messages.list_all()
+    first_attempts = attempts.list_all()
+    first_replies = replies.list_all()
+
+    assert messages.list_all() is first_messages
+    assert attempts.list_all() is first_attempts
+    assert replies.list_all() is first_replies
+    assert messages.get_latest('msg-cache-mode').message_id == 'msg-cache-mode'
+    assert attempts.get_latest('attempt-cache-mode').attempt_id == 'attempt-cache-mode'
+    assert replies.get_latest('reply-cache-mode').reply_id == 'reply-cache-mode'

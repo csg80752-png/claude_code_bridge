@@ -36,11 +36,19 @@ def build_start_cmd(
 ) -> str:
     profile = load_profile_fn(runtime_dir)
     settings_path = write_settings_overlay_fn(runtime_dir, profile=profile)
+    namespace_env = claude_namespace_env(runtime_dir)
+    isolated_home = Path(namespace_env["HOME"])
+    restore_target = resolve_restore_target_fn(
+        spec=spec,
+        runtime_dir=runtime_dir,
+        restore=command.restore,
+        home_dir=isolated_home,
+    )
     env_prefix = join_env_prefix(
         build_env_prefix_fn(profile=profile, extra_env=spec.env),
+        export_env_clause(namespace_env),
         export_env_clause(caller_context_env(actor=spec.name, runtime_dir=runtime_dir, launch_session_id=launch_session_id)),
     )
-    restore_target = resolve_restore_target_fn(spec=spec, runtime_dir=runtime_dir, restore=command.restore)
 
     cmd_parts = provider_start_parts_fn('claude')
     cmd_parts.extend(['--setting-sources', 'user,project,local'])
@@ -89,6 +97,7 @@ def build_session_payload(
     prepared_state: dict[str, object],
 ) -> dict[str, object]:
     del prepared_state
+    namespace_env = claude_namespace_env(runtime_dir)
     return {
         'ccb_session_id': launch_session_id,
         'agent_name': spec.name,
@@ -103,6 +112,21 @@ def build_session_payload(
         'work_dir': str(run_cwd),
         'start_dir': str(context.project.project_root),
         'start_cmd': start_cmd,
+        'claude_home': namespace_env['HOME'],
+        'claude_projects_root': namespace_env['CLAUDE_PROJECTS_ROOT'],
+    }
+
+
+def claude_namespace_env(runtime_dir: Path) -> dict[str, str]:
+    isolated_home = Path(runtime_dir) / 'claude-home'
+    projects_root = isolated_home / '.claude' / 'projects'
+    session_env_root = isolated_home / '.claude' / 'session-env'
+    projects_root.mkdir(parents=True, exist_ok=True)
+    session_env_root.mkdir(parents=True, exist_ok=True)
+    return {
+        'HOME': str(isolated_home),
+        'CLAUDE_PROJECTS_ROOT': str(projects_root),
+        'CLAUDE_SESSION_ENV_ROOT': str(session_env_root),
     }
 
 

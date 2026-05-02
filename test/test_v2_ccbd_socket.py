@@ -22,6 +22,11 @@ from project.ids import compute_project_id
 from project.resolver import ProjectContext
 
 
+@pytest.fixture(autouse=True)
+def _disable_codex_task_id_probe_for_fake_socket_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CCB_CODEX_TASK_ID_PROBE_DISABLED", "1")
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding='utf-8')

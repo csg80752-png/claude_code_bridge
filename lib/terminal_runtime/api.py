@@ -45,6 +45,23 @@ is_wsl = _is_wsl_impl
 _current_tty = _current_tty_impl
 
 
+def _extract_wsl_path_from_unc_like_path(value: str) -> str | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("\\", "/")
+    while normalized.startswith("//"):
+        normalized = normalized[1:]
+    for prefix in ("/wsl.localhost/", "/wsl$/"):
+        if not normalized.startswith(prefix):
+            continue
+        parts = normalized[len(prefix) :].split("/", 1)
+        if len(parts) != 2 or not parts[1].startswith(("home/", "mnt/")):
+            return None
+        return "/" + parts[1]
+    return None
+
+
 def _run(*args, **kwargs):
     kwargs.update(_subprocess_kwargs())
     import subprocess as _sp

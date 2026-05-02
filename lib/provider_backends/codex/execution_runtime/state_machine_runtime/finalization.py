@@ -6,6 +6,7 @@ from provider_execution.base import ProviderPollResult, ProviderSubmission
 
 from ..reply_logic import select_reply
 from .models import CodexPollState
+from .serialization import to_runtime_state
 
 
 def finalize_poll_result(
@@ -31,16 +32,8 @@ def finalize_poll_result(
         runtime_state={
             **submission.runtime_state,
             "state": state,
-            "next_seq": poll.next_seq,
-            "anchor_seen": poll.anchor_seen,
-            "bound_turn_id": poll.bound_turn_id,
-            "bound_task_id": poll.bound_task_id,
-            "reply_buffer": poll.reply_buffer,
-            "last_agent_message": poll.last_agent_message,
-            "last_final_answer": poll.last_final_answer,
-            "last_assistant_message": poll.last_assistant_message,
-            "last_assistant_signature": poll.last_assistant_signature,
-            "session_path": poll.session_path,
+            **to_runtime_state(poll),
+            **_task_id_broken_state(poll),
         },
     )
     if not poll.items:
@@ -48,6 +41,12 @@ def finalize_poll_result(
             return ProviderPollResult(submission=updated_submission)
         return None
     return ProviderPollResult(submission=updated_submission, items=tuple(poll.items))
+
+
+def _task_id_broken_state(poll: CodexPollState) -> dict[str, object]:
+    if poll.requires_task_id and poll.bound_turn_contaminated:
+        return {"codex_task_id_probe_state": "BROKEN", "requires_rebind": True}
+    return {}
 
 
 __all__ = ["finalize_poll_result"]

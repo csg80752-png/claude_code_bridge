@@ -29,6 +29,8 @@ def _matches_session_filter(reader, path: Path) -> bool:
     session_id_filter = reader._session_id_filter
     if not session_id_filter or _follow_workspace(reader):
         return True
+    if _isolated_to_root(reader):
+        return True
     try:
         return str(session_id_filter).lower() in str(path).lower()
     except Exception:
@@ -53,6 +55,12 @@ def _follow_workspace(reader) -> bool:
     from ..state import follow_workspace_sessions
 
     return follow_workspace_sessions(reader)
+
+
+def _isolated_to_root(reader) -> bool:
+    from ..state import isolated_to_root
+
+    return isolated_to_root(reader)
 
 
 def bind_preferred_log(reader, latest: Path) -> Path:

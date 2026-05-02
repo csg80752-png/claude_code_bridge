@@ -197,6 +197,8 @@ def test_codex_binding_tracker_refreshes_session_from_workdir_scoped_log(
     )
 
     monkeypatch.setenv("CCB_SESSION_FILE", str(session_file))
+    monkeypatch.setenv("CCB_CODEX_NAMESPACE_ISOLATION", "0")
+    monkeypatch.setenv("CCB_CODEX_FOLLOW_WORKSPACE", "1")
     monkeypatch.setenv("CODEX_SESSION_ROOT", str(session_root))
 
     tracker = CodexBindingTracker(tmp_path / "runtime")
@@ -269,6 +271,8 @@ def test_codex_binding_tracker_can_follow_rotated_workspace_session(
     )
 
     monkeypatch.setenv("CCB_SESSION_FILE", str(session_file))
+    monkeypatch.setenv("CCB_CODEX_NAMESPACE_ISOLATION", "0")
+    monkeypatch.setenv("CCB_CODEX_FOLLOW_WORKSPACE", "1")
     monkeypatch.setenv("CODEX_SESSION_ROOT", str(session_root))
 
     tracker = CodexBindingTracker(tmp_path / "runtime")
@@ -282,15 +286,17 @@ def test_codex_binding_tracker_can_follow_rotated_workspace_session(
     assert data["start_cmd"] == data["codex_start_cmd"]
 
 
-def test_codex_comm_live_reader_uses_workspace_follow_mode(tmp_path: Path) -> None:
+def test_codex_comm_live_reader_uses_isolated_root_by_default(tmp_path: Path) -> None:
     comm = CodexCommunicator.__new__(CodexCommunicator)
     comm.session_info = {
         "codex_session_path": str(tmp_path / "old.jsonl"),
         "codex_session_id": "old-session-id",
         "work_dir": str(tmp_path / "repo"),
+        "_session_file": str(tmp_path / ".ccb" / ".codex-agent1-session"),
     }
     comm._log_reader = None
     comm._log_reader_primed = True
+    comm.project_session_file = str(tmp_path / ".ccb" / ".codex-agent1-session")
 
     captured: dict[str, object] = {}
 
@@ -303,4 +309,7 @@ def test_codex_comm_live_reader_uses_workspace_follow_mode(tmp_path: Path) -> No
     assert captured["log_path"] == str(tmp_path / "old.jsonl")
     assert captured["session_id_filter"] == "old-session-id"
     assert captured["work_dir"] == tmp_path / "repo"
-    assert captured["follow_workspace_sessions"] is True
+    assert captured["root"] == tmp_path / ".ccb" / "agents" / "agent1" / "provider-runtime" / "codex" / "codex-home" / "sessions"
+    assert captured["isolated_to_root"] is True
+    assert captured["follow_workspace_sessions"] is False
+    assert captured["own_session_file"] == str(tmp_path / ".ccb" / ".codex-agent1-session")

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 import shlex
 from pathlib import Path
 from typing import Callable
 
 from provider_core.caller_env import caller_context_env
+from provider_backends.codex.launcher_runtime.codex_namespace_isolation import explicit_codex_home_overrides
 
 
 def build_start_cmd(
@@ -74,10 +76,17 @@ def _codex_args(command, spec, runtime_dir: Path, *, provider_start_parts_fn, lo
 
 
 def _env_map(runtime_dir: Path, launch_session_id: str, *, spec, profile, codex_home_overrides: dict[str, str]) -> dict[str, str]:
-    explicit_env: dict[str, str] = {}
+    # v8 — silence codex CLI's TRACE-level inotify-event logging that floods logs_2.sqlite
+    # and drives sustained 10-15% per-pane CPU. Override via CCB_CODEX_RUST_LOG=trace to restore.
+    explicit_env: dict[str, str] = {
+        'RUST_LOG': os.environ.get('CCB_CODEX_RUST_LOG', 'info'),
+    }
     if profile is not None:
         explicit_env.update(profile.env)
     explicit_env.update(spec.env)
+    explicit_codex_home = explicit_codex_home_overrides(explicit_env)
+    if explicit_codex_home:
+        codex_home_overrides = explicit_codex_home
     return {
         **explicit_env,
         'CODEX_RUNTIME_DIR': str(runtime_dir),

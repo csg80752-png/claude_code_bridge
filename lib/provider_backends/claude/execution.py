@@ -79,7 +79,34 @@ class ClaudeProviderAdapter:
 
 
 def _reader_factory(session):
-    return ClaudeLogReader(work_dir=Path(session.work_dir))
+    root = _session_projects_root(session)
+    kwargs = {'work_dir': Path(session.work_dir)}
+    kwargs['root'] = root
+    return ClaudeLogReader(**kwargs)
+
+
+def _session_projects_root(session) -> Path | None:
+    data = getattr(session, 'data', None)
+    raw = ''
+    if isinstance(data, dict):
+        raw = str(data.get('claude_projects_root') or '').strip()
+    if not raw:
+        raw = str(getattr(session, 'claude_projects_root', '') or '').strip()
+    if raw:
+        return Path(raw).expanduser()
+    return _legacy_session_projects_root(session)
+
+
+def _legacy_session_projects_root(session) -> Path:
+    data = getattr(session, 'data', None)
+    runtime_raw = ''
+    if isinstance(data, dict):
+        runtime_raw = str(data.get('runtime_dir') or '').strip()
+    if not runtime_raw:
+        runtime_raw = str(getattr(session, 'runtime_dir', '') or '').strip()
+    if runtime_raw:
+        return Path(runtime_raw).expanduser() / 'claude-home' / '.claude' / 'projects'
+    return Path(session.work_dir).expanduser() / '.ccb' / 'claude-home' / '.claude' / 'projects'
 
 
 def _load_session(work_dir: Path, *, agent_name: str):

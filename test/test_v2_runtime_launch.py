@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import shlex
@@ -138,6 +139,10 @@ def test_ensure_agent_runtime_launches_named_codex_session(monkeypatch, tmp_path
     spec = _spec('agent1')
     plan = WorkspacePlanner().plan(spec, ctx.project)
     plan.workspace_path.mkdir(parents=True, exist_ok=True)
+    runtime_dir = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'codex'
+    sessions_root = runtime_dir / 'codex-home' / 'sessions'
+    sessions_root.mkdir(parents=True, exist_ok=True)
+    (sessions_root / 'rollout-agent1-session-id.jsonl').write_text('', encoding='utf-8')
 
     tmux_state: dict[str, object] = {}
 
@@ -256,6 +261,10 @@ def test_ensure_agent_runtime_passes_profile_codex_home_to_bridge(monkeypatch, t
     spec = _spec('agent1')
     plan = WorkspacePlanner().plan(spec, ctx.project)
     plan.workspace_path.mkdir(parents=True, exist_ok=True)
+    runtime_dir = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'codex'
+    sessions_root = runtime_dir / 'codex-home' / 'sessions'
+    sessions_root.mkdir(parents=True, exist_ok=True)
+    (sessions_root / 'rollout-agent1-session-id.jsonl').write_text('', encoding='utf-8')
     runtime_dir = ctx.paths.agent_dir('agent1') / 'provider-runtime' / 'codex'
     profile_home = tmp_path / 'profile-home'
     _write_provider_profile(
@@ -371,6 +380,10 @@ def test_ensure_agent_runtime_resumes_named_codex_session_by_agent_name(monkeypa
     spec = _spec('agent1')
     plan = WorkspacePlanner().plan(spec, ctx.project)
     plan.workspace_path.mkdir(parents=True, exist_ok=True)
+    runtime_dir = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'codex'
+    sessions_root = runtime_dir / 'codex-home' / 'sessions'
+    sessions_root.mkdir(parents=True, exist_ok=True)
+    (sessions_root / 'rollout-agent1-session-id.jsonl').write_text('', encoding='utf-8')
 
     tmux_state: dict[str, object] = {}
 
@@ -1124,6 +1137,67 @@ def test_codex_launcher_build_start_cmd_isolates_invalid_global_codex_config(mon
     assert (isolated_home / 'config.toml').is_file()
 
 
+def test_codex_namespace_isolation_per_binding_does_not_leak_global_codex_home(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project_root = tmp_path / 'repo-codex-isolation'
+    global_home = tmp_path / 'global-codex-home'
+    (global_home / 'sessions').mkdir(parents=True)
+    (global_home / 'sessions' / 'rollout-shared.jsonl').write_text('{}\n', encoding='utf-8')
+    monkeypatch.setenv('CODEX_HOME', str(global_home))
+
+    ctx = _context(project_root, ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False))
+    plan1 = WorkspacePlanner().plan(_spec('agent1'), ctx.project)
+    plan2 = WorkspacePlanner().plan(_spec('agent2'), ctx.project)
+    runtime1 = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'codex'
+    runtime2 = project_root / '.ccb' / 'agents' / 'agent2' / 'provider-runtime' / 'codex'
+
+    payload1 = codex_launcher.build_session_payload(
+        ctx,
+        _spec('agent1'),
+        plan1,
+        runtime1,
+        plan1.workspace_path,
+        '%11',
+        'CCB-agent1',
+        'codex',
+        'sess-agent1',
+        {'input_fifo': runtime1 / 'input.fifo', 'output_fifo': runtime1 / 'output.fifo'},
+    )
+    payload2 = codex_launcher.build_session_payload(
+        ctx,
+        _spec('agent2'),
+        plan2,
+        runtime2,
+        plan2.workspace_path,
+        '%22',
+        'CCB-agent2',
+        'codex',
+        'sess-agent2',
+        {'input_fifo': runtime2 / 'input.fifo', 'output_fifo': runtime2 / 'output.fifo'},
+    )
+
+    assert payload1['codex_home'] == str(runtime1 / 'codex-home')
+    assert payload2['codex_home'] == str(runtime2 / 'codex-home')
+    assert payload1['codex_home'] != payload2['codex_home']
+    assert payload1['codex_home'] != str(global_home)
+    assert payload2['codex_home'] != str(global_home)
+    assert payload1['codex_session_root'] == str(runtime1 / 'codex-home' / 'sessions')
+    assert payload2['codex_session_root'] == str(runtime2 / 'codex-home' / 'sessions')
+
+
+def test_codex_session_root_resolution_respects_explicit_env_override(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / 'runtime'
+    explicit_home = tmp_path / 'operator-codex-home'
+    spec = replace(_spec('agent1'), env={'CODEX_HOME': str(explicit_home)})
+    command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
+
+    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-override')
+
+    assert f'CODEX_HOME={shlex.quote(str(explicit_home))}' in cmd
+    assert f'CODEX_SESSION_ROOT={shlex.quote(str(explicit_home / "sessions"))}' in cmd
+
+
 def test_codex_launcher_build_start_cmd_uses_agent_scoped_resume_session(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-codex-resume'
     runtime_dir = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'codex'
@@ -1152,6 +1226,9 @@ def test_codex_launcher_build_start_cmd_uses_agent_scoped_resume_session(monkeyp
         ),
         encoding='utf-8',
     )
+    sessions_root = runtime_dir / 'codex-home' / 'sessions'
+    sessions_root.mkdir(parents=True, exist_ok=True)
+    (sessions_root / 'rollout-agent1-session-id.jsonl').write_text('', encoding='utf-8')
 
     spec = _spec('agent1')
     command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=True, auto_permission=False)
@@ -1180,6 +1257,9 @@ def test_codex_launcher_build_start_cmd_reads_resume_cmd_from_agent_scoped_sessi
         ),
         encoding='utf-8',
     )
+    sessions_root = runtime_dir / 'codex-home' / 'sessions'
+    sessions_root.mkdir(parents=True, exist_ok=True)
+    (sessions_root / 'rollout-codex-session-id.jsonl').write_text('', encoding='utf-8')
 
     spec = _spec('codex')
     command = ParsedStartCommand(project=None, agent_names=('codex',), restore=True, auto_permission=False)
@@ -1233,6 +1313,88 @@ def test_claude_launcher_build_start_cmd_uses_overlay_and_drops_dead_local_user_
         'claude --setting-sources user,project,local --dangerously-skip-permissions --continue'
     )
     assert not (runtime_dir / 'claude-settings.json').exists()
+
+
+def _write_claude_history(home_dir: Path, work_dir: Path, session_id: str) -> Path:
+    from provider_backends.claude.launcher_runtime.history import project_key
+
+    project_dir = home_dir / '.claude' / 'projects' / project_key(work_dir)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    session_env_dir = home_dir / '.claude' / 'session-env' / session_id
+    session_env_dir.mkdir(parents=True, exist_ok=True)
+    session_path = project_dir / f'{session_id}.jsonl'
+    session_path.write_text('{"type":"session_meta"}\n', encoding='utf-8')
+    return session_path
+
+
+def test_claude_launcher_exports_isolated_home_and_ignores_user_home_history(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-claude-isolated'
+    runtime_dir = project_root / '.ccb' / 'agents' / 'reviewer' / 'provider-runtime' / 'claude'
+    workspace_path = project_root / '.ccb' / 'workspaces' / 'reviewer'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    user_home = tmp_path / 'user-home'
+    isolated_home = runtime_dir / 'claude-home'
+    _write_claude_history(user_home, workspace_path, '123e4567-e89b-12d3-a456-426614174abc')
+
+    spec = _spec('reviewer', provider='claude')
+    command = ParsedStartCommand(project=None, agent_names=('reviewer',), restore=True, auto_permission=False)
+
+    monkeypatch.setattr('provider_backends.claude.launcher.Path.home', lambda: user_home)
+
+    start_cmd = claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-isolated')
+
+    assert f'HOME={shlex.quote(str(isolated_home))}' in start_cmd
+    assert f'CLAUDE_PROJECTS_ROOT={shlex.quote(str(isolated_home / ".claude" / "projects"))}' in start_cmd
+    assert str(user_home / '.claude' / 'projects') not in start_cmd
+    assert '--continue' not in shlex.split(start_cmd)
+
+
+def test_claude_launcher_restore_preflight_uses_isolated_home(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-claude-isolated-history'
+    runtime_dir = project_root / '.ccb' / 'agents' / 'reviewer' / 'provider-runtime' / 'claude'
+    workspace_path = project_root / '.ccb' / 'workspaces' / 'reviewer'
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    isolated_home = runtime_dir / 'claude-home'
+    _write_claude_history(isolated_home, workspace_path, '123e4567-e89b-12d3-a456-426614174def')
+
+    spec = _spec('reviewer', provider='claude')
+    command = ParsedStartCommand(project=None, agent_names=('reviewer',), restore=True, auto_permission=False)
+
+    monkeypatch.setattr('provider_backends.claude.launcher.Path.home', lambda: tmp_path / 'user-home')
+
+    start_cmd = claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-isolated-history')
+
+    assert f'HOME={shlex.quote(str(isolated_home))}' in start_cmd
+    assert '--continue' in shlex.split(start_cmd)
+
+
+def test_claude_session_payload_records_isolated_home_roots(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-claude-payload'
+    project_root.mkdir()
+    ctx = _context(project_root, ParsedStartCommand(project=None, agent_names=('reviewer',), restore=False, auto_permission=False))
+    spec = _spec('reviewer', provider='claude')
+    plan = WorkspacePlanner().plan(spec, ctx.project)
+    runtime_dir = ctx.paths.agent_dir('reviewer') / 'provider-runtime' / 'claude'
+    run_cwd = plan.workspace_path
+    isolated_home = runtime_dir / 'claude-home'
+
+    payload = claude_launcher.build_session_payload(
+        ctx,
+        spec,
+        plan,
+        runtime_dir,
+        run_cwd,
+        '%77',
+        'CCB-reviewer-demo',
+        'export HOME=/tmp/demo; claude',
+        'claude-sess-payload',
+        {},
+    )
+
+    assert payload['claude_home'] == str(isolated_home)
+    assert payload['claude_projects_root'] == str(isolated_home / '.claude' / 'projects')
 
 
 

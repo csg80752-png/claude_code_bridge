@@ -38,8 +38,11 @@ def test_load_gemini_session_info_merges_env_and_session_file(monkeypatch, tmp_p
 
 
 def test_load_gemini_session_info_returns_none_for_inactive_project_session(
+    monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.delenv("CCB_SESSION_ID", raising=False)
+    monkeypatch.delenv("GEMINI_RUNTIME_DIR", raising=False)
     session_file = tmp_path / ".gemini-session"
     session_file.write_text(json.dumps({"active": False}), encoding="utf-8")
 
