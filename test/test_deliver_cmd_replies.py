@@ -671,14 +671,15 @@ def test_phase2_failure_telemetry_on_send_exception(monkeypatch, tmp_path):
 
 
 def test_long_body_happy_path_emits_header_only_dispatch_telemetry(
-    _stub_pane_and_backend, tmp_path
+    monkeypatch, _stub_pane_and_backend, tmp_path
 ):
-    """Long body + project_root present: pane gets the structured header-only
-    payload, body is persisted to disk, and a header_only_dispatch event lands
-    in the metrics log. Covers the P2 gap codex 2nd-review flagged."""
+    """Explicit header-only mode injects only the single generated header."""
     from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_transport_planner import (
+        CMD_HEADER_RE,
         _BODY_CHAR_THRESHOLD,
     )
+    monkeypatch.setenv('CCB_CMD_DELIVERY_MODE', 'header_only')
+    monkeypatch.delenv('CCB_HEADER_ONLY', raising=False)
     head = _make_head()
     long_body = 'w' * (_BODY_CHAR_THRESHOLD + 1)
     reply = _make_reply(body=long_body)
@@ -688,38 +689,25 @@ def test_long_body_happy_path_emits_header_only_dispatch_telemetry(
 
     preparation_service._deliver_cmd_replies(dispatcher)
 
-    # Pane got the structured header-only payload, NOT the full body.
+    # Pane got the v8.3.2 generated header, NOT the full body.
     assert len(_stub_pane_and_backend.injected) == 1
     _, pane_text = _stub_pane_and_backend.injected[0]
-    lines = pane_text.splitlines()
-    assert lines[0].startswith('CCB_REPLY ')
-    assert lines[1].startswith('CCB_NOTICE kind=external_body must_read=1 body_file=')
+    assert CMD_HEADER_RE.fullmatch(pane_text)
     assert long_body not in pane_text, 'long body must NOT be inlined into pane text'
 
-    # Body file exists on disk with the full content.
-    body_file = tmp_path / '.ccb' / 'replies' / 'cmd' / f'{reply.reply_id}.md'
-    assert body_file.exists()
-    assert body_file.read_text(encoding='utf-8') == long_body
-
-    # header_only_dispatch event recorded.
+    # Header injection telemetry recorded.
     metrics_file = tmp_path / '.ccb' / 'metrics' / 'body_read_followup.jsonl'
     assert metrics_file.exists()
     records = [json.loads(line) for line in metrics_file.read_text(encoding='utf-8').splitlines() if line.strip()]
-    dispatch_events = [r for r in records if r.get('event') == 'header_only_dispatch']
+    dispatch_events = [r for r in records if r.get('event') == 'cmd_delivery_header_inject_success']
     assert len(dispatch_events) == 1
     assert dispatch_events[0]['reply_id'] == reply.reply_id
-    assert dispatch_events[0]['body_file'] == str(body_file)
     assert dispatch_events[0]['body_char_count'] == len(long_body)
     assert kernel.calls == []
 
 
 def test_long_body_without_project_root_records_fallback_telemetry(monkeypatch, tmp_path):
-    """When project_root is None we cannot persist the body, so the planner
-    degrades to full-body inject AND emits a long_reply_fell_back_full_body
-    event so the observation window sees it. But with project_root None the
-    event is dropped (nowhere to write) — verify full-body inject still
-    happens. When project_root is PRESENT but the kill switch is off, the
-    telemetry event lands."""
+    """Legacy full-body mode still injects body and records success telemetry."""
     from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_transport_planner import (
         _BODY_CHAR_THRESHOLD,
     )
@@ -742,14 +730,13 @@ def test_long_body_without_project_root_records_fallback_telemetry(monkeypatch, 
     _, pane_text = backend.injected[0]
     assert long_body in pane_text
 
-    # Fallback telemetry event recorded with kill_switch_disabled reason.
+    # Full-body success telemetry is recorded; v8.3.2 no longer has a pointer fallback.
     metrics_file = tmp_path / '.ccb' / 'metrics' / 'body_read_followup.jsonl'
     assert metrics_file.exists()
     records = [json.loads(line) for line in metrics_file.read_text(encoding='utf-8').splitlines() if line.strip()]
-    fallback_events = [r for r in records if r.get('event') == 'long_reply_fell_back_full_body']
-    assert len(fallback_events) == 1
-    assert fallback_events[0]['reason'] == 'kill_switch_disabled'
-    assert fallback_events[0]['body_char_count'] == len(long_body)
+    success_events = [r for r in records if r.get('event') == 'cmd_delivery_success']
+    assert len(success_events) == 1
+    assert success_events[0]['body_char_count'] == len(long_body)
     assert kernel.calls == []
 
 

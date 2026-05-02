@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import time
 
+from mailbox_kernel.gc import compact_mailbox_jsonl
 from ccbd.system import parse_utc_timestamp
 from mailbox_kernel import InboundEventStatus, InboundEventType
 from message_bureau.reply_payloads import reply_id_from_payload
@@ -21,13 +22,14 @@ from .cmd_readiness_probes import (
     ReadinessOutcome,
 )
 from .cmd_delivery_telemetry import (
+    record_cmd_delivery_header_inject_error,
+    record_cmd_delivery_header_inject_success,
     record_cmd_delivery_held,
     record_cmd_delivery_success,
-    record_header_only_dispatch,
     record_long_reply_fallback,
     record_phase2_failure,
 )
-from .cmd_transport_planner import plan_cmd_delivery
+from .cmd_transport_planner import plan_cmd_delivery, prepare_cmd_payload as _prepare_cmd_payload
 from .common import head_reply_id, project_id_for_agent
 from .preparation_head import resolve_existing_delivery_job
 from .preparation_message import build_reply_delivery_job
@@ -48,6 +50,7 @@ _CMD_INJECTED_CACHE_MAX = 256
 _CMD_DELIVERED_CACHE_MAX_DISK = 10_000
 _CMD_DELIVERED_CACHE_TTL_SECONDS = 48 * 3600
 _CMD_DELIVERED_CACHE_FILENAME = 'cmd-delivered-cache.jsonl'
+_MAILBOX_GC_INTERVAL_SECONDS = 3600.0
 
 
 def prepare_reply_deliveries(dispatcher):
@@ -56,6 +59,7 @@ def prepare_reply_deliveries(dispatcher):
     if control is None or bureau is None:
         return ()
 
+    _maybe_compact_mailboxes(dispatcher)
     repair_reply_delivery_heads(dispatcher)
     created = []
     for agent_name in dispatcher._config.agents:
@@ -67,6 +71,36 @@ def prepare_reply_deliveries(dispatcher):
         _deliver_cmd_replies(dispatcher)
 
     return tuple(created)
+
+
+def _maybe_compact_mailboxes(dispatcher) -> None:
+    now = time.monotonic()
+    last_run = getattr(dispatcher, '_mailbox_gc_last_run_monotonic', None)
+    if last_run is not None and (now - float(last_run)) < _MAILBOX_GC_INTERVAL_SECONDS:
+        return
+    try:
+        dispatcher._mailbox_gc_last_run_monotonic = now
+    except AttributeError:
+        pass
+
+    control = getattr(dispatcher, '_message_bureau_control', None)
+    kernel = getattr(control, '_mailbox_kernel', None)
+    layout = getattr(dispatcher, '_layout', None)
+    config = getattr(dispatcher, '_config', None)
+    if kernel is None or layout is None or config is None:
+        return
+
+    agent_names = tuple(dict.fromkeys(('cmd', *tuple(getattr(config, 'agents', ()) or ()))))
+    cache_owner = getattr(getattr(kernel, '_inbound_store', None), '_store', None)
+    try:
+        compact_mailbox_jsonl(
+            layout,
+            agent_names=agent_names,
+            now='',
+            cache_owner=cache_owner,
+        )
+    except Exception:
+        _logger.debug('mailbox jsonl gc failed', exc_info=True)
 
 
 def _deliver_cmd_replies(dispatcher):
@@ -234,24 +268,36 @@ def _deliver_cmd_replies(dispatcher):
             body_char_count=body_char_count,
             failed_at=dispatcher._clock(),
         )
+        if plan.header_only:
+            record_cmd_delivery_header_inject_error(
+                project_root,
+                reply_id=reply.reply_id,
+                foreground_command=foreground_command,
+                failed_at=dispatcher._clock(),
+                body_char_count=body_char_count,
+                reason='exception',
+            )
         return
 
-    if plan.header_only and plan.body_file is not None and project_root is not None:
-        record_header_only_dispatch(
+    delivered_at = dispatcher._clock()
+    if plan.header_only:
+        record_cmd_delivery_header_inject_success(
             project_root,
             reply_id=reply.reply_id,
-            body_file=plan.body_file,
-            dispatched_at=dispatcher._clock(),
+            foreground_command=foreground_command,
+            delivered_at=delivered_at,
+            body_char_count=body_char_count,
+            delivery_mode='header_only',
+            header_only_compatible=True,
+        )
+    else:
+        record_cmd_delivery_success(
+            project_root,
+            reply_id=reply.reply_id,
+            foreground_command=foreground_command,
+            delivered_at=delivered_at,
             body_char_count=body_char_count,
         )
-
-    record_cmd_delivery_success(
-        project_root,
-        reply_id=reply.reply_id,
-        foreground_command=foreground_command,
-        delivered_at=dispatcher._clock(),
-        body_char_count=body_char_count,
-    )
 
     # Mark as injected so subsequent ticks don't re-inject. Added AFTER the
     # inject succeeds so a transient send failure retries on the next tick.

@@ -6,6 +6,10 @@ import os
 import pytest
 
 from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_readiness_probes import claude_ready
+from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_transport_planner import (
+    CMD_HEADER_RE,
+    prepare_cmd_payload,
+)
 from cli.management_runtime.versioning_runtime.local import get_version_info
 from provider_backends.codex.execution_runtime.state_machine_runtime.models import CodexPollState
 from provider_backends.codex.execution_runtime.state_machine_runtime.serialization import to_runtime_state
@@ -119,3 +123,12 @@ def test_b5_agent3_isolation_canary_keeps_claude_provider_configured() -> None:
     config = (Path(__file__).resolve().parents[1] / ".ccb" / "ccb.config").read_text(encoding="utf-8")
 
     assert "agent3:claude" in config
+
+
+def test_b5_header_only_cmd_delivery_canary_multi_consumer_payload_safe() -> None:
+    header = prepare_cmd_payload(sender_id="agent1", body_bytes=17, source_job_id="job_1234abcd")
+
+    assert CMD_HEADER_RE.fullmatch(header)
+    assert len(header) <= 100
+    assert "\n" not in header
+    assert all(token not in header for token in ("`", "$", ";", "|"))
