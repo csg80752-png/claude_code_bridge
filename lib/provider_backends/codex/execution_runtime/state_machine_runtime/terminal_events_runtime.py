@@ -109,8 +109,6 @@ def selected_reply(poll: CodexPollState) -> str:
 def add_binding_payload(payload: dict[str, object], poll: CodexPollState) -> None:
     if poll.bound_turn_id:
         payload["turn_id"] = poll.bound_turn_id
-    if poll.bound_task_id:
-        payload["task_id"] = poll.bound_task_id
     if poll.session_path:
         payload["session_path"] = poll.session_path
 

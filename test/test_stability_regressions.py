@@ -276,7 +276,6 @@ def test_codex_export_runtime_state_preserves_turn_binding_fields() -> None:
         reply="",
         runtime_state={
             "current_turn_id": "turn-shared",
-            "current_task_id": "task-current",
             "current_turn_started": True,
             "bound_turn_started": True,
             "bound_turn_contaminated": True,
@@ -286,7 +285,6 @@ def test_codex_export_runtime_state_preserves_turn_binding_fields() -> None:
     state = CodexProviderAdapter().export_runtime_state(submission)
 
     assert state["current_turn_id"] == "turn-shared"
-    assert state["current_task_id"] == "task-current"
     assert state["current_turn_started"] is True
     assert state["bound_turn_started"] is True
     assert state["bound_turn_contaminated"] is True

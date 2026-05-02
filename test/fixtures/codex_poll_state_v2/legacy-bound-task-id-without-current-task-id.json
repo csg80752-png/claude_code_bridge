@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "request_anchor": "job_legacy_bound_task",
+  "next_seq": 7,
+  "anchor_seen": true,
+  "bound_turn_id": "turn-1",
+  "bound_task_id": "legacy-bound-task",
+  "reply_buffer": "buffer",
+  "last_agent_message": "agent",
+  "last_final_answer": "final",
+  "last_assistant_message": "assistant",
+  "last_assistant_signature": "sig",
+  "session_path": "/tmp/session.jsonl",
+  "current_turn_id": "",
+  "current_task_id": "",
+  "current_turn_started": true,
+  "bound_turn_started": true,
+  "bound_turn_contaminated": false,
+  "items": [],
+  "reached_terminal": false,
+  "requires_task_id": true,
+  "task_id_probe_cache_key": "codex:/usr/bin/codex:v2:123"
+}

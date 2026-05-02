@@ -71,8 +71,6 @@ def assistant_payload(poll: CodexPollState, *, cleaned: str, phase: str) -> dict
     }
     if poll.bound_turn_id:
         payload["turn_id"] = poll.bound_turn_id
-    if poll.bound_task_id:
-        payload["task_id"] = poll.bound_task_id
     if phase:
         payload["phase"] = phase
     if poll.session_path:

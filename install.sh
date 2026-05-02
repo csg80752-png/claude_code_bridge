@@ -216,6 +216,8 @@ Optional environment variables:
   CCB_BUILD_PLATFORM       Override build platform metadata (default: detected platform)
   CCB_BUILD_ARCH           Override build arch metadata (default: uname -m)
   CCB_BUILD_TIME           Override build timestamp metadata (default: current UTC time)
+  CCB_CODEX_PROBE_TIMEOUT_SECONDS Codex startup turn_id probe timeout (default: 10)
+  CCB_CODEX_TURN_ID_PROBE_DISABLED Emergency Codex startup probe bypass (default: unset)
   CCB_SOURCE_KIND          Override source kind metadata (default: source if .git exists, else release)
   CCB_CONFIRM_MAJOR_UPGRADE Set to 1 to confirm replacing a pre-v6 install with v6+
   CCB_INSTALL_OVERWRITE_PATCHES Set to 1 to permit guarded overwrite after printing drift
@@ -638,8 +640,38 @@ print_install_identity_notice() {
   esac
 }
 
+detect_codex_cli_version() {
+  if [[ -n "${CCB_CODEX_CLI_VERSION:-}" ]]; then
+    echo "$CCB_CODEX_CLI_VERSION"
+    return
+  fi
+  if ! command -v codex >/dev/null 2>&1; then
+    return
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5s codex --version 2>/dev/null | head -1 || true
+    return
+  fi
+  detect_codex_cli_version_without_timeout
+}
+
+detect_codex_cli_version_without_timeout() {
+  local line probe_fd probe_pid
+  coproc CCB_CODEX_VERSION_PROBE { codex --version 2>/dev/null; }
+  probe_fd="${CCB_CODEX_VERSION_PROBE[0]}"
+  probe_pid="${CCB_CODEX_VERSION_PROBE_PID:-}"
+  if IFS= read -r -t 5 line <&"$probe_fd"; then
+    printf '%s\n' "$line"
+  fi
+  exec {probe_fd}<&- 2>/dev/null || true
+  if [[ -n "$probe_pid" ]] && kill -0 "$probe_pid" 2>/dev/null; then
+    kill "$probe_pid" 2>/dev/null || true
+  fi
+  wait "$probe_pid" 2>/dev/null || true
+}
+
 write_install_metadata() {
-  local version commit date build_time installed_at platform_name arch_name channel source_kind install_mode
+  local version commit date build_time installed_at platform_name arch_name channel source_kind install_mode codex_cli_version
   version="$(resolve_install_version)"
   commit="$(read_embedded_assignment "$INSTALL_PREFIX/ccb" "GIT_COMMIT")"
   date="$(read_embedded_assignment "$INSTALL_PREFIX/ccb" "GIT_DATE")"
@@ -665,6 +697,7 @@ write_install_metadata() {
   source_kind="$(resolve_source_kind)"
   channel="$(resolve_build_channel)"
   install_mode="$(resolve_install_mode)"
+  codex_cli_version="$(detect_codex_cli_version)"
 
   if ! pick_any_python_bin; then
     echo "WARN: python required to write VERSION/BUILD_INFO metadata"
@@ -686,6 +719,7 @@ payload = {
     "channel": ${channel@Q},
     "source_kind": ${source_kind@Q},
     "install_mode": ${install_mode@Q},
+    "codex_cli_version": ${codex_cli_version@Q},
     "installed_at": ${installed_at@Q},
 }
 

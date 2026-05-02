@@ -25,8 +25,6 @@ def handle_user_entry(
         payload: dict[str, object] = {}
         if poll.bound_turn_id:
             payload["turn_id"] = poll.bound_turn_id
-        if poll.bound_task_id:
-            payload["task_id"] = poll.bound_task_id
         if poll.session_path:
             payload["session_path"] = poll.session_path
         poll.items.append(

@@ -21,6 +21,7 @@ def test_get_version_info_reads_build_metadata_files(tmp_path: Path, monkeypatch
                 "source_kind": "release",
                 "install_mode": "release",
                 "installed_at": "2026-04-09T10:15:00Z",
+                "codex_cli_version": "codex-cli 0.128.0",
             }
         ),
         encoding="utf-8",
@@ -42,6 +43,7 @@ def test_get_version_info_reads_build_metadata_files(tmp_path: Path, monkeypatch
     assert info["source_kind"] == "release"
     assert info["install_mode"] == "release"
     assert info["installed_at"] == "2026-04-09T10:15:00Z"
+    assert info["codex_cli_version"] == "codex-cli 0.128.0"
 
 
 def test_get_version_info_reads_embedded_ccb_metadata(tmp_path: Path, monkeypatch) -> None:

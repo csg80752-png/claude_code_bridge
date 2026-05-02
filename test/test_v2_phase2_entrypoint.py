@@ -41,8 +41,8 @@ requires_gemini_binary = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse=True)
-def _disable_codex_task_id_probe_for_fake_phase2_tests(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CCB_CODEX_TASK_ID_PROBE_DISABLED", "1")
+def _disable_codex_turn_id_probe_for_fake_phase2_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CCB_CODEX_TURN_ID_PROBE_DISABLED", "1")
 
 
 def _repo_root() -> Path:

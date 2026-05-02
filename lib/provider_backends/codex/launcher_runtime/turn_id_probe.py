@@ -6,23 +6,27 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 from typing import Any
 
-CODEX_TASK_ID_PROBE_SCHEMA_VERSION = 1
+CODEX_TURN_ID_PROBE_SCHEMA_VERSION = 1
 PROBE_TIMEOUT_SECONDS = 10
+PROBE_TIMEOUT_ENV = "CCB_CODEX_PROBE_TIMEOUT_SECONDS"
 BROKEN_STATE = "BROKEN"
+_PASSING_PROBE_CACHE: dict[str, "CodexTurnIdProbeResult"] = {}
+_deprecated_alias_warned = False
 
 
 @dataclass(frozen=True)
-class CodexTaskIdProbeResult:
+class CodexTurnIdProbeResult:
     schema_version: int
     state: str
     binary_realpath: str
     version: str
     binary_mtime_ns: int
     completion_log_path: str
-    task_id: str | None
+    turn_id: str | None
     probe_timeout_seconds: int
     error: str = ""
 
@@ -34,17 +38,17 @@ class CodexTaskIdProbeResult:
         version: str,
         binary_mtime_ns: int,
         completion_log_path: str,
-        task_id: str,
+        turn_id: str,
         probe_timeout_seconds: int = PROBE_TIMEOUT_SECONDS,
-    ) -> "CodexTaskIdProbeResult":
+    ) -> "CodexTurnIdProbeResult":
         return cls(
-            schema_version=CODEX_TASK_ID_PROBE_SCHEMA_VERSION,
+            schema_version=CODEX_TURN_ID_PROBE_SCHEMA_VERSION,
             state="PASS",
             binary_realpath=str(binary_realpath),
             version=str(version),
             binary_mtime_ns=int(binary_mtime_ns),
             completion_log_path=str(completion_log_path),
-            task_id=str(task_id),
+            turn_id=str(turn_id),
             probe_timeout_seconds=int(probe_timeout_seconds),
         )
 
@@ -58,15 +62,15 @@ class CodexTaskIdProbeResult:
         completion_log_path: str,
         error: str,
         probe_timeout_seconds: int = PROBE_TIMEOUT_SECONDS,
-    ) -> "CodexTaskIdProbeResult":
+    ) -> "CodexTurnIdProbeResult":
         return cls(
-            schema_version=CODEX_TASK_ID_PROBE_SCHEMA_VERSION,
+            schema_version=CODEX_TURN_ID_PROBE_SCHEMA_VERSION,
             state=BROKEN_STATE,
             binary_realpath=str(binary_realpath),
             version=str(version),
             binary_mtime_ns=int(binary_mtime_ns),
             completion_log_path=str(completion_log_path),
-            task_id=None,
+            turn_id=None,
             probe_timeout_seconds=int(probe_timeout_seconds),
             error=str(error),
         )
@@ -74,13 +78,13 @@ class CodexTaskIdProbeResult:
     def to_record(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
-            "record_type": "codex_task_id_probe_result",
+            "record_type": "codex_turn_id_probe_result",
             "state": self.state,
             "binary_realpath": self.binary_realpath,
             "version": self.version,
             "binary_mtime_ns": self.binary_mtime_ns,
             "completion_log_path": self.completion_log_path,
-            "task_id": self.task_id,
+            "turn_id": self.turn_id,
             "probe_timeout_seconds": self.probe_timeout_seconds,
             "error": self.error,
             "cache_key": build_probe_cache_key(self.binary_realpath, self.version, self.binary_mtime_ns),
@@ -98,80 +102,103 @@ def probe_from_completion_log(
     version: str,
     binary_mtime_ns: int,
     probe_timeout_seconds: int = PROBE_TIMEOUT_SECONDS,
-) -> CodexTaskIdProbeResult:
+) -> CodexTurnIdProbeResult:
     path = Path(completion_log_path)
-    task_id = _first_completion_task_id(path)
-    if task_id:
-        return CodexTaskIdProbeResult.pass_result(
+    turn_id = _first_completion_turn_id(path)
+    if turn_id:
+        return CodexTurnIdProbeResult.pass_result(
             binary_realpath=binary_realpath,
             version=version,
             binary_mtime_ns=binary_mtime_ns,
             completion_log_path=str(path),
-            task_id=task_id,
+            turn_id=turn_id,
             probe_timeout_seconds=probe_timeout_seconds,
         )
-    return CodexTaskIdProbeResult.broken_result(
+    return CodexTurnIdProbeResult.broken_result(
         binary_realpath=binary_realpath,
         version=version,
         binary_mtime_ns=binary_mtime_ns,
         completion_log_path=str(path),
-        error="task_id missing from task_complete entry",
+        error="Codex CLI emitted no turn_id in task_complete entry; schema mismatch?",
         probe_timeout_seconds=probe_timeout_seconds,
     )
 
 
-def apply_configured_startup_task_id_probe(runtime_state: dict[str, object]) -> None:
-    result = configured_startup_task_id_probe()
+def apply_configured_startup_turn_id_probe(runtime_state: dict[str, object]) -> None:
+    result = configured_startup_turn_id_probe()
     if result is None:
         return
     if result.state == BROKEN_STATE:
-        runtime_state["requires_task_id"] = True
-        runtime_state["task_id_probe_cache_key"] = build_probe_cache_key(
+        runtime_state["requires_turn_id"] = True
+        runtime_state["turn_id_probe_cache_key"] = build_probe_cache_key(
             result.binary_realpath,
             result.version,
             result.binary_mtime_ns,
         )
-        runtime_state["codex_task_id_probe_state"] = BROKEN_STATE
-        runtime_state["codex_task_id_probe_artifact"] = result.to_record()
+        runtime_state["codex_turn_id_probe_state"] = BROKEN_STATE
+        runtime_state["codex_turn_id_probe_artifact"] = result.to_record()
         runtime_state["requires_rebind"] = True
-        raise RuntimeError(f"Codex task_id startup probe failed: {result.error}")
-    runtime_state["requires_task_id"] = True
-    runtime_state["task_id_probe_cache_key"] = build_probe_cache_key(
+        raise RuntimeError(f"Codex turn_id startup probe failed: {result.error}")
+    runtime_state["requires_turn_id"] = True
+    runtime_state["turn_id_probe_cache_key"] = build_probe_cache_key(
         result.binary_realpath,
         result.version,
         result.binary_mtime_ns,
     )
-    runtime_state["codex_task_id_probe_state"] = result.state
-    runtime_state["codex_task_id_probe_artifact"] = result.to_record()
+    runtime_state["codex_turn_id_probe_state"] = result.state
+    runtime_state["codex_turn_id_probe_artifact"] = result.to_record()
 
 
-def configured_startup_task_id_probe() -> CodexTaskIdProbeResult | None:
-    if _env_truthy("CCB_CODEX_TASK_ID_PROBE_DISABLED"):
+def configured_startup_turn_id_probe() -> CodexTurnIdProbeResult | None:
+    if _probe_disabled():
         return None
 
-    log_path = os.environ.get("CCB_CODEX_TASK_ID_PROBE_LOG", "").strip()
+    probe_timeout_seconds, timeout_error = _env_int(PROBE_TIMEOUT_ENV, default=PROBE_TIMEOUT_SECONDS)
+    if timeout_error:
+        return CodexTurnIdProbeResult.broken_result(
+            binary_realpath="codex",
+            version="unknown",
+            binary_mtime_ns=0,
+            completion_log_path="",
+            error=timeout_error,
+            probe_timeout_seconds=PROBE_TIMEOUT_SECONDS,
+        )
+
+    log_path = os.environ.get("CCB_CODEX_TURN_ID_PROBE_LOG", "").strip()
     if not log_path:
         binary = discover_codex_binary()
         if binary is None:
-            return CodexTaskIdProbeResult.broken_result(
+            return CodexTurnIdProbeResult.broken_result(
                 binary_realpath="codex",
                 version="unknown",
                 binary_mtime_ns=0,
                 completion_log_path="",
-                error="no installed Codex CLI found for startup task_id probe",
+                error="no installed Codex CLI found for startup turn_id probe",
+                probe_timeout_seconds=probe_timeout_seconds,
             )
-        return probe_installed_codex_cli(binary)
+        return probe_installed_codex_cli(binary, probe_timeout_seconds=probe_timeout_seconds)
+    binary_mtime_ns, mtime_error = _env_int("CCB_CODEX_TURN_ID_PROBE_MTIME_NS", default=0)
+    if mtime_error:
+        return CodexTurnIdProbeResult.broken_result(
+            binary_realpath=os.environ.get("CCB_CODEX_TURN_ID_PROBE_BINARY", "codex"),
+            version=os.environ.get("CCB_CODEX_TURN_ID_PROBE_VERSION", "unknown"),
+            binary_mtime_ns=0,
+            completion_log_path=log_path,
+            error=mtime_error,
+            probe_timeout_seconds=probe_timeout_seconds,
+        )
     return probe_from_completion_log(
         log_path,
-        binary_realpath=os.environ.get("CCB_CODEX_TASK_ID_PROBE_BINARY", "codex"),
-        version=os.environ.get("CCB_CODEX_TASK_ID_PROBE_VERSION", "unknown"),
-        binary_mtime_ns=int(os.environ.get("CCB_CODEX_TASK_ID_PROBE_MTIME_NS", "0") or 0),
+        binary_realpath=os.environ.get("CCB_CODEX_TURN_ID_PROBE_BINARY", "codex"),
+        version=os.environ.get("CCB_CODEX_TURN_ID_PROBE_VERSION", "unknown"),
+        binary_mtime_ns=binary_mtime_ns,
+        probe_timeout_seconds=probe_timeout_seconds,
     )
 
 
 def discover_codex_binary() -> Path | None:
     candidates: list[Path] = []
-    env_binary = os.environ.get("CCB_CODEX_TASK_ID_PROBE_BINARY", "").strip()
+    env_binary = os.environ.get("CCB_CODEX_TURN_ID_PROBE_BINARY", "").strip()
     if env_binary:
         resolved_env_binary = shutil.which(env_binary) if not Path(env_binary).is_absolute() else env_binary
         if resolved_env_binary:
@@ -203,12 +230,12 @@ def probe_installed_codex_cli(
     binary_path: str | Path,
     *,
     probe_timeout_seconds: int = PROBE_TIMEOUT_SECONDS,
-) -> CodexTaskIdProbeResult:
+) -> CodexTurnIdProbeResult:
     binary = Path(binary_path).expanduser().resolve()
     try:
         stat_result = binary.stat()
     except OSError as exc:
-        return CodexTaskIdProbeResult.broken_result(
+        return CodexTurnIdProbeResult.broken_result(
             binary_realpath=str(binary),
             version="unknown",
             binary_mtime_ns=0,
@@ -218,6 +245,11 @@ def probe_installed_codex_cli(
         )
 
     version = _codex_version(binary, probe_timeout_seconds=probe_timeout_seconds)
+    cache_key = build_probe_cache_key(str(binary), version, stat_result.st_mtime_ns)
+    cached_result = _PASSING_PROBE_CACHE.get(cache_key)
+    if cached_result is not None and cached_result.state == "PASS":
+        return cached_result
+
     probe_log_path = _new_probe_log_path()
     command = [
         str(binary),
@@ -227,7 +259,7 @@ def probe_installed_codex_cli(
         "--json",
         "--skip-git-repo-check",
         "--ignore-rules",
-        "--ephemeral",
+        "--ignore-user-config",
         "--sandbox",
         "read-only",
         "-",
@@ -235,7 +267,7 @@ def probe_installed_codex_cli(
     try:
         completed = subprocess.run(
             command,
-            input="echo probe\n",
+            input="Reply exactly: probe\n",
             capture_output=True,
             text=True,
             timeout=probe_timeout_seconds,
@@ -243,45 +275,65 @@ def probe_installed_codex_cli(
         )
     except subprocess.TimeoutExpired as exc:
         _write_probe_log(probe_log_path, exc.stdout)
-        return CodexTaskIdProbeResult.broken_result(
+        return CodexTurnIdProbeResult.broken_result(
             binary_realpath=str(binary),
             version=version,
             binary_mtime_ns=stat_result.st_mtime_ns,
             completion_log_path=str(probe_log_path),
-            error=f"Codex CLI startup task_id probe timed out after {probe_timeout_seconds}s",
+            error=(
+                f"Codex CLI startup turn_id probe did not respond within {probe_timeout_seconds}s; "
+                f"slow startup or auth refresh may need {PROBE_TIMEOUT_ENV}=30"
+            ),
             probe_timeout_seconds=probe_timeout_seconds,
         )
     except OSError as exc:
-        return CodexTaskIdProbeResult.broken_result(
+        return CodexTurnIdProbeResult.broken_result(
             binary_realpath=str(binary),
             version=version,
             binary_mtime_ns=stat_result.st_mtime_ns,
             completion_log_path=str(probe_log_path),
-            error=f"Codex CLI startup task_id probe failed to execute: {exc}",
+            error=f"Codex CLI startup turn_id probe failed to execute: {exc}",
             probe_timeout_seconds=probe_timeout_seconds,
         )
 
     _write_probe_log(probe_log_path, completed.stdout)
     if completed.returncode != 0:
-        return CodexTaskIdProbeResult.broken_result(
+        return CodexTurnIdProbeResult.broken_result(
             binary_realpath=str(binary),
             version=version,
             binary_mtime_ns=stat_result.st_mtime_ns,
             completion_log_path=str(probe_log_path),
-            error=f"Codex CLI startup task_id probe exited {completed.returncode}: {_first_line(completed.stderr)}",
+            error=f"Codex CLI startup turn_id probe exited {completed.returncode}: {_first_line(completed.stderr)}",
             probe_timeout_seconds=probe_timeout_seconds,
         )
 
-    return probe_from_completion_log(
+    stdout_result = probe_from_completion_log(
         probe_log_path,
         binary_realpath=str(binary),
         version=version,
         binary_mtime_ns=stat_result.st_mtime_ns,
         probe_timeout_seconds=probe_timeout_seconds,
     )
+    if stdout_result.state == "PASS":
+        _PASSING_PROBE_CACHE[cache_key] = stdout_result
+        return stdout_result
+
+    session_log_path = _session_log_path_for_stdout(completed.stdout)
+    if session_log_path is not None:
+        session_result = probe_from_completion_log(
+            session_log_path,
+            binary_realpath=str(binary),
+            version=version,
+            binary_mtime_ns=stat_result.st_mtime_ns,
+            probe_timeout_seconds=probe_timeout_seconds,
+        )
+        if session_result.state == "PASS":
+            _PASSING_PROBE_CACHE[cache_key] = session_result
+        return session_result
+    return stdout_result
 
 
-def _first_completion_task_id(path: Path) -> str | None:
+def _first_completion_turn_id(path: Path) -> str | None:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -297,9 +349,9 @@ def _first_completion_task_id(path: Path) -> str | None:
             continue
         if not _is_completion_record(record):
             continue
-        task_id = _record_task_id(record)
-        if task_id:
-            return task_id
+        turn_id = _record_turn_id(record)
+        if turn_id:
+            return turn_id
     return None
 
 
@@ -312,25 +364,132 @@ def _is_completion_record(record: dict[str, Any]) -> bool:
     return normalized in {"task_complete", "turn_complete", "completed"}
 
 
-def _record_task_id(record: dict[str, Any]) -> str:
+def _record_turn_id(record: dict[str, Any]) -> str:
     payload = record.get("payload")
     if not isinstance(payload, dict):
         payload = {}
-    return str(record.get("task_id") or payload.get("task_id") or "").strip()
+    return str(record.get("turn_id") or payload.get("turn_id") or "").strip()
+
+
+def _session_log_path_for_stdout(stdout: str) -> Path | None:
+    thread_id = _thread_id_from_stdout(stdout)
+    if not thread_id:
+        return None
+    for sessions_root in _codex_session_roots():
+        try:
+            candidates = sorted(
+                sessions_root.glob(f"**/*{thread_id}*.jsonl"),
+                key=lambda path: path.stat().st_mtime_ns,
+                reverse=True,
+            )
+        except OSError:
+            continue
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _thread_id_from_stdout(stdout: str) -> str:
+    for raw_line in str(stdout or "").splitlines():
+        try:
+            record = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("type") or "").strip() != "thread.started":
+            continue
+        thread_id = str(record.get("thread_id") or "").strip()
+        if thread_id:
+            return thread_id
+    return ""
+
+
+def _codex_session_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    codex_home = os.environ.get("CODEX_HOME", "").strip()
+    if codex_home:
+        roots.append(Path(codex_home).expanduser() / "sessions")
+    roots.append(Path.home() / ".codex" / "sessions")
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(root)
+    return tuple(deduped)
 
 
 def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _probe_disabled() -> bool:
+    if "CCB_CODEX_TURN_ID_PROBE_DISABLED" in os.environ:
+        return _env_truthy("CCB_CODEX_TURN_ID_PROBE_DISABLED")
+    if _env_truthy("CCB_CODEX_TASK_ID_PROBE_DISABLED"):
+        _warn_deprecated_task_id_probe_disabled_alias()
+        return True
+    return False
+
+
+def _warn_deprecated_task_id_probe_disabled_alias() -> None:
+    global _deprecated_alias_warned
+    if _deprecated_alias_warned:
+        return
+    print(
+        "WARN: CCB_CODEX_TASK_ID_PROBE_DISABLED is deprecated; use CCB_CODEX_TURN_ID_PROBE_DISABLED",
+        file=sys.stderr,
+    )
+    _deprecated_alias_warned = True
+
+
 def _known_codex_install_prefixes() -> tuple[Path, ...]:
-    live_prefix = Path("/home/speed/.local/share/codex-dual")
-    prefixes = [live_prefix]
+    prefixes: list[Path] = []
+    for env_name in ("CODEX_INSTALL_PREFIX", "CCB_CODEX_INSTALL_PREFIX"):
+        raw_value = os.environ.get(env_name, "").strip()
+        if raw_value:
+            prefixes.append(Path(raw_value).expanduser())
+    xdg_data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    if xdg_data_home:
+        prefixes.append(Path(xdg_data_home).expanduser() / "codex-dual")
+    prefixes.append(Path.home() / ".local" / "share" / "codex-dual")
+
+    expanded: list[Path] = []
+    seen: set[str] = set()
+    for prefix in prefixes:
+        for candidate in _prefix_and_symlink_target(prefix):
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            expanded.append(candidate)
+    return tuple(expanded)
+
+
+def _prefix_and_symlink_target(prefix: Path) -> tuple[Path, ...]:
+    normalized = prefix.expanduser()
     try:
-        prefixes.append(live_prefix.resolve())
+        resolved = normalized.resolve()
     except OSError:
-        pass
-    return tuple(prefixes)
+        return (normalized,)
+    if resolved == normalized:
+        return (normalized,)
+    return (normalized, resolved)
+
+
+def _env_int(name: str, *, default: int) -> tuple[int, str]:
+    raw_value = os.environ.get(name)
+    if raw_value in (None, ""):
+        return default, ""
+    try:
+        return int(str(raw_value).strip()), ""
+    except (TypeError, ValueError):
+        return default, f"invalid integer for {name}: {raw_value!r}"
 
 
 def _is_executable_file(path: Path) -> bool:
@@ -353,7 +512,7 @@ def _codex_version(binary: Path, *, probe_timeout_seconds: int) -> str:
 
 
 def _new_probe_log_path() -> Path:
-    fd, raw_path = tempfile.mkstemp(prefix="ccb-codex-task-id-probe-", suffix=".jsonl")
+    fd, raw_path = tempfile.mkstemp(prefix="ccb-codex-turn-id-probe-", suffix=".jsonl")
     os.close(fd)
     return Path(raw_path)
 
@@ -374,12 +533,12 @@ def _first_line(text: object) -> str:
 
 __all__ = [
     "BROKEN_STATE",
-    "CODEX_TASK_ID_PROBE_SCHEMA_VERSION",
+    "CODEX_TURN_ID_PROBE_SCHEMA_VERSION",
     "PROBE_TIMEOUT_SECONDS",
-    "CodexTaskIdProbeResult",
-    "apply_configured_startup_task_id_probe",
+    "CodexTurnIdProbeResult",
+    "apply_configured_startup_turn_id_probe",
     "build_probe_cache_key",
-    "configured_startup_task_id_probe",
+    "configured_startup_turn_id_probe",
     "discover_codex_binary",
     "probe_installed_codex_cli",
     "probe_from_completion_log",

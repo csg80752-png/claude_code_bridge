@@ -66,17 +66,14 @@ def main() -> int:
     )
     patch_ccb_metadata(artifact_root / "ccb", version=version, commit=commit, date=commit_date)
 
-    build_info = {
-        "version": version,
-        "commit": commit,
-        "date": commit_date,
-        "build_time": utc_now(),
-        "platform": "linux",
-        "arch": arch,
-        "channel": channel,
-        "source_kind": "preview" if args.allow_dirty else "release",
-        "install_mode": "release",
-    }
+    build_info = release_build_info(
+        version=version,
+        commit=commit,
+        commit_date=commit_date,
+        arch=arch,
+        channel=channel,
+        source_kind="preview" if args.allow_dirty else "release",
+    )
     write_release_metadata(artifact_root, build_info)
     create_tarball(stage_root=stage_root, artifact_root=artifact_root, artifact_path=artifact_path)
     write_sha256(artifact_path=artifact_path, output_path=sha_path)
@@ -294,6 +291,51 @@ def patch_ccb_metadata(ccb_path: Path, *, version: str, commit: str | None, date
     if date:
         text = re.sub(r'^GIT_DATE\s*=\s*"[^"]*"', f'GIT_DATE = "{date}"', text, flags=re.MULTILINE)
     ccb_path.write_text(text, encoding="utf-8")
+
+
+def release_build_info(
+    *,
+    version: str,
+    commit: str | None,
+    commit_date: str | None,
+    arch: str,
+    channel: str,
+    source_kind: str,
+) -> dict[str, str | None]:
+    return {
+        "version": version,
+        "commit": commit,
+        "date": commit_date,
+        "build_time": utc_now(),
+        "platform": "linux",
+        "arch": arch,
+        "channel": channel,
+        "source_kind": source_kind,
+        "install_mode": "release",
+        "codex_cli_version": detect_codex_cli_version(),
+    }
+
+
+def detect_codex_cli_version() -> str | None:
+    binary = shutil.which("codex")
+    if not binary:
+        return None
+    try:
+        result = subprocess.run(
+            [binary, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    version = (result.stdout or result.stderr or "").strip().splitlines()
+    return version[0].strip() if version and version[0].strip() else None
 
 
 def write_release_metadata(artifact_root: Path, build_info: dict[str, str | None]) -> None:

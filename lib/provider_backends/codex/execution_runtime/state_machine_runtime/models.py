@@ -7,7 +7,7 @@ from completion.models import CompletionItem, CompletionItemKind
 from provider_execution.base import ProviderSubmission
 from provider_execution.common import build_item
 
-CODEX_POLL_STATE_SCHEMA_VERSION = 2
+CODEX_POLL_STATE_SCHEMA_VERSION = 3
 
 
 @dataclass
@@ -17,7 +17,6 @@ class CodexPollState:
     next_seq: int = 1
     anchor_seen: bool = False
     bound_turn_id: str = ""
-    bound_task_id: str = ""
     reply_buffer: str = ""
     last_agent_message: str = ""
     last_final_answer: str = ""
@@ -25,14 +24,13 @@ class CodexPollState:
     last_assistant_signature: str = ""
     session_path: str = ""
     current_turn_id: str = ""
-    current_task_id: str = ""
     current_turn_started: bool = False
     bound_turn_started: bool = False
     bound_turn_contaminated: bool = False
     items: list[CompletionItem] = field(default_factory=list)
     reached_terminal: bool = False
-    requires_task_id: bool = False
-    task_id_probe_cache_key: str | None = None
+    requires_turn_id: bool = False
+    turn_id_probe_cache_key: str | None = None
 
 
 def build_poll_state(submission: ProviderSubmission) -> CodexPollState:
@@ -66,9 +64,7 @@ def apply_session_rotation(
     poll.session_path = new_session_path
     poll.anchor_seen = bool(submission.runtime_state.get("no_wrap", False))
     poll.bound_turn_id = ""
-    poll.bound_task_id = ""
     poll.current_turn_id = ""
-    poll.current_task_id = ""
     poll.current_turn_started = False
     poll.bound_turn_started = False
     poll.bound_turn_contaminated = False

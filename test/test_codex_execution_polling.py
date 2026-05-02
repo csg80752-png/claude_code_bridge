@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from completion.models import CompletionItemKind, CompletionSourceKind
+from provider_backends.codex.comm_runtime.log_entries import extract_entry
 from provider_backends.codex.execution_runtime.polling import poll_submission
 from provider_backends.codex.execution_runtime.state_machine_runtime import (
     CodexPollState,
@@ -23,6 +24,21 @@ def _submission() -> ProviderSubmission:
         reply="",
         runtime_state={"state": {}, "anchor_seen": True, "bound_turn_id": "turn-1"},
     )
+
+
+class _RawEntryReader:
+    def __init__(self, raw_entries: list[dict[str, object]]) -> None:
+        self._raw_entries = raw_entries
+
+    def try_get_entries(self, state: dict[str, object]):
+        if state.get("done"):
+            return [], state
+        entries = []
+        for raw_entry in self._raw_entries:
+            normalized = extract_entry(raw_entry)
+            if normalized is not None:
+                entries.append(normalized)
+        return entries, {"done": True}
 
 
 def test_poll_submission_processes_entries_until_terminal(monkeypatch) -> None:
@@ -93,13 +109,65 @@ def test_poll_submission_processes_entries_until_terminal(monkeypatch) -> None:
     ]
 
 
+def test_poll_submission_preserves_top_level_turn_id_from_raw_codex_entries(monkeypatch) -> None:
+    submission = _submission()
+    submission.runtime_state.update(
+        {
+            "anchor_seen": False,
+            "bound_turn_id": "",
+            "requires_turn_id": True,
+        }
+    )
+    raw_entries = [
+        {"type": "event_msg", "turn_id": "turn-top", "payload": {"type": "task_started"}},
+        {
+            "type": "response_item",
+            "turn_id": "turn-top",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "CCB_REQ_ID: job_1\n\nhello"}],
+            },
+        },
+        {
+            "type": "event_msg",
+            "turn_id": "turn-top",
+            "payload": {"type": "assistant_message", "role": "assistant", "message": "answer"},
+        },
+        {
+            "type": "event_msg",
+            "turn_id": "turn-top",
+            "payload": {"type": "task_complete", "last_agent_message": "answer"},
+        },
+    ]
+
+    monkeypatch.setattr(
+        "provider_backends.codex.execution_runtime.polling_runtime.prepare_active_poll",
+        lambda submission, now: SimpleNamespace(reader=_RawEntryReader(raw_entries)),
+    )
+    monkeypatch.setattr(
+        "provider_backends.codex.execution_runtime.polling_runtime.apply_session_rotation",
+        lambda submission, poll, new_session_path, now: None,
+    )
+    monkeypatch.setattr(
+        "provider_backends.codex.execution_runtime.polling_runtime.state_session_path",
+        lambda state: "",
+    )
+
+    result = poll_submission(submission, now="2026-04-06T00:01:00Z")
+
+    assert result is not None
+    assert result.submission.reply == "answer"
+    assert result.submission.runtime_state["bound_turn_id"] == "turn-top"
+    assert result.submission.runtime_state["bound_turn_contaminated"] is False
+
+
 def test_handle_assistant_entry_records_final_answer() -> None:
     poll = CodexPollState(
         request_anchor="job_1",
         next_seq=1,
         anchor_seen=True,
         bound_turn_id="turn-1",
-        bound_task_id="task-1",
         reply_buffer="",
         last_agent_message="",
         last_final_answer="",
@@ -111,7 +179,7 @@ def test_handle_assistant_entry_records_final_answer() -> None:
     handle_assistant_entry(
         _submission(),
         poll,
-        {"text": "final answer", "phase": "final_answer", "id": "evt-1", "turn_id": "turn-1", "task_id": "task-1"},
+        {"text": "final answer", "phase": "final_answer", "id": "evt-1", "turn_id": "turn-1"},
         now="2026-04-06T00:01:00Z",
     )
 
@@ -119,7 +187,7 @@ def test_handle_assistant_entry_records_final_answer() -> None:
     assert poll.items[0].kind is CompletionItemKind.ASSISTANT_CHUNK
     assert poll.items[0].payload["phase"] == "final_answer"
     assert poll.items[0].payload["turn_id"] == "turn-1"
-    assert poll.items[0].payload["task_id"] == "task-1"
+    assert "task_id" not in poll.items[0].payload
 
 
 def test_handle_terminal_entry_emits_turn_aborted_payload() -> None:
@@ -128,7 +196,6 @@ def test_handle_terminal_entry_emits_turn_aborted_payload() -> None:
         next_seq=2,
         anchor_seen=True,
         bound_turn_id="turn-1",
-        bound_task_id="task-1",
         reply_buffer="partial",
         last_agent_message="",
         last_final_answer="",
@@ -145,7 +212,6 @@ def test_handle_terminal_entry_emits_turn_aborted_payload() -> None:
             "reason": "cancelled",
             "text": "user cancelled",
             "turn_id": "turn-1",
-            "task_id": "task-1",
         },
         now="2026-04-06T00:01:00Z",
     )

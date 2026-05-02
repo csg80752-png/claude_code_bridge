@@ -15,8 +15,8 @@ from storage.paths import PathLayout
 
 
 @pytest.fixture(autouse=True)
-def _disable_codex_task_id_probe_for_fake_adapter_tests(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CCB_CODEX_TASK_ID_PROBE_DISABLED", "1")
+def _disable_codex_turn_id_probe_for_fake_adapter_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CCB_CODEX_TURN_ID_PROBE_DISABLED", "1")
 
 
 def _job(*, job_id: str = 'job_1', task_id: str | None = None, body: str = 'hello') -> JobRecord:

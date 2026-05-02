@@ -66,7 +66,7 @@ def test_parser_filters_foreign_turn_entries(monkeypatch) -> None:
             {"role": "meta", "entry_type": "event_msg", "payload_type": "task_started", "turn_id": "turn-ours"},
             {"role": "meta", "entry_type": "turn_context", "payload_type": "turn_context", "turn_id": "turn-ours"},
             {"role": "user", "text": "CCB_REQ_ID: job_1\n\nprompt"},
-            {"role": "assistant", "text": "ours partial", "task_id": "task-ours", "timestamp": "2026-04-24T00:00:02Z"},
+            {"role": "assistant", "text": "ours partial", "turn_id": "turn-ours", "timestamp": "2026-04-24T00:00:02Z"},
             {"role": "meta", "entry_type": "event_msg", "payload_type": "task_started", "turn_id": "turn-foreign"},
             {"role": "meta", "entry_type": "turn_context", "payload_type": "turn_context", "turn_id": "turn-foreign"},
             {"role": "assistant", "text": "foreign partial", "timestamp": "2026-04-24T00:00:03Z"},
@@ -114,17 +114,15 @@ def test_parser_accepts_bound_turn_complete(monkeypatch) -> None:
                 "entry_type": "event_msg",
                 "payload_type": "task_started",
                 "turn_id": "turn-ours",
-                "task_id": "task-ours",
             },
             {"role": "meta", "entry_type": "turn_context", "payload_type": "turn_context", "turn_id": "turn-ours"},
             {"role": "user", "text": "CCB_REQ_ID: job_1\n\nprompt"},
-            {"role": "assistant", "text": "ours partial", "task_id": "task-ours", "timestamp": "2026-04-24T00:00:02Z"},
+            {"role": "assistant", "text": "ours partial", "turn_id": "turn-ours", "timestamp": "2026-04-24T00:00:02Z"},
             {
                 "role": "system",
                 "entry_type": "event_msg",
                 "payload_type": "task_complete",
                 "turn_id": "turn-ours",
-                "task_id": "task-ours",
                 "last_agent_message": "ours final",
                 "timestamp": "2026-04-24T00:00:03Z",
             },
@@ -138,7 +136,7 @@ def test_parser_accepts_bound_turn_complete(monkeypatch) -> None:
         CompletionItemKind.TURN_BOUNDARY,
     ]
     assert result.items[-1].payload["turn_id"] == "turn-ours"
-    assert result.items[-1].payload["task_id"] == "task-ours"
+    assert "task_id" not in result.items[-1].payload
     assert result.items[-1].payload["last_agent_message"] == "ours final"
 
 
@@ -181,7 +179,6 @@ def test_same_turn_foreign_anchor_contaminates_unkeyed_completion(monkeypatch) -
                 "entry_type": "event_msg",
                 "payload_type": "task_started",
                 "turn_id": "turn-shared",
-                "task_id": "task-ours",
             },
             {"role": "meta", "entry_type": "turn_context", "payload_type": "turn_context", "turn_id": "turn-shared"},
             {"role": "user", "text": "CCB_REQ_ID: job_1\n\nprompt"},
@@ -205,7 +202,7 @@ def test_same_turn_foreign_anchor_contaminates_unkeyed_completion(monkeypatch) -
     assert result.submission.reply == ""
 
 
-def test_same_turn_foreign_anchor_rejects_later_duplicate_task_id_completion(monkeypatch) -> None:
+def test_same_turn_foreign_anchor_rejects_later_same_turn_completion(monkeypatch) -> None:
     result = _poll_entries(
         monkeypatch,
         [
@@ -214,19 +211,17 @@ def test_same_turn_foreign_anchor_rejects_later_duplicate_task_id_completion(mon
                 "entry_type": "event_msg",
                 "payload_type": "task_started",
                 "turn_id": "turn-shared",
-                "task_id": "task-ours",
             },
             {"role": "meta", "entry_type": "turn_context", "payload_type": "turn_context", "turn_id": "turn-shared"},
             {"role": "user", "text": "CCB_REQ_ID: job_1\n\nprompt"},
             {"role": "user", "text": "CCB_REQ_ID: job_foreign\n\nother prompt", "turn_id": "turn-shared"},
-            {"role": "assistant", "text": "duplicate task after contamination", "turn_id": "turn-shared", "task_id": "task-ours"},
+            {"role": "assistant", "text": "duplicate turn after contamination", "turn_id": "turn-shared"},
             {
                 "role": "system",
                 "entry_type": "event_msg",
                 "payload_type": "task_complete",
                 "turn_id": "turn-shared",
-                "task_id": "task-ours",
-                "last_agent_message": "duplicate task final",
+                "last_agent_message": "duplicate turn final",
                 "timestamp": "2026-04-24T00:00:03Z",
             },
         ],
@@ -239,7 +234,7 @@ def test_same_turn_foreign_anchor_rejects_later_duplicate_task_id_completion(mon
     assert result.submission.reply == ""
 
 
-def test_taskless_completion_before_foreign_anchor_is_accepted_for_current_codex_logs(monkeypatch) -> None:
+def test_turn_id_completion_before_foreign_anchor_is_accepted_for_current_codex_logs(monkeypatch) -> None:
     result = _poll_entries(
         monkeypatch,
         [
@@ -248,7 +243,6 @@ def test_taskless_completion_before_foreign_anchor_is_accepted_for_current_codex
                 "entry_type": "event_msg",
                 "payload_type": "task_started",
                 "turn_id": "turn-shared",
-                "task_id": "task-ours",
             },
             {"role": "meta", "entry_type": "turn_context", "payload_type": "turn_context", "turn_id": "turn-shared"},
             {"role": "user", "text": "CCB_REQ_ID: job_1\n\nprompt"},
@@ -262,7 +256,7 @@ def test_taskless_completion_before_foreign_anchor_is_accepted_for_current_codex
                 "timestamp": "2026-04-24T00:00:03Z",
             },
         ],
-        runtime_state={"requires_task_id": False},
+        runtime_state={"requires_turn_id": False},
     )
 
     assert result is not None
@@ -285,7 +279,6 @@ def test_same_turn_contamination_survives_exported_restart_state(monkeypatch) ->
                 "entry_type": "event_msg",
                 "payload_type": "task_started",
                 "turn_id": "turn-shared",
-                "task_id": "task-ours",
             },
             {"role": "meta", "entry_type": "turn_context", "payload_type": "turn_context", "turn_id": "turn-shared"},
             {"role": "user", "text": "CCB_REQ_ID: job_1\n\nprompt"},

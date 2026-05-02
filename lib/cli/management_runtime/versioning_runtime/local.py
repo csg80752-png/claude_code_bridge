@@ -18,6 +18,7 @@ def get_version_info(dir_path: Path) -> dict:
         "source_kind": None,
         "install_mode": None,
         "installed_at": None,
+        "codex_cli_version": None,
     }
     info.update(read_build_info(dir_path / "BUILD_INFO.json"))
     info.update(read_version_file(dir_path / "VERSION"))
@@ -92,6 +93,7 @@ def read_build_info(build_info_file: Path) -> dict[str, str | None]:
         "source_kind",
         "install_mode",
         "installed_at",
+        "codex_cli_version",
     ):
         value = payload.get(key)
         normalized[key] = str(value).strip() if value not in (None, "") else None

@@ -13,15 +13,40 @@ PollStateMigration = Callable[[dict[str, object]], dict[str, object]]
 _MIGRATIONS: dict[tuple[int, int], PollStateMigration] = {}
 
 
+class CodexPollStateMigrationError(ValueError):
+    pass
+
+
 def _migrate_v1_to_v2(payload: dict[str, object]) -> dict[str, object]:
     migrated = dict(payload)
-    migrated["schema_version"] = CODEX_POLL_STATE_SCHEMA_VERSION
+    migrated["schema_version"] = 2
     migrated.setdefault("requires_task_id", False)
     migrated.setdefault("task_id_probe_cache_key", None)
     return migrated
 
 
-_MIGRATIONS[(1, CODEX_POLL_STATE_SCHEMA_VERSION)] = _migrate_v1_to_v2
+def _migrate_v2_to_v3(payload: dict[str, object]) -> dict[str, object]:
+    migrated = dict(payload)
+    migrated["schema_version"] = 3
+    legacy_bound_task_id = str(migrated.get("bound_task_id") or "").strip()
+    if legacy_bound_task_id:
+        raise CodexPollStateMigrationError(
+            "refusing to drop non-empty legacy bound_task_id during Codex poll state V2->V3 migration: "
+            f"{legacy_bound_task_id}"
+        )
+    if str(migrated.get("current_task_id") or "").strip():
+        migrated["current_turn_id"] = str(migrated.get("current_task_id") or "").strip()
+    if "requires_turn_id" not in migrated:
+        migrated["requires_turn_id"] = bool(migrated.get("requires_task_id", False))
+    if "turn_id_probe_cache_key" not in migrated:
+        migrated["turn_id_probe_cache_key"] = migrated.get("task_id_probe_cache_key")
+    for dead_key in ("bound_task_id", "current_task_id", "requires_task_id", "task_id_probe_cache_key"):
+        migrated.pop(dead_key, None)
+    return migrated
+
+
+_MIGRATIONS[(1, 2)] = _migrate_v1_to_v2
+_MIGRATIONS[(2, 3)] = _migrate_v2_to_v3
 
 
 def to_runtime_state(poll: CodexPollState) -> dict[str, object]:
@@ -75,15 +100,15 @@ def _migrate_payload(
 
 
 def _validate_identity_requirements(payload: dict[str, object], *, source_schema_version: int) -> None:
-    if not bool(payload.get("requires_task_id", False)):
+    if not bool(payload.get("requires_turn_id", False)):
         return
     if source_schema_version <= CODEX_POLL_STATE_SCHEMA_VERSION:
         return
-    if str(payload.get("bound_task_id") or "").strip():
+    if str(payload.get("bound_turn_id") or "").strip():
         return
-    if str(payload.get("current_task_id") or "").strip():
+    if str(payload.get("current_turn_id") or "").strip():
         return
-    raise ValueError("Codex poll state requires task identity but no task_id is present")
+    raise ValueError("Codex poll state requires turn identity but no turn_id is present")
 
 
 def _poll_state_from_payload(payload: dict[str, object]) -> CodexPollState:
@@ -98,12 +123,11 @@ def _poll_state_from_payload(payload: dict[str, object]) -> CodexPollState:
         "bound_turn_started",
         "bound_turn_contaminated",
         "reached_terminal",
-        "requires_task_id",
+        "requires_turn_id",
     ):
         values[name] = bool(values.get(name, False))
     for name in (
         "bound_turn_id",
-        "bound_task_id",
         "reply_buffer",
         "last_agent_message",
         "last_final_answer",
@@ -111,11 +135,10 @@ def _poll_state_from_payload(payload: dict[str, object]) -> CodexPollState:
         "last_assistant_signature",
         "session_path",
         "current_turn_id",
-        "current_task_id",
     ):
         values[name] = str(values.get(name) or "")
-    if values.get("task_id_probe_cache_key") is not None:
-        values["task_id_probe_cache_key"] = str(values.get("task_id_probe_cache_key") or "") or None
+    if values.get("turn_id_probe_cache_key") is not None:
+        values["turn_id_probe_cache_key"] = str(values.get("turn_id_probe_cache_key") or "") or None
     values["items"] = []
     return CodexPollState(**values)
 
@@ -139,6 +162,7 @@ def temporary_poll_state_migration(
 
 
 __all__ = [
+    "CodexPollStateMigrationError",
     "from_runtime_state",
     "temporary_poll_state_migration",
     "to_runtime_state",
