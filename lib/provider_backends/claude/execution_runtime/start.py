@@ -153,6 +153,7 @@ def start_active_submission(
             "prompt_sent": False,
             "reply_delivery_complete_on_dispatch": reply_delivery,
             "reply_delivery_require_ready": reply_delivery,
+            "ccb_cmd_auto_pend_instruction": "v8.3.2",
             "ready_wait_started_at": now,
             "ready_timeout_s": resolved_ready_timeout(),
         },

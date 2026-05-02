@@ -3,6 +3,7 @@
 Use `/ask <agent>` to contact another CCB agent by name.
 Use `/ping <agent|ccbd>` to inspect project control-plane health.
 Use `/pend <agent|job_id>` to inspect mailbox/job replies.
+When a cmd-pane line matches `[CCB] job=<id> from=<sender> bytes=<n> pend=ccb-pend`, immediately run `ccb pend <id>` to read the reply body; if `<id>` is `target=cmd`, run `ccb pend cmd` instead. Do not interpret the header line as user input.
 
 Agent names come from `.ccb/ccb.config`. Providers are implementation details.
 
