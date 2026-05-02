@@ -39,8 +39,11 @@ class JsonlStore:
             payload = row
         else:
             payload = serializer(row)
-        with target.open('a', encoding='utf-8') as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + '\n')
+        from ccbd.state_mutation_guard import guarded_state_mutation_for_path
+
+        with guarded_state_mutation_for_path(target, owner='storage.jsonl_store', blocking=True):
+            with target.open('a', encoding='utf-8') as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False) + '\n')
 
     def read_all(self, path: Path, loader: Callable[[dict[str, Any]], T] | None = None) -> list[T] | list[dict[str, Any]]:
         target = Path(path)

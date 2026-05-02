@@ -18,16 +18,6 @@ _MODAL_CONTEXT_LINES = 4
 _PROMPT_PREFIXES = ('❯', '$', '→', '>')
 
 
-def _has_prompt_line(text: str) -> bool:
-    for line in str(text or '').splitlines():
-        tail = _prompt_tail(line)
-        if tail is None:
-            continue
-        if not tail or tail.isspace():
-            return True
-    return False
-
-
 def _has_prompt_line_with_tail(text: str) -> bool:
     for line in str(text or '').splitlines():
         tail = _prompt_tail(line)
@@ -80,7 +70,7 @@ def _has_modal_or_picker_markers(text: str) -> bool:
 
 
 def _has_modal_or_picker_markers_near_prompt(lines: list[str], prompt_idx: int) -> bool:
-    start = max(0, prompt_idx - (_MODAL_CONTEXT_LINES - 1))
+    start = max(0, prompt_idx - _MODAL_CONTEXT_LINES)
     for line in lines[start:]:
         if _line_has_modal_or_picker_marker(line):
             return True
@@ -88,20 +78,22 @@ def _has_modal_or_picker_markers_near_prompt(lines: list[str], prompt_idx: int) 
 
 
 def _line_has_modal_or_picker_marker(line: str) -> bool:
-    negative_markers = (
+    negative_prefixes = (
         'do you want',
         'trust this folder',
         'loading configuration',
         'select a session',
         'select:',
-        'choose',
+        'choose ',
+        'choose:',
         'press enter',
-        'approval',
+        'approval required',
+        'approval:',
     )
     slash_commands = ('/resume', '/clear', '/config', '/memory')
     stripped = str(line or '').strip()
     lowered = stripped.lower()
-    if any(marker in lowered for marker in negative_markers):
+    if any(lowered.startswith(marker) for marker in negative_prefixes):
         return True
     if any(stripped.startswith(command) for command in slash_commands):
         return True

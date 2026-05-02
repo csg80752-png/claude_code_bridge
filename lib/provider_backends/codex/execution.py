@@ -5,7 +5,6 @@ from pathlib import Path
 from ccbd.api_models import JobRecord
 from provider_core.protocol import request_anchor_for_job, wrap_codex_turn_prompt
 from provider_execution.base import ProviderPollResult, ProviderRuntimeContext, ProviderSubmission
-from provider_execution.common import request_anchor_from_runtime_state
 from terminal_runtime import get_backend_for_session
 
 from .comm import CodexLogReader
@@ -14,6 +13,7 @@ from .comm_runtime.paths import SESSION_ROOT
 from .execution_runtime import poll_submission as _poll_submission
 from .execution_runtime import resume_submission as _resume_submission
 from .execution_runtime import start_active_submission as _start_active_submission
+from .execution_runtime.state_machine_runtime.serialization import to_runtime_state, from_runtime_state
 from .session import load_project_session
 
 
@@ -37,27 +37,13 @@ class CodexProviderAdapter:
         return _poll_submission(submission, now=now)
 
     def export_runtime_state(self, submission: ProviderSubmission) -> dict[str, object]:
+        poll_state = from_runtime_state(submission.runtime_state, fallback_request_anchor=submission.job_id)
         return {
             'mode': submission.runtime_state.get('mode'),
             'state': submission.runtime_state.get('state') or {},
             'pane_id': submission.runtime_state.get('pane_id'),
-            'request_anchor': request_anchor_from_runtime_state(submission.runtime_state, fallback=submission.job_id),
-            'next_seq': submission.runtime_state.get('next_seq'),
-            'anchor_seen': submission.runtime_state.get('anchor_seen'),
             'no_wrap': submission.runtime_state.get('no_wrap'),
-            'bound_turn_id': submission.runtime_state.get('bound_turn_id'),
-            'bound_task_id': submission.runtime_state.get('bound_task_id'),
-            'current_turn_id': submission.runtime_state.get('current_turn_id'),
-            'current_task_id': submission.runtime_state.get('current_task_id'),
-            'current_turn_started': submission.runtime_state.get('current_turn_started'),
-            'bound_turn_started': submission.runtime_state.get('bound_turn_started'),
-            'bound_turn_contaminated': submission.runtime_state.get('bound_turn_contaminated'),
-            'reply_buffer': submission.runtime_state.get('reply_buffer'),
-            'last_agent_message': submission.runtime_state.get('last_agent_message'),
-            'last_final_answer': submission.runtime_state.get('last_final_answer'),
-            'last_assistant_message': submission.runtime_state.get('last_assistant_message'),
-            'last_assistant_signature': submission.runtime_state.get('last_assistant_signature'),
-            'session_path': submission.runtime_state.get('session_path'),
+            **to_runtime_state(poll_state),
         }
 
     def resume(

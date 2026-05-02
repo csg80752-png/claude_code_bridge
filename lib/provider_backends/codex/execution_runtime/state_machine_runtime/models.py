@@ -7,20 +7,23 @@ from completion.models import CompletionItem, CompletionItemKind
 from provider_execution.base import ProviderSubmission
 from provider_execution.common import build_item
 
+CODEX_POLL_STATE_SCHEMA_VERSION = 2
+
 
 @dataclass
 class CodexPollState:
-    request_anchor: str
-    next_seq: int
-    anchor_seen: bool
-    bound_turn_id: str
-    bound_task_id: str
-    reply_buffer: str
-    last_agent_message: str
-    last_final_answer: str
-    last_assistant_message: str
-    last_assistant_signature: str
-    session_path: str
+    schema_version: int = CODEX_POLL_STATE_SCHEMA_VERSION
+    request_anchor: str = ""
+    next_seq: int = 1
+    anchor_seen: bool = False
+    bound_turn_id: str = ""
+    bound_task_id: str = ""
+    reply_buffer: str = ""
+    last_agent_message: str = ""
+    last_final_answer: str = ""
+    last_assistant_message: str = ""
+    last_assistant_signature: str = ""
+    session_path: str = ""
     current_turn_id: str = ""
     current_task_id: str = ""
     current_turn_started: bool = False
@@ -28,29 +31,14 @@ class CodexPollState:
     bound_turn_contaminated: bool = False
     items: list[CompletionItem] = field(default_factory=list)
     reached_terminal: bool = False
+    requires_task_id: bool = False
+    task_id_probe_cache_key: str | None = None
 
 
 def build_poll_state(submission: ProviderSubmission) -> CodexPollState:
-    from provider_execution.common import request_anchor_from_runtime_state
+    from .serialization import from_runtime_state
 
-    return CodexPollState(
-        request_anchor=request_anchor_from_runtime_state(submission.runtime_state, fallback=submission.job_id),
-        next_seq=int(submission.runtime_state.get("next_seq", 1)),
-        anchor_seen=bool(submission.runtime_state.get("anchor_seen", False)),
-        bound_turn_id=str(submission.runtime_state.get("bound_turn_id") or ""),
-        bound_task_id=str(submission.runtime_state.get("bound_task_id") or ""),
-        reply_buffer=str(submission.runtime_state.get("reply_buffer") or ""),
-        last_agent_message=str(submission.runtime_state.get("last_agent_message") or ""),
-        last_final_answer=str(submission.runtime_state.get("last_final_answer") or ""),
-        last_assistant_message=str(submission.runtime_state.get("last_assistant_message") or ""),
-        last_assistant_signature=str(submission.runtime_state.get("last_assistant_signature") or ""),
-        session_path=str(submission.runtime_state.get("session_path") or ""),
-        current_turn_id=str(submission.runtime_state.get("current_turn_id") or ""),
-        current_task_id=str(submission.runtime_state.get("current_task_id") or ""),
-        current_turn_started=bool(submission.runtime_state.get("current_turn_started", False)),
-        bound_turn_started=bool(submission.runtime_state.get("bound_turn_started", False)),
-        bound_turn_contaminated=bool(submission.runtime_state.get("bound_turn_contaminated", False)),
-    )
+    return from_runtime_state(submission.runtime_state, fallback_request_anchor=submission.job_id)
 
 
 def apply_session_rotation(
@@ -92,6 +80,7 @@ def apply_session_rotation(
 
 
 __all__ = [
+    "CODEX_POLL_STATE_SCHEMA_VERSION",
     "CodexPollState",
     "apply_session_rotation",
     "build_poll_state",

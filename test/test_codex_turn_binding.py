@@ -262,6 +262,7 @@ def test_taskless_completion_before_foreign_anchor_is_accepted_for_current_codex
                 "timestamp": "2026-04-24T00:00:03Z",
             },
         ],
+        runtime_state={"requires_task_id": False},
     )
 
     assert result is not None

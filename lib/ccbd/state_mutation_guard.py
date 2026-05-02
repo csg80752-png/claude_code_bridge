@@ -13,6 +13,12 @@ GUARDED_MUTATION_CLASSES: tuple[MutationClass, ...] = ("mount_lease", "registry"
 ALLOWED_PROVIDER_LOCK_PATTERNS = (
     "lib/provider_backends/codex/launcher_runtime/bridge.py:bridge.lock",
 )
+ALLOWED_INSTALL_MUTATION_SYMBOLS = (
+    "assert_install_mutation_guard",
+    "replace_install_prefix_from_staging",
+    "remove_install_prefix_guarded",
+    "rollback_install_locked",
+)
 
 
 class StateMutationGuardError(RuntimeError):
@@ -34,10 +40,11 @@ def guarded_state_mutation(
     *,
     owner: str,
     fail_close: bool = True,
+    blocking: bool = False,
 ) -> Iterator[StateMutationGuard]:
     if mutation_class not in GUARDED_MUTATION_CLASSES:
         raise StateMutationGuardError(f"unsupported state mutation class: {mutation_class}")
-    with _exclusive_file_lock(lock_path, fail_close=fail_close):
+    with _exclusive_file_lock(lock_path, fail_close=fail_close, blocking=blocking):
         yield StateMutationGuard(
             schema_version=CCBD_STATE_MUTATION_GUARD_SCHEMA_VERSION,
             lock_path=lock_path,
@@ -47,13 +54,58 @@ def guarded_state_mutation(
 
 
 @contextmanager
-def _exclusive_file_lock(lock_path: Path, *, fail_close: bool) -> Iterator[None]:
+def guarded_state_mutation_for_path(
+    path: Path,
+    *,
+    owner: str,
+    fail_close: bool = True,
+    blocking: bool = False,
+) -> Iterator[StateMutationGuard | None]:
+    classified = classify_state_mutation_path(Path(path))
+    if classified is None:
+        yield None
+        return
+    lock_path, mutation_class = classified
+    with guarded_state_mutation(
+        lock_path,
+        mutation_class,
+        owner=owner,
+        fail_close=fail_close,
+        blocking=blocking,
+    ) as guard:
+        yield guard
+
+
+def classify_state_mutation_path(path: Path) -> tuple[Path, MutationClass] | None:
+    parts = Path(path).parts
+    try:
+        ccb_index = parts.index(".ccb")
+    except ValueError:
+        return None
+    if len(parts) <= ccb_index + 1:
+        return None
+    ccb_root = Path(*parts[: ccb_index + 1])
+    rel_parts = parts[ccb_index + 1 :]
+    lock_path = ccb_root / "ccbd" / "state-mutation.lock"
+    if rel_parts == ("ccbd", "lease.json"):
+        return lock_path, "mount_lease"
+    if len(rel_parts) >= 3 and rel_parts[0] == "agents" and rel_parts[-1] == "runtime.json":
+        return lock_path, "registry"
+    if rel_parts[0] == "ccbd" and (path.suffix == ".json" or path.suffix == ".jsonl"):
+        return lock_path, "jsonl_global_state"
+    if path.suffix == ".jsonl":
+        return lock_path, "jsonl_global_state"
+    return None
+
+
+@contextmanager
+def _exclusive_file_lock(lock_path: Path, *, fail_close: bool, blocking: bool = False) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     acquired = False
     try:
         try:
-            _flock(fd, exclusive=True, nonblocking=True)
+            _flock(fd, exclusive=True, nonblocking=not blocking)
             acquired = True
         except OSError as exc:
             if fail_close:
@@ -89,10 +141,13 @@ def _flock(fd: int, *, exclusive: bool, nonblocking: bool) -> None:
 
 __all__ = [
     "ALLOWED_PROVIDER_LOCK_PATTERNS",
+    "ALLOWED_INSTALL_MUTATION_SYMBOLS",
     "CCBD_STATE_MUTATION_GUARD_SCHEMA_VERSION",
     "GUARDED_MUTATION_CLASSES",
     "MutationClass",
     "StateMutationGuard",
     "StateMutationGuardError",
+    "classify_state_mutation_path",
     "guarded_state_mutation",
+    "guarded_state_mutation_for_path",
 ]

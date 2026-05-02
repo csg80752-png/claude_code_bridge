@@ -203,15 +203,23 @@ def _hash_bytes(payload: bytes) -> str:
 
 def _copy_entry(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists() or dst.is_symlink():
-        dst.unlink()
+    tmp = dst.with_name(f".{dst.name}.tmp.{os.getpid()}")
+    if tmp.exists() or tmp.is_symlink():
+        tmp.unlink()
     if src.is_symlink():
-        os.symlink(os.readlink(src), dst)
+        os.symlink(os.readlink(src), tmp)
+        os.replace(tmp, dst)
         _fsync_dir(dst.parent)
         return
-    shutil.copy2(src, dst)
-    _fsync_file(dst)
-    _fsync_dir(dst.parent)
+    try:
+        shutil.copy2(src, tmp)
+        _fsync_file(tmp)
+        os.replace(tmp, dst)
+        _fsync_dir(dst.parent)
+    except Exception:
+        if tmp.exists() or tmp.is_symlink():
+            tmp.unlink()
+        raise
 
 
 def _resolve_source_only(source_root: Path, rel: str, disposition: SourceOnlyDisposition) -> SourceOnlyResolution:

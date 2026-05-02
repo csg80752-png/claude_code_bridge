@@ -111,6 +111,9 @@ def backfill_bound_refs(poll: CodexPollState, *, turn_id: str, task_id: str) -> 
 
 
 def entry_task_matches_bound(poll: CodexPollState, entry_task_id: str) -> bool:
+    if poll.requires_task_id and not entry_task_id:
+        poll.bound_turn_contaminated = True
+        return False
     return not (entry_task_id and poll.bound_task_id and entry_task_id != poll.bound_task_id)
 
 

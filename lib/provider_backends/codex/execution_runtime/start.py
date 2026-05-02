@@ -63,6 +63,16 @@ def start_active_submission(
         'session_path': state_session_path(state),
         'no_wrap': no_wrap,
     }
+    try:
+        from provider_backends.codex.launcher_runtime.task_id_probe import (
+            apply_configured_startup_task_id_probe,
+        )
+
+        apply_configured_startup_task_id_probe(runtime_state)
+    except RuntimeError:
+        raise
+    except Exception:
+        runtime_state['requires_task_id'] = False
     _stash_reader_freshness(runtime_state, prepared.session)
 
     return ProviderSubmission(

@@ -203,6 +203,7 @@ Usage:
   ./install.sh uninstall               # Uninstall installed content
   ./install.sh seed-install-manifest   # Seed the guarded install manifest for the current install
   ./install.sh list-divergence [dir]   # Report current/staging drift without deleting content
+  ./install.sh rollback-install        # Restore the previous versioned install symlink target
   ./install.sh --no-flock-i-accept-races <command>
 
 Optional environment variables:
@@ -218,6 +219,7 @@ Optional environment variables:
   CCB_SOURCE_KIND          Override source kind metadata (default: source if .git exists, else release)
   CCB_CONFIRM_MAJOR_UPGRADE Set to 1 to confirm replacing a pre-v6 install with v6+
   CCB_INSTALL_OVERWRITE_PATCHES Set to 1 to permit guarded overwrite after printing drift
+  CCB_INSTALL_ACCEPT_CURRENT_DIVERGENCE Set to 1 to permit current drift after printing drift
   CCB_CLAUDE_MD_MODE       CLAUDE.md injection mode: "inline" (default) or "route"
                            inline = full config in CLAUDE.md (~57 lines)
                            route  = minimal pointer in CLAUDE.md, full config in ~/.claude/rules/ccb-config.md
@@ -807,12 +809,171 @@ install_manifest_path() {
   printf '%s/.ccb-install-manifest.sha256\n' "$INSTALL_PREFIX"
 }
 
-install_lock_path() {
+install_parent_path() {
+  dirname "$INSTALL_PREFIX"
+}
+
+install_name() {
+  basename "$INSTALL_PREFIX"
+}
+
+install_state_dir() {
   local parent base
-  parent="$(dirname "$INSTALL_PREFIX")"
-  base="$(basename "$INSTALL_PREFIX")"
+  parent="$(install_parent_path)"
+  base="$(install_name)"
+  printf '%s/.%s.state\n' "$parent" "$base"
+}
+
+install_lock_path() {
+  local state_dir
+  state_dir="$(install_state_dir)"
+  mkdir -p "$state_dir"
+  printf '%s/install.lock\n' "$state_dir"
+}
+
+install_version_dir() {
+  local version_id="$1"
+  printf '%s/%s.v%s\n' "$(install_parent_path)" "$(install_name)" "$version_id"
+}
+
+install_rollback_path() {
+  printf '%s/rollback.json\n' "$(install_state_dir)"
+}
+
+assert_install_mutation_guard() {
+  if [[ "${CCB_INSTALL_LOCK_HELD:-0}" != "1" ]]; then
+    echo "ERROR: install mutation requires install lock" >&2
+    return 2
+  fi
+}
+
+fsync_dir_path() {
+  local path="$1"
+  python3 - "$path" <<'PY'
+import os
+import sys
+
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY)
+except OSError:
+    sys.exit(0)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+}
+
+reserve_install_version_dir_under_lock() {
+  assert_install_mutation_guard
+  local requested="${CCB_INSTALL_VERSION_ID:-}"
+  local parent base current_max id candidate existing
+  parent="$(install_parent_path)"
+  base="$(install_name)"
   mkdir -p "$parent"
-  printf '%s/.%s.install.lock\n' "$parent" "$base"
+  current_max=-1
+  for existing in "$parent"/"$base".v*; do
+    [[ -e "$existing" ]] || continue
+    local suffix="${existing##*.v}"
+    if [[ "$suffix" =~ ^[0-9]+$ ]] && (( suffix > current_max )); then
+      current_max="$suffix"
+    fi
+  done
+  if [[ -n "$requested" && "$requested" =~ ^[0-9]+$ ]]; then
+    id="$requested"
+  else
+    id=$((current_max + 1))
+  fi
+  if (( id < 1 )); then
+    id=1
+  fi
+  while :; do
+    candidate="$(install_version_dir "$id")"
+    if mkdir "$candidate" 2>/dev/null; then
+      ALLOCATED_INSTALL_VERSION_ID="$id"
+      ALLOCATED_INSTALL_VERSION_DIR="$candidate"
+      REQUESTED_INSTALL_VERSION_ID="${requested:-}"
+      return 0
+    fi
+    id=$((id + 1))
+  done
+}
+
+write_rollback_metadata() {
+  local previous_target="$1"
+  local new_target="$2"
+  local requested_version_id="$3"
+  local allocated_version_id="$4"
+  local rollback_path state_dir
+  rollback_path="$(install_rollback_path)"
+  state_dir="$(install_state_dir)"
+  mkdir -p "$state_dir"
+  python3 - "$rollback_path" "$previous_target" "$new_target" "$requested_version_id" "$allocated_version_id" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+rollback_path = Path(sys.argv[1])
+tmp_path = rollback_path.with_name(f"{rollback_path.name}.tmp.{os.getpid()}")
+record = {
+    "previous_target": sys.argv[2],
+    "new_target": sys.argv[3],
+    "requested_version_id": int(sys.argv[4]) if sys.argv[4] else None,
+    "allocated_version_id": int(sys.argv[5]),
+}
+with tmp_path.open("w", encoding="utf-8") as handle:
+    json.dump(record, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+os.replace(tmp_path, rollback_path)
+fd = os.open(str(rollback_path.parent), os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+}
+
+active_install_target_path() {
+  if [[ -L "$INSTALL_PREFIX" ]]; then
+    local link_target
+    link_target="$(readlink "$INSTALL_PREFIX")"
+    if [[ "$link_target" = /* ]]; then
+      printf '%s\n' "$link_target"
+    else
+      printf '%s/%s\n' "$(install_parent_path)" "$link_target"
+    fi
+  elif [[ -e "$INSTALL_PREFIX" ]]; then
+    printf '%s\n' "$INSTALL_PREFIX"
+  else
+    printf '\n'
+  fi
+}
+
+migrate_existing_single_prefix_install() {
+  assert_install_mutation_guard
+  if [[ ! -e "$INSTALL_PREFIX" || -L "$INSTALL_PREFIX" ]]; then
+    return 0
+  fi
+  local v0
+  v0="$(install_version_dir 0)"
+  if [[ -e "$v0" ]]; then
+    echo "ERROR: cannot migrate existing install; $v0 already exists" >&2
+    return 2
+  fi
+  mv "$INSTALL_PREFIX" "$v0"
+  ln -s "$(basename "$v0")" "$INSTALL_PREFIX"
+  fsync_dir_path "$(install_parent_path)"
+  run_install_manifest_guard seed "" migrate-existing-single-prefix
+}
+
+ensure_existing_version_manifest() {
+  assert_install_mutation_guard
+  if [[ -e "$INSTALL_PREFIX" && ! -f "$(install_manifest_path)" ]]; then
+    run_install_manifest_guard seed "" seed-existing-version-manifest
+  fi
 }
 
 install_tree_excludes_env() {
@@ -1027,7 +1188,7 @@ if has_divergence:
     print_items("current_divergence", current_divergence)
     print_items("staging_drift", staging_drift)
     if mode == "list":
-        sys.exit(1 if current_divergence else 0)
+        sys.exit(1 if (current_divergence or staging_drift) else 0)
     current_allowed = not current_divergence or accept_current_divergence
     staging_allowed = not staging_drift or overwrite_enabled
     if current_allowed and staging_allowed:
@@ -1048,7 +1209,7 @@ seed_install_manifest() {
 }
 
 list_install_divergence() {
-  local staging="${1:-$REPO_ROOT}"
+  local staging="${1:-$INSTALL_PREFIX}"
   with_install_lock run_install_manifest_guard list "$staging" list-divergence
 }
 
@@ -1065,15 +1226,61 @@ guard_install_prefix_current() {
 
 replace_install_prefix_from_staging() {
   local staging="$1"
-  guard_install_prefix_wipe "$staging" "copy_project"
-  rm -rf "$INSTALL_PREFIX"
-  mkdir -p "$(dirname "$INSTALL_PREFIX")"
-  mv "$staging" "$INSTALL_PREFIX"
+  assert_install_mutation_guard
+  migrate_existing_single_prefix_install
+  ensure_existing_version_manifest
+  guard_install_prefix_current "copy_project"
+  local previous_target new_version_dir tmp_link
+  previous_target="$(active_install_target_path)"
+  reserve_install_version_dir_under_lock
+  new_version_dir="$ALLOCATED_INSTALL_VERSION_DIR"
+  cp -a "$staging"/. "$new_version_dir"/
+  rm -rf "$staging"
+  write_rollback_metadata "$previous_target" "$new_version_dir" "${REQUESTED_INSTALL_VERSION_ID:-}" "$ALLOCATED_INSTALL_VERSION_ID"
+  tmp_link="$(install_parent_path)/.$(install_name).next.$$"
+  rm -f "$tmp_link"
+  ln -s "$(basename "$new_version_dir")" "$tmp_link"
+  mv -Tf "$tmp_link" "$INSTALL_PREFIX"
+  fsync_dir_path "$(install_parent_path)"
+  run_install_manifest_guard seed "" seed-install-manifest
 }
 
 remove_install_prefix_guarded() {
+  assert_install_mutation_guard
   guard_install_prefix_wipe "" "uninstall_all"
   rm -rf "$INSTALL_PREFIX"
+}
+
+rollback_install() {
+  with_install_lock rollback_install_locked
+}
+
+rollback_install_locked() {
+  assert_install_mutation_guard
+  local rollback_path previous_target tmp_link
+  rollback_path="$(install_rollback_path)"
+  if [[ ! -f "$rollback_path" ]]; then
+    echo "ERROR: rollback metadata not found: $rollback_path" >&2
+    return 2
+  fi
+  previous_target="$(python3 - "$rollback_path" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    print(json.load(handle).get("previous_target") or "")
+PY
+)"
+  if [[ -z "$previous_target" || ! -e "$previous_target" ]]; then
+    echo "ERROR: rollback target unavailable: $previous_target" >&2
+    return 2
+  fi
+  tmp_link="$(install_parent_path)/.$(install_name).rollback.$$"
+  rm -f "$tmp_link"
+  ln -s "$(basename "$previous_target")" "$tmp_link"
+  mv -Tf "$tmp_link" "$INSTALL_PREFIX"
+  fsync_dir_path "$(install_parent_path)"
+  run_install_manifest_guard seed "" seed-install-manifest
 }
 
 copy_project() {
@@ -2039,6 +2246,7 @@ install_all_locked() {
   guard_install_prefix_current "install_all"
   cleanup_legacy_files
   copy_project
+  remove_codex_mcp
   write_install_metadata
   install_bin_links
   ensure_path_configured
@@ -2058,7 +2266,6 @@ install_all_locked() {
 install_all() {
   require_major_upgrade_confirmation
   install_requirements
-  remove_codex_mcp
   with_install_lock install_all_locked
   echo "OK: Installation complete"
   echo "   Project dir    : $INSTALL_PREFIX"
@@ -2425,7 +2632,11 @@ main() {
       seed_install_manifest
       ;;
     list-divergence)
-      list_install_divergence "${2:-$REPO_ROOT}"
+      list_install_divergence "${2:-}"
+      ;;
+    rollback-install)
+      [[ $# -eq 1 ]] || { usage; exit 1; }
+      rollback_install
       ;;
     *)
       usage

@@ -30,4 +30,8 @@ class JsonStore:
             payload = value
         else:
             payload = serializer(value)
-        atomic_write_text(Path(path), json.dumps(payload, ensure_ascii=False, indent=2) + '\n')
+        target = Path(path)
+        from ccbd.state_mutation_guard import guarded_state_mutation_for_path
+
+        with guarded_state_mutation_for_path(target, owner='storage.json_store', blocking=True):
+            atomic_write_text(target, json.dumps(payload, ensure_ascii=False, indent=2) + '\n')

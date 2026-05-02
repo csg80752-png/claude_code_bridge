@@ -17,6 +17,10 @@ test/dir1/.ccb/
 .opencode-session
 opencode.json
 .claude/
+.codex
+.gemini/
+.context/
+.commit-checklist.md
 *.mp4
 tmp/
 .tmp_pytest/

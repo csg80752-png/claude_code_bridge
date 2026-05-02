@@ -437,6 +437,11 @@ def _cmd_pane_readiness(
     probe = _READINESS_PROBES.get(foreground_command)
     if probe is None:
         return ReadinessOutcome.UNKNOWN_CONSUMER
+    signal_outcome = _cmd_pane_serialized_readiness_signal(backend, pane_id, foreground_command)
+    if signal_outcome is ReadinessOutcome.READY:
+        return ReadinessOutcome.READY
+    if signal_outcome is ReadinessOutcome.NOT_READY:
+        return ReadinessOutcome.NOT_READY
     if os.environ.get('CCB_CMD_READY_GATE', '1') == '0':
         return ReadinessOutcome.READY
     get_pane_content = getattr(backend, 'get_pane_content', None)
@@ -455,6 +460,27 @@ def _cmd_pane_readiness(
     if stable_text != text:
         return ReadinessOutcome.NOT_READY
     return ReadinessOutcome.READY if probe(stable_text) else ReadinessOutcome.NOT_READY
+
+
+def _cmd_pane_serialized_readiness_signal(
+    backend,
+    pane_id: str,
+    foreground_command: str,
+) -> ReadinessOutcome | None:
+    if os.environ.get('CCB_CMD_READINESS_SIGNAL', '0') != '1':
+        return None
+    getter = getattr(backend, 'get_ccb_ready_signal', None)
+    if not callable(getter):
+        return None
+    try:
+        signal = str(getter(pane_id, foreground_command) or '').strip().lower()
+    except Exception:
+        return ReadinessOutcome.PROBE_UNAVAILABLE
+    if signal == 'ready':
+        return ReadinessOutcome.READY
+    if signal in {'busy', 'not_ready', 'blocked', 'modal'}:
+        return ReadinessOutcome.NOT_READY
+    return None
 
 
 def _load_cmd_safe_consumers(project_root: Path | None) -> frozenset[str]:

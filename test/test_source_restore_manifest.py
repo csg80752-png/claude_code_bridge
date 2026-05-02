@@ -14,6 +14,7 @@ from cli.management_runtime.source_restore import (
     restore_source_tree,
     seed_install_manifest,
 )
+from cli.management_runtime import source_restore
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -152,3 +153,26 @@ def test_source_side_install_with_preseeded_manifest_enters_guard_flow(tmp_path:
     assert "seeded_install_manifest:" in seed.stdout
     assert guard.returncode == 0
     assert "install_manifest_guard_ok action=install_all" in guard.stdout
+
+
+def test_copy_entry_preserves_existing_destination_when_file_copy_fails(monkeypatch, tmp_path: Path) -> None:
+    src = tmp_path / "src.txt"
+    dst = tmp_path / "dst.txt"
+    _write(src, "new\n")
+    _write(dst, "old\n")
+
+    def fail_copy(source: Path, target: Path) -> None:
+        Path(target).write_text("partial\n", encoding="utf-8")
+        raise RuntimeError("copy failed after partial write")
+
+    monkeypatch.setattr(source_restore.shutil, "copy2", fail_copy)
+
+    try:
+        source_restore._copy_entry(src, dst)
+    except RuntimeError as exc:
+        assert "copy failed" in str(exc)
+    else:
+        raise AssertionError("_copy_entry must propagate copy failure")
+
+    assert dst.read_text(encoding="utf-8") == "old\n"
+    assert not list(tmp_path.glob(".dst.txt.tmp.*"))

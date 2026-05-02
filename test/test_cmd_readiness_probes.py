@@ -4,11 +4,11 @@ from ccbd.services.dispatcher_runtime.reply_delivery_runtime import cmd_readines
 
 
 def test_has_prompt_line_accepts_bare_prompt():
-    assert cmd_readiness_probes._has_prompt_line("❯ ") is True
+    assert cmd_readiness_probes._find_last_bare_prompt_line_idx(["❯ "]) == 0
 
 
 def test_has_prompt_line_rejects_prompt_with_tail_content():
-    assert cmd_readiness_probes._has_prompt_line("❯ user text") is False
+    assert cmd_readiness_probes._find_last_bare_prompt_line_idx(["❯ user text"]) is None
 
 
 def test_claude_ready_accepts_ready_prompt_with_footer_below():
@@ -81,6 +81,35 @@ def test_claude_ready_rejects_multiline_modal_context_above_prompt_variants():
     ]
     for text in blocked:
         assert cmd_readiness_probes.claude_ready(text) is False
+
+
+def test_claude_ready_rejects_modal_marker_four_visual_lines_above_prompt():
+    text = "\n".join(
+        [
+            "Do you want to allow this command?",
+            "  command: pytest",
+            "  cwd: /home/speed/project",
+            "  reason: needs approval",
+            "❯ ",
+        ]
+    )
+
+    assert cmd_readiness_probes.claude_ready(text) is False
+
+
+def test_claude_ready_accepts_answer_text_containing_modal_words_above_prompt():
+    text = "\n".join(
+        [
+            "assistant: I choose to mention approval and press enter as normal answer text.",
+            "❯ ",
+        ]
+    )
+
+    assert cmd_readiness_probes.claude_ready(text) is True
+
+
+def test_dead_has_prompt_line_helper_is_removed_from_runtime_module():
+    assert not hasattr(cmd_readiness_probes, "_has_prompt_line")
 
 
 def test_claude_ready_rejects_busy_marker_below_prompt():
