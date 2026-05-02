@@ -12,6 +12,7 @@ from provider_backends.codex.launcher_runtime.task_id_probe import (
     apply_configured_startup_task_id_probe,
     probe_from_completion_log,
 )
+from provider_backends.codex.launcher_runtime.codex_namespace_isolation import prepare_codex_home_overrides
 
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "codex_task_id_probe"
@@ -69,6 +70,24 @@ def test_b5_codex_poll_state_canary_exports_required_identity_flag() -> None:
 
     assert state["requires_task_id"] is True
     assert state["task_id_probe_cache_key"] == "codex:/usr/bin/codex:1:123"
+
+
+def test_b5_codex_home_isolation_two_bindings_no_state_collision(tmp_path: Path, monkeypatch) -> None:
+    global_home = tmp_path / "global-codex-home"
+    (global_home / "sessions").mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", str(global_home))
+    runtime_a = tmp_path / "repo-a" / ".ccb" / "agents" / "agent1" / "provider-runtime" / "codex"
+    runtime_b = tmp_path / "repo-b" / ".ccb" / "agents" / "agent1" / "provider-runtime" / "codex"
+
+    env_a = prepare_codex_home_overrides(runtime_a, profile=None)
+    env_b = prepare_codex_home_overrides(runtime_b, profile=None)
+
+    assert env_a["CODEX_HOME"] != env_b["CODEX_HOME"]
+    assert env_a["CODEX_SESSION_ROOT"] != env_b["CODEX_SESSION_ROOT"]
+    assert env_a["CODEX_HOME"] != str(global_home)
+    assert env_b["CODEX_HOME"] != str(global_home)
+    assert Path(env_a["CODEX_SESSION_ROOT"]).is_dir()
+    assert Path(env_b["CODEX_SESSION_ROOT"]).is_dir()
 
 
 def test_b5_agent3_isolation_canary_keeps_claude_provider_configured() -> None:

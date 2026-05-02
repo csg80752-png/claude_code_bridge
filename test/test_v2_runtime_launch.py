@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import shlex
@@ -1134,6 +1135,67 @@ def test_codex_launcher_build_start_cmd_isolates_invalid_global_codex_config(mon
     assert f'CODEX_SESSION_ROOT={shlex.quote(str(isolated_home / "sessions"))}' in cmd
     assert (isolated_home / 'auth.json').is_file()
     assert (isolated_home / 'config.toml').is_file()
+
+
+def test_codex_namespace_isolation_per_binding_does_not_leak_global_codex_home(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project_root = tmp_path / 'repo-codex-isolation'
+    global_home = tmp_path / 'global-codex-home'
+    (global_home / 'sessions').mkdir(parents=True)
+    (global_home / 'sessions' / 'rollout-shared.jsonl').write_text('{}\n', encoding='utf-8')
+    monkeypatch.setenv('CODEX_HOME', str(global_home))
+
+    ctx = _context(project_root, ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False))
+    plan1 = WorkspacePlanner().plan(_spec('agent1'), ctx.project)
+    plan2 = WorkspacePlanner().plan(_spec('agent2'), ctx.project)
+    runtime1 = project_root / '.ccb' / 'agents' / 'agent1' / 'provider-runtime' / 'codex'
+    runtime2 = project_root / '.ccb' / 'agents' / 'agent2' / 'provider-runtime' / 'codex'
+
+    payload1 = codex_launcher.build_session_payload(
+        ctx,
+        _spec('agent1'),
+        plan1,
+        runtime1,
+        plan1.workspace_path,
+        '%11',
+        'CCB-agent1',
+        'codex',
+        'sess-agent1',
+        {'input_fifo': runtime1 / 'input.fifo', 'output_fifo': runtime1 / 'output.fifo'},
+    )
+    payload2 = codex_launcher.build_session_payload(
+        ctx,
+        _spec('agent2'),
+        plan2,
+        runtime2,
+        plan2.workspace_path,
+        '%22',
+        'CCB-agent2',
+        'codex',
+        'sess-agent2',
+        {'input_fifo': runtime2 / 'input.fifo', 'output_fifo': runtime2 / 'output.fifo'},
+    )
+
+    assert payload1['codex_home'] == str(runtime1 / 'codex-home')
+    assert payload2['codex_home'] == str(runtime2 / 'codex-home')
+    assert payload1['codex_home'] != payload2['codex_home']
+    assert payload1['codex_home'] != str(global_home)
+    assert payload2['codex_home'] != str(global_home)
+    assert payload1['codex_session_root'] == str(runtime1 / 'codex-home' / 'sessions')
+    assert payload2['codex_session_root'] == str(runtime2 / 'codex-home' / 'sessions')
+
+
+def test_codex_session_root_resolution_respects_explicit_env_override(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / 'runtime'
+    explicit_home = tmp_path / 'operator-codex-home'
+    spec = replace(_spec('agent1'), env={'CODEX_HOME': str(explicit_home)})
+    command = ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False)
+
+    cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-override')
+
+    assert f'CODEX_HOME={shlex.quote(str(explicit_home))}' in cmd
+    assert f'CODEX_SESSION_ROOT={shlex.quote(str(explicit_home / "sessions"))}' in cmd
 
 
 def test_codex_launcher_build_start_cmd_uses_agent_scoped_resume_session(monkeypatch, tmp_path: Path) -> None:

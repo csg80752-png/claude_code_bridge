@@ -22,6 +22,9 @@ class CodexSessionsRoot:
 
 def prepare_codex_home_overrides(runtime_dir: Path, profile) -> dict[str, str]:
     resolved_runtime = Path(runtime_dir)
+    explicit_profile_env = explicit_codex_home_overrides(getattr(profile, "env", {}) if profile is not None else {})
+    if explicit_profile_env:
+        return explicit_profile_env
     if profile is not None and getattr(profile, "runtime_home", None):
         runtime_home = Path(str(profile.runtime_home)).expanduser()
         runtime_home.mkdir(parents=True, exist_ok=True)
@@ -37,6 +40,39 @@ def prepare_codex_home_overrides(runtime_dir: Path, profile) -> dict[str, str]:
         "CODEX_HOME": str(isolated_home),
         "CODEX_SESSION_ROOT": str(isolated_home / "sessions"),
     }
+
+
+def explicit_codex_home_overrides(env: dict[str, object] | None) -> dict[str, str]:
+    source = dict(env or {})
+    raw_home = str(source.get("CODEX_HOME") or source.get("codex_home") or "").strip()
+    raw_session_root = str(source.get("CODEX_SESSION_ROOT") or source.get("codex_session_root") or "").strip()
+    if not raw_home and not raw_session_root:
+        return {}
+    overrides: dict[str, str] = {}
+    home: Path | None = None
+    if raw_home:
+        home = Path(raw_home).expanduser()
+        overrides["CODEX_HOME"] = str(home)
+    if raw_session_root:
+        overrides["CODEX_SESSION_ROOT"] = str(Path(raw_session_root).expanduser())
+    elif home is not None:
+        overrides["CODEX_SESSION_ROOT"] = str(home / "sessions")
+    return overrides
+
+
+def codex_home_session_payload(
+    runtime_dir: Path,
+    *,
+    profile=None,
+    explicit_env: dict[str, object] | None = None,
+) -> dict[str, str]:
+    env = explicit_codex_home_overrides(explicit_env) or prepare_codex_home_overrides(runtime_dir, profile)
+    payload: dict[str, str] = {}
+    if env.get("CODEX_HOME"):
+        payload["codex_home"] = env["CODEX_HOME"]
+    if env.get("CODEX_SESSION_ROOT"):
+        payload["codex_session_root"] = env["CODEX_SESSION_ROOT"]
+    return payload
 
 
 def prepare_codex_isolated_home(runtime_dir: Path, *, source_home: Path | None = None) -> Path:
@@ -58,8 +94,27 @@ def prepare_codex_isolated_home(runtime_dir: Path, *, source_home: Path | None =
     return isolated_home
 
 
-def resolve_codex_sessions_root(runtime_dir: Path, *, profile=None) -> CodexSessionsRoot:
+def resolve_codex_sessions_root(
+    runtime_dir: Path,
+    *,
+    profile=None,
+    explicit_env: dict[str, object] | None = None,
+) -> CodexSessionsRoot:
     resolved_runtime = Path(runtime_dir)
+    explicit_root_env = explicit_codex_home_overrides(explicit_env)
+    if explicit_root_env.get("CODEX_SESSION_ROOT"):
+        root = Path(explicit_root_env["CODEX_SESSION_ROOT"]).expanduser()
+        return CodexSessionsRoot(
+            path=root,
+            is_isolated=_path_is_under_ccbd_namespace(root.parent, resolved_runtime),
+        )
+    explicit_profile_env = explicit_codex_home_overrides(getattr(profile, "env", {}) if profile is not None else {})
+    if explicit_profile_env.get("CODEX_SESSION_ROOT"):
+        root = Path(explicit_profile_env["CODEX_SESSION_ROOT"]).expanduser()
+        return CodexSessionsRoot(
+            path=root,
+            is_isolated=_path_is_under_ccbd_namespace(root.parent, resolved_runtime),
+        )
     if profile is not None and getattr(profile, "runtime_home", None):
         runtime_home = Path(str(profile.runtime_home)).expanduser()
         return CodexSessionsRoot(
@@ -169,7 +224,9 @@ def _path_is_under_ccbd_namespace(target: Path, runtime_dir: Path) -> bool:
 
 __all__ = [
     "CodexSessionsRoot",
+    "codex_home_session_payload",
     "codex_runtime_dir_from_session_file",
+    "explicit_codex_home_overrides",
     "isolated_home_for_runtime",
     "isolation_opt_out",
     "prepare_codex_home_overrides",

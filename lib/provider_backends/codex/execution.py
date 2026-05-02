@@ -79,7 +79,11 @@ def _reader_factory(session, preferred_log: Path | None):
 
         runtime_dir = codex_runtime_dir_from_session_file(own_session_file)
         if runtime_dir is not None:
-            resolved = resolve_codex_sessions_root(runtime_dir, profile=load_resolved_provider_profile(runtime_dir))
+            resolved = resolve_codex_sessions_root(
+                runtime_dir,
+                profile=load_resolved_provider_profile(runtime_dir),
+                explicit_env=getattr(session, 'data', {}) or {},
+            )
             root = resolved.path
             isolated = resolved.is_isolated
     except Exception:

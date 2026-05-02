@@ -83,7 +83,7 @@ def payload_resume_session_id(data: dict) -> str | None:
 
 
 def _resume_id_is_resumable(session_id: str, *, runtime_dir: Path, data: dict) -> bool:
-    root = _resolved_sessions_root(runtime_dir)
+    root = _resolved_sessions_root(runtime_dir, data=data)
     if _path_contains_session_id(data.get("codex_session_path"), session_id, root=root):
         return True
     if not root.exists():
@@ -99,16 +99,17 @@ def _resume_id_is_resumable(session_id: str, *, runtime_dir: Path, data: dict) -
     return False
 
 
-def _resolved_sessions_root(runtime_dir: Path) -> Path:
+def _resolved_sessions_root(runtime_dir: Path, *, data: dict | None = None) -> Path:
     try:
         from provider_profiles.materializer import load_resolved_provider_profile
 
         return resolve_codex_sessions_root(
             runtime_dir,
             profile=load_resolved_provider_profile(runtime_dir),
+            explicit_env=data or {},
         ).path
     except Exception:
-        return resolve_codex_sessions_root(runtime_dir, profile=None).path
+        return resolve_codex_sessions_root(runtime_dir, profile=None, explicit_env=data or {}).path
 
 
 def _path_contains_session_id(value: object, session_id: str, *, root: Path) -> bool:

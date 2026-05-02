@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from provider_core.caller_env import caller_context_env
+from provider_backends.codex.launcher_runtime.codex_namespace_isolation import explicit_codex_home_overrides
 
 
 def build_start_cmd(
@@ -83,6 +84,9 @@ def _env_map(runtime_dir: Path, launch_session_id: str, *, spec, profile, codex_
     if profile is not None:
         explicit_env.update(profile.env)
     explicit_env.update(spec.env)
+    explicit_codex_home = explicit_codex_home_overrides(explicit_env)
+    if explicit_codex_home:
+        codex_home_overrides = explicit_codex_home
     return {
         **explicit_env,
         'CODEX_RUNTIME_DIR': str(runtime_dir),
