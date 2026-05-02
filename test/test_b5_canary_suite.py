@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import pytest
 
 from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_readiness_probes import claude_ready
+from cli.management_runtime.versioning_runtime.local import get_version_info
 from provider_backends.codex.execution_runtime.state_machine_runtime.models import CodexPollState
 from provider_backends.codex.execution_runtime.state_machine_runtime.serialization import to_runtime_state
 from provider_backends.codex.launcher_runtime.turn_id_probe import (
@@ -52,6 +54,10 @@ def test_b5_codex_turn_id_probe_succeeds_against_installed_cli(monkeypatch: pyte
     assert result is not None
     assert result.state == "PASS", result
     assert result.turn_id
+    install_prefix = Path(os.environ.get("CODEX_INSTALL_PREFIX") or Path.home() / ".local/share/codex-dual").expanduser()
+    build_info = get_version_info(install_prefix)
+    assert build_info.get("codex_cli_version")
+    assert result.version == build_info["codex_cli_version"]
 
 
 def test_b5_default_codex_bind_fails_closed_without_probe_artifact(monkeypatch, tmp_path: Path) -> None:

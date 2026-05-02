@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import tarfile
 from types import SimpleNamespace
@@ -194,6 +195,46 @@ def test_resolve_version_prefers_git_ref_snapshot(monkeypatch, tmp_path: Path) -
     version = module.resolve_version(repo_root, git_ref="v5.2.8")
 
     assert version == "gitref-version"
+
+
+def test_release_build_info_includes_codex_cli_version(monkeypatch) -> None:
+    module = _load_module()
+    monkeypatch.setattr(module, "utc_now", lambda: "2026-05-03T00:00:00Z")
+    monkeypatch.setattr(module, "detect_codex_cli_version", lambda: "codex-cli 0.128.0")
+
+    build_info = module.release_build_info(
+        version="6.0.4",
+        commit="abc1234",
+        commit_date="2026-05-03",
+        arch="x86_64",
+        channel="preview",
+        source_kind="preview",
+    )
+
+    assert build_info["codex_cli_version"] == "codex-cli 0.128.0"
+
+
+def test_write_release_metadata_persists_codex_cli_version(tmp_path: Path) -> None:
+    module = _load_module()
+
+    module.write_release_metadata(
+        tmp_path,
+        {
+            "version": "6.0.4",
+            "commit": "abc1234",
+            "date": "2026-05-03",
+            "build_time": "2026-05-03T00:00:00Z",
+            "platform": "linux",
+            "arch": "x86_64",
+            "channel": "preview",
+            "source_kind": "preview",
+            "install_mode": "release",
+            "codex_cli_version": "codex-cli 0.128.0",
+        },
+    )
+
+    payload = json.loads((tmp_path / "BUILD_INFO.json").read_text(encoding="utf-8"))
+    assert payload["codex_cli_version"] == "codex-cli 0.128.0"
 
 
 def test_create_tarball_includes_legacy_update_alias(tmp_path: Path) -> None:
