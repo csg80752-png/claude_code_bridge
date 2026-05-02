@@ -42,7 +42,6 @@ def start_active_submission(
     request_anchor = request_anchor_fn(job.job_id)
     no_wrap = no_wrap_requested(job)
     prompt = job.request.body if no_wrap else wrap_prompt_fn(job.request.body, request_anchor)
-    send_prompt_to_runtime_target(prepared.backend, prepared.pane_id, prompt)
 
     runtime_state = {
         'mode': 'active',
@@ -71,9 +70,13 @@ def start_active_submission(
         apply_configured_startup_task_id_probe(runtime_state)
     except RuntimeError:
         raise
-    except Exception:
-        runtime_state['requires_task_id'] = False
+    except Exception as exc:
+        runtime_state['requires_task_id'] = True
+        runtime_state['codex_task_id_probe_state'] = 'BROKEN'
+        runtime_state['requires_rebind'] = True
+        raise RuntimeError(f"Codex task_id startup probe failed: {exc}") from exc
     _stash_reader_freshness(runtime_state, prepared.session)
+    send_prompt_to_runtime_target(prepared.backend, prepared.pane_id, prompt)
 
     return ProviderSubmission(
         job_id=job.job_id,
