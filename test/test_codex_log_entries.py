@@ -69,6 +69,55 @@ def test_extract_entry_handles_system_event_payloads() -> None:
     assert extract_entry(turn_aborted)['reason'] == 'turn_aborted'
 
 
+def test_extract_entry_preserves_top_level_turn_id() -> None:
+    entry = {
+        'type': 'event_msg',
+        'turn_id': 'turn-top-level',
+        'payload': {
+            'type': 'task_complete',
+            'last_agent_message': 'done',
+        },
+    }
+
+    normalized = extract_entry(entry)
+
+    assert normalized is not None
+    assert normalized['turn_id'] == 'turn-top-level'
+
+
+def test_extract_entry_preserves_nested_turn_id() -> None:
+    entry = {
+        'type': 'event_msg',
+        'payload': {
+            'type': 'task_complete',
+            'turn_id': 'turn-nested',
+            'last_agent_message': 'done',
+        },
+    }
+
+    normalized = extract_entry(entry)
+
+    assert normalized is not None
+    assert normalized['turn_id'] == 'turn-nested'
+
+
+def test_extract_entry_prefers_top_level_turn_id_for_mixed_records() -> None:
+    entry = {
+        'type': 'event_msg',
+        'turn_id': 'turn-top-level',
+        'payload': {
+            'type': 'task_complete',
+            'turn_id': 'turn-nested',
+            'last_agent_message': 'done',
+        },
+    }
+
+    normalized = extract_entry(entry)
+
+    assert normalized is not None
+    assert normalized['turn_id'] == 'turn-top-level'
+
+
 def test_extract_event_returns_only_user_or_assistant_messages() -> None:
     entry = {
         'type': 'event_msg',
