@@ -13,6 +13,10 @@ PollStateMigration = Callable[[dict[str, object]], dict[str, object]]
 _MIGRATIONS: dict[tuple[int, int], PollStateMigration] = {}
 
 
+class CodexPollStateMigrationError(ValueError):
+    pass
+
+
 def _migrate_v1_to_v2(payload: dict[str, object]) -> dict[str, object]:
     migrated = dict(payload)
     migrated["schema_version"] = 2
@@ -24,6 +28,12 @@ def _migrate_v1_to_v2(payload: dict[str, object]) -> dict[str, object]:
 def _migrate_v2_to_v3(payload: dict[str, object]) -> dict[str, object]:
     migrated = dict(payload)
     migrated["schema_version"] = 3
+    legacy_bound_task_id = str(migrated.get("bound_task_id") or "").strip()
+    if legacy_bound_task_id:
+        raise CodexPollStateMigrationError(
+            "refusing to drop non-empty legacy bound_task_id during Codex poll state V2->V3 migration: "
+            f"{legacy_bound_task_id}"
+        )
     if str(migrated.get("current_task_id") or "").strip():
         migrated["current_turn_id"] = str(migrated.get("current_task_id") or "").strip()
     if "requires_turn_id" not in migrated:
@@ -152,6 +162,7 @@ def temporary_poll_state_migration(
 
 
 __all__ = [
+    "CodexPollStateMigrationError",
     "from_runtime_state",
     "temporary_poll_state_migration",
     "to_runtime_state",

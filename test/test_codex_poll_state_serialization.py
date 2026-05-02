@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import fields
+import json
+from pathlib import Path
+
+import pytest
 
 from completion.models import CompletionSourceKind
 from provider_backends.codex.execution_runtime.state_machine_runtime.finalization import (
@@ -11,12 +15,16 @@ from provider_backends.codex.execution_runtime.state_machine_runtime.models impo
     CodexPollState,
     build_poll_state,
 )
+from provider_backends.codex.execution_runtime.state_machine_runtime import serialization as serialization_module
 from provider_backends.codex.execution_runtime.state_machine_runtime.serialization import (
     from_runtime_state,
     temporary_poll_state_migration,
     to_runtime_state,
 )
 from provider_execution.base import ProviderSubmission
+
+
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "codex_poll_state_v2"
 
 
 def _submission(runtime_state: dict[str, object] | None = None) -> ProviderSubmission:
@@ -53,15 +61,8 @@ def _v1_runtime_state() -> dict[str, object]:
     }
 
 
-def _v2_runtime_state_from_v83_execution() -> dict[str, object]:
-    return {
-        **_v1_runtime_state(),
-        "schema_version": 2,
-        "bound_task_id": "dead-task-to-drop",
-        "current_task_id": "turn-from-v2-task-field",
-        "requires_task_id": True,
-        "task_id_probe_cache_key": "codex:/usr/bin/codex:v2:123",
-    }
+def _fixture(name: str) -> dict[str, object]:
+    return json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
 
 def test_codex_poll_state_exports_schema_version() -> None:
@@ -153,7 +154,7 @@ def test_codex_poll_state_forward_version_fails_closed_without_identity_fields()
 
 
 def test_codex_poll_state_v2_to_v3_migration_drops_dead_task_id_fields() -> None:
-    poll = from_runtime_state(_v2_runtime_state_from_v83_execution())
+    poll = from_runtime_state(_fixture("captured-v8.3-runtime-state.json"))
     serialized = to_runtime_state(poll)
 
     assert poll.schema_version == 3
@@ -164,6 +165,13 @@ def test_codex_poll_state_v2_to_v3_migration_drops_dead_task_id_fields() -> None
     assert "current_task_id" not in serialized
     assert "requires_task_id" not in serialized
     assert "task_id_probe_cache_key" not in serialized
+
+
+def test_codex_poll_state_v2_to_v3_rejects_nonempty_bound_task_id_without_current_task_id() -> None:
+    with pytest.raises(Exception) as exc_info:
+        from_runtime_state(_fixture("legacy-bound-task-id-without-current-task-id.json"))
+    assert exc_info.type is serialization_module.CodexPollStateMigrationError
+    assert "legacy-bound-task" in str(exc_info.value)
 
 
 def test_codex_poll_state_chained_migration_v1_to_v4_fixture() -> None:
@@ -183,7 +191,7 @@ def test_codex_poll_state_chained_migration_v1_to_v4_fixture() -> None:
 
 
 def test_build_poll_state_delegates_to_schema_migration() -> None:
-    poll = build_poll_state(_submission(_v2_runtime_state_from_v83_execution()))
+    poll = build_poll_state(_submission(_fixture("captured-v8.3-runtime-state.json")))
 
     assert poll.schema_version == CODEX_POLL_STATE_SCHEMA_VERSION
     assert poll.next_seq == 7
