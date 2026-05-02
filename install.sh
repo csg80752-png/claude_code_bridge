@@ -5,6 +5,35 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_PREFIX="${CODEX_INSTALL_PREFIX:-$HOME/.local/share/codex-dual}"
 BIN_DIR="${CODEX_BIN_DIR:-$HOME/.local/bin}"
 readonly REPO_ROOT INSTALL_PREFIX BIN_DIR
+INSTALL_TREE_EXCLUDE_PATTERNS=(
+  '.git/'
+  '__pycache__/'
+  '*.pyc'
+  '*.pyo'
+  '.pytest_cache/'
+  '.ruff_cache/'
+  '.mypy_cache/'
+  '.cache/'
+  '.venv/'
+  'node_modules/'
+  'lib/web/'
+  'bin/ccb-web'
+  '.ccb/agents/'
+  '.ccb/ccbd/'
+  '.ccb/history/'
+  '.ccb/metrics/'
+  '.ccb/replies/'
+  '.ccb/*-session'
+  '.codex'
+  '.codex/'
+  '.gemini/'
+  '.claude/'
+  '.loop/'
+  '.context/'
+  '.commit-checklist.md'
+  '*.bak-*'
+)
+readonly INSTALL_TREE_EXCLUDE_PATTERNS
 
 # i18n support
 detect_lang() {
@@ -170,8 +199,11 @@ LEGACY_SCRIPTS=(
 usage() {
   cat <<'USAGE'
 Usage:
-  ./install.sh install    # Install or update Codex dual-window tools
-  ./install.sh uninstall  # Uninstall installed content
+  ./install.sh install                 # Install or update Codex dual-window tools
+  ./install.sh uninstall               # Uninstall installed content
+  ./install.sh seed-install-manifest   # Seed the guarded install manifest for the current install
+  ./install.sh list-divergence [dir]   # Report current/staging drift without deleting content
+  ./install.sh --no-flock-i-accept-races <command>
 
 Optional environment variables:
   CODEX_INSTALL_PREFIX     Install directory (default: ~/.local/share/codex-dual)
@@ -185,6 +217,7 @@ Optional environment variables:
   CCB_BUILD_TIME           Override build timestamp metadata (default: current UTC time)
   CCB_SOURCE_KIND          Override source kind metadata (default: source if .git exists, else release)
   CCB_CONFIRM_MAJOR_UPGRADE Set to 1 to confirm replacing a pre-v6 install with v6+
+  CCB_INSTALL_OVERWRITE_PATCHES Set to 1 to permit guarded overwrite after printing drift
   CCB_CLAUDE_MD_MODE       CLAUDE.md injection mode: "inline" (default) or "route"
                            inline = full config in CLAUDE.md (~57 lines)
                            route  = minimal pointer in CLAUDE.md, full config in ~/.claude/rules/ccb-config.md
@@ -770,36 +803,296 @@ require_terminal_backend() {
   exit 1
 }
 
+install_manifest_path() {
+  printf '%s/.ccb-install-manifest.sha256\n' "$INSTALL_PREFIX"
+}
+
+install_lock_path() {
+  local parent base
+  parent="$(dirname "$INSTALL_PREFIX")"
+  base="$(basename "$INSTALL_PREFIX")"
+  mkdir -p "$parent"
+  printf '%s/.%s.install.lock\n' "$parent" "$base"
+}
+
+install_tree_excludes_env() {
+  printf '%s\n' "${INSTALL_TREE_EXCLUDE_PATTERNS[@]}"
+}
+
+install_flock_available() {
+  [[ "${CCB_TEST_FORCE_NO_FLOCK:-0}" != "1" ]] && command -v flock >/dev/null 2>&1
+}
+
+with_install_lock() {
+  local lock_path
+  if [[ "${CCB_INSTALL_LOCK_HELD:-0}" == "1" ]]; then
+    "$@"
+    return
+  fi
+  lock_path="$(install_lock_path)"
+  if install_flock_available; then
+    (
+      flock -x 9
+      CCB_INSTALL_LOCK_HELD=1 "$@"
+    ) 9>"$lock_path"
+  else
+    if [[ "${CCB_INSTALL_NO_FLOCK_I_ACCEPT_RACES:-0}" == "1" ]]; then
+      echo "WARN: flock unavailable; running install operation without lock because --no-flock-i-accept-races was set" >&2
+      CCB_INSTALL_LOCK_HELD=1 "$@"
+      return
+    fi
+    echo "ERROR: flock unavailable; refusing install operation that requires the install lock" >&2
+    echo "Re-run with --no-flock-i-accept-races only if external serialization is guaranteed." >&2
+    return 2
+  fi
+}
+
+run_install_manifest_guard() {
+  local mode="$1"
+  local staging="${2:-}"
+  local action="${3:-guard}"
+  local exclude_patterns
+  exclude_patterns="$(install_tree_excludes_env)"
+
+  CCB_INSTALL_TREE_EXCLUDES="$exclude_patterns" python3 - "$mode" "$INSTALL_PREFIX" "$(install_manifest_path)" "$staging" "$action" "${CCB_INSTALL_OVERWRITE_PATCHES:-0}" <<'PY'
+from __future__ import annotations
+
+from fnmatch import fnmatch
+import hashlib
+import os
+import sys
+from pathlib import Path
+
+
+mode, install_arg, manifest_arg, staging_arg, action, overwrite_arg = sys.argv[1:7]
+install_root = Path(install_arg)
+manifest_path = Path(manifest_arg)
+staging_root = Path(staging_arg) if staging_arg else None
+overwrite_enabled = overwrite_arg == "1"
+accept_current_divergence = os.environ.get("CCB_INSTALL_ACCEPT_CURRENT_DIVERGENCE", "0") == "1"
+EXCLUDE_PATTERNS = [
+    line.strip()
+    for line in os.environ.get("CCB_INSTALL_TREE_EXCLUDES", "").splitlines()
+    if line.strip()
+]
+
+
+def is_cache_rel(rel: str) -> bool:
+    path = Path(rel)
+    if path.name == manifest_path.name or path.name.startswith(f"{manifest_path.name}.tmp."):
+        return True
+    return any(_matches_exclude_pattern(rel, path, pattern) for pattern in EXCLUDE_PATTERNS)
+
+
+def _matches_exclude_pattern(rel: str, path: Path, pattern: str) -> bool:
+    normalized = pattern.rstrip("/")
+    if not normalized:
+        return False
+    if pattern.endswith("/"):
+        if "/" not in normalized:
+            return normalized in path.parts
+        return rel == normalized or rel.startswith(f"{normalized}/")
+    return fnmatch(path.name, pattern) or fnmatch(rel, pattern)
+
+
+def scoped_files(root: Path) -> list[str]:
+    if not root.exists():
+        return []
+    found: list[str] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if is_cache_rel(rel):
+            continue
+        found.append(rel)
+    return sorted(set(found))
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def tree_hashes(root: Path) -> dict[str, str]:
+    return {rel: sha256_file(root / rel) for rel in scoped_files(root)}
+
+
+def parse_manifest(path: Path) -> dict[str, str] | None:
+    if not path.exists():
+        return None
+    manifest: dict[str, str] = {}
+    for line_no, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2 or len(parts[0]) != 64:
+            print(f"install_manifest_invalid: line={line_no}", file=sys.stderr)
+            sys.exit(2)
+        rel = parts[1].strip()
+        if rel and not is_cache_rel(rel):
+            manifest[rel] = parts[0]
+    return manifest
+
+
+def has_any_content(root: Path) -> bool:
+    if not root.exists():
+        return False
+    return any(root.iterdir())
+
+
+def write_manifest() -> None:
+    install_root.mkdir(parents=True, exist_ok=True)
+    hashes = tree_hashes(install_root)
+    tmp_path = manifest_path.with_name(f"{manifest_path.name}.tmp.{os.getpid()}")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        for rel in sorted(hashes):
+            handle.write(f"{hashes[rel]}  {rel}\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp_path, manifest_path)
+    fsync_dir(manifest_path.parent)
+    print(f"seeded_install_manifest: {manifest_path} files={len(hashes)}")
+
+
+def fsync_dir(path: Path) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def print_items(label: str, items: list[tuple[str, str]]) -> None:
+    if not items:
+        return
+    print(f"{label}:")
+    for kind, rel in sorted(items, key=lambda item: (item[1], item[0])):
+        print(f"  {kind}  {rel}")
+
+
+if mode == "seed":
+    write_manifest()
+    sys.exit(0)
+
+manifest = parse_manifest(manifest_path)
+install_non_empty = has_any_content(install_root)
+
+if install_non_empty and manifest is None:
+    print(f"ERROR: ccb install wipe guard blocked action={action}")
+    print(f"missing_manifest: {manifest_path}")
+    print("Run: bash install.sh seed-install-manifest")
+    sys.exit(2)
+
+current_divergence: list[tuple[str, str]] = []
+staging_drift: list[tuple[str, str]] = []
+
+if manifest is not None:
+    current = tree_hashes(install_root)
+    for rel, expected_hash in manifest.items():
+        actual_hash = current.get(rel)
+        if actual_hash is None:
+            current_divergence.append(("missing", rel))
+        elif actual_hash != expected_hash:
+            current_divergence.append(("modified", rel))
+    for rel in current:
+        if rel not in manifest:
+            current_divergence.append(("local_only", rel))
+
+    if staging_root is not None and staging_root.exists():
+        staging = tree_hashes(staging_root)
+        for rel, expected_hash in manifest.items():
+            incoming_hash = staging.get(rel)
+            if incoming_hash is None:
+                staging_drift.append(("missing", rel))
+            elif incoming_hash != expected_hash:
+                staging_drift.append(("modified", rel))
+        for rel in staging:
+            if rel not in manifest:
+                staging_drift.append(("new", rel))
+
+has_divergence = bool(current_divergence or staging_drift)
+if has_divergence:
+    if mode == "list":
+        print(f"install_manifest_divergence action={action}")
+    else:
+        print(f"ERROR: ccb install wipe guard blocked action={action}")
+    print_items("current_divergence", current_divergence)
+    print_items("staging_drift", staging_drift)
+    if mode == "list":
+        sys.exit(1 if current_divergence else 0)
+    current_allowed = not current_divergence or accept_current_divergence
+    staging_allowed = not staging_drift or overwrite_enabled
+    if current_allowed and staging_allowed:
+        if current_divergence:
+            print("WARN: CCB_INSTALL_ACCEPT_CURRENT_DIVERGENCE=1 set; allowing current divergence after report")
+        if staging_drift:
+            print("WARN: CCB_INSTALL_OVERWRITE_PATCHES=1 set; allowing staging drift after report")
+        sys.exit(0)
+    sys.exit(2)
+
+print(f"install_manifest_guard_ok action={action}")
+sys.exit(0)
+PY
+}
+
+seed_install_manifest() {
+  with_install_lock run_install_manifest_guard seed "" seed-install-manifest
+}
+
+list_install_divergence() {
+  local staging="${1:-$REPO_ROOT}"
+  with_install_lock run_install_manifest_guard list "$staging" list-divergence
+}
+
+guard_install_prefix_wipe() {
+  local staging="${1:-}"
+  local action="${2:-guard}"
+  run_install_manifest_guard guard "$staging" "$action"
+}
+
+guard_install_prefix_current() {
+  local action="${1:-guard}"
+  run_install_manifest_guard guard "" "$action"
+}
+
+replace_install_prefix_from_staging() {
+  local staging="$1"
+  guard_install_prefix_wipe "$staging" "copy_project"
+  rm -rf "$INSTALL_PREFIX"
+  mkdir -p "$(dirname "$INSTALL_PREFIX")"
+  mv "$staging" "$INSTALL_PREFIX"
+}
+
+remove_install_prefix_guarded() {
+  guard_install_prefix_wipe "" "uninstall_all"
+  rm -rf "$INSTALL_PREFIX"
+}
+
 copy_project() {
   local staging
   staging="$(mktemp -d)"
   trap 'rm -rf "$staging"' EXIT
+  local exclude_args=()
+  local pattern
+  for pattern in "${INSTALL_TREE_EXCLUDE_PATTERNS[@]}"; do
+    exclude_args+=(--exclude "$pattern")
+  done
 
   if command -v rsync >/dev/null 2>&1; then
-    rsync -a \
-      --exclude '.git/' \
-      --exclude '__pycache__/' \
-      --exclude '.pytest_cache/' \
-      --exclude '.mypy_cache/' \
-      --exclude '.venv/' \
-      --exclude 'lib/web/' \
-      --exclude 'bin/ccb-web' \
-      "$REPO_ROOT"/ "$staging"/
+    rsync -a "${exclude_args[@]}" "$REPO_ROOT"/ "$staging"/
   else
-    tar -C "$REPO_ROOT" \
-      --exclude '.git' \
-      --exclude '__pycache__' \
-      --exclude '.pytest_cache' \
-      --exclude '.mypy_cache' \
-      --exclude '.venv' \
-      --exclude 'lib/web' \
-      --exclude 'bin/ccb-web' \
-      -cf - . | tar -C "$staging" -xf -
+    tar -C "$REPO_ROOT" "${exclude_args[@]}" -cf - . | tar -C "$staging" -xf -
   fi
 
-  rm -rf "$INSTALL_PREFIX"
-  mkdir -p "$(dirname "$INSTALL_PREFIX")"
-  mv "$staging" "$INSTALL_PREFIX"
+  with_install_lock replace_install_prefix_from_staging "$staging"
   trap - EXIT
 
   # Update GIT_COMMIT and GIT_DATE in ccb file
@@ -844,6 +1137,7 @@ copy_project() {
     sed -i.bak "s/^GIT_DATE = .*/GIT_DATE = \"$git_date\"/" "$INSTALL_PREFIX/ccb"
     rm -f "$INSTALL_PREFIX/ccb.bak"
   fi
+
 }
 
 install_bin_links() {
@@ -1741,10 +2035,8 @@ cleanup_legacy_files() {
   fi
 }
 
-install_all() {
-  require_major_upgrade_confirmation
-  install_requirements
-  remove_codex_mcp
+install_all_locked() {
+  guard_install_prefix_current "install_all"
   cleanup_legacy_files
   copy_project
   write_install_metadata
@@ -1760,6 +2052,14 @@ install_all() {
   install_clinerules_config
   install_settings_permissions
   install_tmux_config
+  seed_install_manifest
+}
+
+install_all() {
+  require_major_upgrade_confirmation
+  install_requirements
+  remove_codex_mcp
+  with_install_lock install_all_locked
   echo "OK: Installation complete"
   echo "   Project dir    : $INSTALL_PREFIX"
   echo "   Executable dir : $BIN_DIR"
@@ -2040,7 +2340,7 @@ uninstall_all() {
 
   # 1. Remove project directory
   if [[ -d "$INSTALL_PREFIX" ]]; then
-    rm -rf "$INSTALL_PREFIX"
+    with_install_lock remove_install_prefix_guarded
     echo "Removed project directory: $INSTALL_PREFIX"
   fi
 
@@ -2101,17 +2401,31 @@ uninstall_all() {
 }
 
 main() {
-  if [[ $# -ne 1 ]]; then
+  if [[ "${1:-}" == "--no-flock-i-accept-races" ]]; then
+    export CCB_INSTALL_NO_FLOCK_I_ACCEPT_RACES=1
+    shift
+  fi
+
+  if [[ $# -lt 1 || $# -gt 2 ]]; then
     usage
     exit 1
   fi
 
   case "$1" in
     install)
+      [[ $# -eq 1 ]] || { usage; exit 1; }
       install_all
       ;;
     uninstall)
+      [[ $# -eq 1 ]] || { usage; exit 1; }
       uninstall_all
+      ;;
+    seed-install-manifest)
+      [[ $# -eq 1 ]] || { usage; exit 1; }
+      seed_install_manifest
+      ;;
+    list-divergence)
+      list_install_divergence "${2:-$REPO_ROOT}"
       ;;
     *)
       usage
