@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -18,8 +19,11 @@ from provider_backends.codex.launcher_runtime.turn_id_probe import (
     apply_configured_startup_turn_id_probe,
     build_probe_cache_key,
     configured_startup_turn_id_probe,
+    discover_codex_binary,
+    probe_installed_codex_cli,
     probe_from_completion_log,
 )
+import provider_backends.codex.launcher_runtime.turn_id_probe as turn_id_probe_module
 from provider_execution.base import ProviderRuntimeContext, ProviderSubmission
 
 
@@ -134,6 +138,38 @@ fi
 echo "unexpected fake codex invocation: $*" >&2
 exit 2
 """.replace("TURN_ID_PLACEHOLDER", turn_id),
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    return binary
+
+
+def _write_fake_counting_codex(binary_dir: Path, counter_path: Path, *, turn_id: str = "turn-cache-probe") -> Path:
+    binary_dir.mkdir(parents=True, exist_ok=True)
+    binary = binary_dir / "codex"
+    binary.write_text(
+        """#!/bin/sh
+if [ "$1" = "--ask-for-approval" ]; then
+  shift 2
+fi
+if [ "$1" = "--version" ]; then
+  echo "codex fake 1.2.3"
+  exit 0
+fi
+if [ "$1" = "exec" ]; then
+  count=0
+  if [ -f "COUNTER_PATH_PLACEHOLDER" ]; then
+    count="$(cat "COUNTER_PATH_PLACEHOLDER")"
+  fi
+  count=$((count + 1))
+  printf '%s' "$count" > "COUNTER_PATH_PLACEHOLDER"
+  cat >/dev/null
+  printf '%s\n' '{"timestamp":"2026-05-01T03:17:31.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"TURN_ID_PLACEHOLDER","last_agent_message":"probe complete","completed_at":1777605451,"duration_ms":42,"time_to_first_token_ms":7}}'
+  exit 0
+fi
+echo "unexpected fake codex invocation: $*" >&2
+exit 2
+""".replace("COUNTER_PATH_PLACEHOLDER", counter_path.as_posix()).replace("TURN_ID_PLACEHOLDER", turn_id),
         encoding="utf-8",
     )
     binary.chmod(0o755)
@@ -292,6 +328,32 @@ def test_codex_startup_probe_uses_installed_cli_auto_discovery_when_no_log(
     assert result.turn_id == "turn-auto-probe"
 
 
+def test_codex_discovery_uses_home_default_prefix_without_speed_literal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_turn_id_probe_env(monkeypatch)
+    fake_home = tmp_path / "fakeuser"
+    binary = _write_fake_codex(fake_home / ".local" / "share" / "codex-dual" / "bin")
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("PATH", str(empty_path))
+
+    assert discover_codex_binary() == binary.resolve()
+
+
+def test_codex_discovery_uses_codex_install_prefix_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _clear_turn_id_probe_env(monkeypatch)
+    install_prefix = tmp_path / "custom-install"
+    binary = _write_fake_codex(install_prefix / "bin")
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    monkeypatch.setenv("PATH", str(empty_path))
+    monkeypatch.setenv("CODEX_INSTALL_PREFIX", str(install_prefix))
+
+    assert discover_codex_binary() == binary.resolve()
+
+
 def test_codex_startup_probe_reads_installed_cli_session_log_when_stdout_has_no_turn_id(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -327,10 +389,28 @@ def test_codex_startup_probe_disabled_env_override_skips_probe(
     assert "requires_rebind" not in runtime_state
 
 
+def test_codex_startup_probe_new_disabled_env_takes_precedence_over_old_alias(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_turn_id_probe_env(monkeypatch)
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    monkeypatch.setenv("PATH", str(empty_path))
+    monkeypatch.setenv("CCB_CODEX_TURN_ID_PROBE_DISABLED", "0")
+    monkeypatch.setenv("CCB_CODEX_TASK_ID_PROBE_DISABLED", "1")
+
+    result = configured_startup_turn_id_probe()
+
+    assert result is not None
+    assert result.state == BROKEN_STATE
+    assert "no installed Codex CLI found" in result.error
+
+
 def test_codex_startup_probe_deprecated_task_id_disabled_alias_warns(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _clear_turn_id_probe_env(monkeypatch)
+    monkeypatch.setattr(turn_id_probe_module, "_deprecated_alias_warned", False, raising=False)
     empty_path = tmp_path / "empty-path"
     empty_path.mkdir()
     monkeypatch.setenv("PATH", str(empty_path))
@@ -338,6 +418,91 @@ def test_codex_startup_probe_deprecated_task_id_disabled_alias_warns(
 
     assert configured_startup_turn_id_probe() is None
     assert "deprecated" in capsys.readouterr().err
+
+
+def test_codex_startup_probe_deprecated_task_id_disabled_alias_warns_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _clear_turn_id_probe_env(monkeypatch)
+    monkeypatch.setattr(turn_id_probe_module, "_deprecated_alias_warned", False, raising=False)
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    monkeypatch.setenv("PATH", str(empty_path))
+    monkeypatch.setenv("CCB_CODEX_TASK_ID_PROBE_DISABLED", "1")
+
+    assert configured_startup_turn_id_probe() is None
+    assert configured_startup_turn_id_probe() is None
+
+    assert capsys.readouterr().err.count("deprecated") == 1
+
+
+def test_codex_startup_probe_timeout_env_controls_probe_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_turn_id_probe_env(monkeypatch)
+    fake_bin = tmp_path / "bin"
+    binary = _write_fake_codex(fake_bin)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("CCB_CODEX_PROBE_TIMEOUT_SECONDS", "30")
+
+    result = configured_startup_turn_id_probe()
+
+    assert result is not None
+    assert result.state == "PASS"
+    assert Path(result.binary_realpath) == binary.resolve()
+    assert result.probe_timeout_seconds == 30
+
+
+def test_codex_installed_probe_timeout_message_names_config_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_bin = tmp_path / "bin"
+    binary = _write_fake_codex(fake_bin)
+
+    def fake_run(command, **kwargs):
+        if command[-1] == "--version":
+            return SimpleNamespace(returncode=0, stdout="codex fake 1.2.3\n", stderr="")
+        raise subprocess.TimeoutExpired(command, timeout=30, output="", stderr="")
+
+    monkeypatch.setattr(turn_id_probe_module.subprocess, "run", fake_run)
+
+    result = probe_installed_codex_cli(binary, probe_timeout_seconds=30)
+
+    assert result.state == BROKEN_STATE
+    assert "did not respond within 30s" in result.error
+    assert "CCB_CODEX_PROBE_TIMEOUT_SECONDS=30" in result.error
+
+
+def test_codex_installed_probe_caches_prior_pass_by_binary_version_and_mtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_turn_id_probe_env(monkeypatch)
+    counter_path = tmp_path / "exec-count"
+    binary = _write_fake_counting_codex(tmp_path / "bin", counter_path)
+    monkeypatch.setattr(turn_id_probe_module, "_PASSING_PROBE_CACHE", {}, raising=False)
+
+    first = probe_installed_codex_cli(binary)
+    second = probe_installed_codex_cli(binary)
+
+    assert first.state == "PASS"
+    assert second.state == "PASS"
+    assert second.turn_id == "turn-cache-probe"
+    assert counter_path.read_text(encoding="utf-8") == "1"
+
+
+def test_codex_startup_probe_bad_mtime_env_returns_broken_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_turn_id_probe_env(monkeypatch)
+    fixture = FIXTURE_DIR / "golden-task-complete-with-turn-id.jsonl"
+    monkeypatch.setenv("CCB_CODEX_TURN_ID_PROBE_LOG", str(fixture))
+    monkeypatch.setenv("CCB_CODEX_TURN_ID_PROBE_BINARY", "/usr/bin/codex")
+    monkeypatch.setenv("CCB_CODEX_TURN_ID_PROBE_VERSION", "codex 1.0.0")
+    monkeypatch.setenv("CCB_CODEX_TURN_ID_PROBE_MTIME_NS", "not-an-int")
+
+    result = configured_startup_turn_id_probe()
+
+    assert result is not None
+    assert result.state == BROKEN_STATE
+    assert "CCB_CODEX_TURN_ID_PROBE_MTIME_NS" in result.error
 
 
 def test_codex_bind_aborts_before_prompt_delivery_when_default_probe_fails(

@@ -87,7 +87,7 @@ This layout means:
 - bottom-right side: a horizontal split between `reviewer` and `qa`
 - `qa` runs in an isolated git worktree; `writer` and `reviewer` run inplace in the main project
 
-Codex startup verifies the installed Codex CLI emits a stable `turn_id` in its session log before prompt delivery. `CCB_CODEX_TURN_ID_PROBE_DISABLED=1` is available only as an emergency bypass; the old `CCB_CODEX_TASK_ID_PROBE_DISABLED` alias is deprecated and will be removed after one compatibility cycle.
+Codex startup verifies the installed Codex CLI emits a stable `turn_id` in its session log before prompt delivery. Slow first-run startup can use `CCB_CODEX_PROBE_TIMEOUT_SECONDS=30`; `CCB_CODEX_TURN_ID_PROBE_DISABLED=1` is available only as an emergency bypass. The old `CCB_CODEX_TASK_ID_PROBE_DISABLED` alias is deprecated and will be removed after one compatibility cycle.
 
 <h2 align="center">🚀 What's New</h2>
 

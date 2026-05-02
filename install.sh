@@ -216,6 +216,7 @@ Optional environment variables:
   CCB_BUILD_PLATFORM       Override build platform metadata (default: detected platform)
   CCB_BUILD_ARCH           Override build arch metadata (default: uname -m)
   CCB_BUILD_TIME           Override build timestamp metadata (default: current UTC time)
+  CCB_CODEX_PROBE_TIMEOUT_SECONDS Codex startup turn_id probe timeout (default: 10)
   CCB_CODEX_TURN_ID_PROBE_DISABLED Emergency Codex startup probe bypass (default: unset)
   CCB_SOURCE_KIND          Override source kind metadata (default: source if .git exists, else release)
   CCB_CONFIRM_MAJOR_UPGRADE Set to 1 to confirm replacing a pre-v6 install with v6+

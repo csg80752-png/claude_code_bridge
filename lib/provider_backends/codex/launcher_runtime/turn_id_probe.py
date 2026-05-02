@@ -12,7 +12,10 @@ from typing import Any
 
 CODEX_TURN_ID_PROBE_SCHEMA_VERSION = 1
 PROBE_TIMEOUT_SECONDS = 10
+PROBE_TIMEOUT_ENV = "CCB_CODEX_PROBE_TIMEOUT_SECONDS"
 BROKEN_STATE = "BROKEN"
+_PASSING_PROBE_CACHE: dict[str, "CodexTurnIdProbeResult"] = {}
+_deprecated_alias_warned = False
 
 
 @dataclass(frozen=True)
@@ -116,7 +119,7 @@ def probe_from_completion_log(
         version=version,
         binary_mtime_ns=binary_mtime_ns,
         completion_log_path=str(path),
-        error="turn_id missing from task_complete entry",
+        error="Codex CLI emitted no turn_id in task_complete entry; schema mismatch?",
         probe_timeout_seconds=probe_timeout_seconds,
     )
 
@@ -150,6 +153,17 @@ def configured_startup_turn_id_probe() -> CodexTurnIdProbeResult | None:
     if _probe_disabled():
         return None
 
+    probe_timeout_seconds, timeout_error = _env_int(PROBE_TIMEOUT_ENV, default=PROBE_TIMEOUT_SECONDS)
+    if timeout_error:
+        return CodexTurnIdProbeResult.broken_result(
+            binary_realpath="codex",
+            version="unknown",
+            binary_mtime_ns=0,
+            completion_log_path="",
+            error=timeout_error,
+            probe_timeout_seconds=PROBE_TIMEOUT_SECONDS,
+        )
+
     log_path = os.environ.get("CCB_CODEX_TURN_ID_PROBE_LOG", "").strip()
     if not log_path:
         binary = discover_codex_binary()
@@ -160,13 +174,25 @@ def configured_startup_turn_id_probe() -> CodexTurnIdProbeResult | None:
                 binary_mtime_ns=0,
                 completion_log_path="",
                 error="no installed Codex CLI found for startup turn_id probe",
+                probe_timeout_seconds=probe_timeout_seconds,
             )
-        return probe_installed_codex_cli(binary)
+        return probe_installed_codex_cli(binary, probe_timeout_seconds=probe_timeout_seconds)
+    binary_mtime_ns, mtime_error = _env_int("CCB_CODEX_TURN_ID_PROBE_MTIME_NS", default=0)
+    if mtime_error:
+        return CodexTurnIdProbeResult.broken_result(
+            binary_realpath=os.environ.get("CCB_CODEX_TURN_ID_PROBE_BINARY", "codex"),
+            version=os.environ.get("CCB_CODEX_TURN_ID_PROBE_VERSION", "unknown"),
+            binary_mtime_ns=0,
+            completion_log_path=log_path,
+            error=mtime_error,
+            probe_timeout_seconds=probe_timeout_seconds,
+        )
     return probe_from_completion_log(
         log_path,
         binary_realpath=os.environ.get("CCB_CODEX_TURN_ID_PROBE_BINARY", "codex"),
         version=os.environ.get("CCB_CODEX_TURN_ID_PROBE_VERSION", "unknown"),
-        binary_mtime_ns=int(os.environ.get("CCB_CODEX_TURN_ID_PROBE_MTIME_NS", "0") or 0),
+        binary_mtime_ns=binary_mtime_ns,
+        probe_timeout_seconds=probe_timeout_seconds,
     )
 
 
@@ -219,6 +245,11 @@ def probe_installed_codex_cli(
         )
 
     version = _codex_version(binary, probe_timeout_seconds=probe_timeout_seconds)
+    cache_key = build_probe_cache_key(str(binary), version, stat_result.st_mtime_ns)
+    cached_result = _PASSING_PROBE_CACHE.get(cache_key)
+    if cached_result is not None and cached_result.state == "PASS":
+        return cached_result
+
     probe_log_path = _new_probe_log_path()
     command = [
         str(binary),
@@ -249,7 +280,10 @@ def probe_installed_codex_cli(
             version=version,
             binary_mtime_ns=stat_result.st_mtime_ns,
             completion_log_path=str(probe_log_path),
-            error=f"Codex CLI startup turn_id probe timed out after {probe_timeout_seconds}s",
+            error=(
+                f"Codex CLI startup turn_id probe did not respond within {probe_timeout_seconds}s; "
+                f"slow startup or auth refresh may need {PROBE_TIMEOUT_ENV}=30"
+            ),
             probe_timeout_seconds=probe_timeout_seconds,
         )
     except OSError as exc:
@@ -281,17 +315,21 @@ def probe_installed_codex_cli(
         probe_timeout_seconds=probe_timeout_seconds,
     )
     if stdout_result.state == "PASS":
+        _PASSING_PROBE_CACHE[cache_key] = stdout_result
         return stdout_result
 
     session_log_path = _session_log_path_for_stdout(completed.stdout)
     if session_log_path is not None:
-        return probe_from_completion_log(
+        session_result = probe_from_completion_log(
             session_log_path,
             binary_realpath=str(binary),
             version=version,
             binary_mtime_ns=stat_result.st_mtime_ns,
             probe_timeout_seconds=probe_timeout_seconds,
         )
+        if session_result.state == "PASS":
+            _PASSING_PROBE_CACHE[cache_key] = session_result
+        return session_result
     return stdout_result
 
 
@@ -391,25 +429,67 @@ def _env_truthy(name: str) -> bool:
 
 
 def _probe_disabled() -> bool:
-    if _env_truthy("CCB_CODEX_TURN_ID_PROBE_DISABLED"):
-        return True
+    if "CCB_CODEX_TURN_ID_PROBE_DISABLED" in os.environ:
+        return _env_truthy("CCB_CODEX_TURN_ID_PROBE_DISABLED")
     if _env_truthy("CCB_CODEX_TASK_ID_PROBE_DISABLED"):
-        print(
-            "WARN: CCB_CODEX_TASK_ID_PROBE_DISABLED is deprecated; use CCB_CODEX_TURN_ID_PROBE_DISABLED",
-            file=sys.stderr,
-        )
+        _warn_deprecated_task_id_probe_disabled_alias()
         return True
     return False
 
 
+def _warn_deprecated_task_id_probe_disabled_alias() -> None:
+    global _deprecated_alias_warned
+    if _deprecated_alias_warned:
+        return
+    print(
+        "WARN: CCB_CODEX_TASK_ID_PROBE_DISABLED is deprecated; use CCB_CODEX_TURN_ID_PROBE_DISABLED",
+        file=sys.stderr,
+    )
+    _deprecated_alias_warned = True
+
+
 def _known_codex_install_prefixes() -> tuple[Path, ...]:
-    live_prefix = Path("/home/speed/.local/share/codex-dual")
-    prefixes = [live_prefix]
+    prefixes: list[Path] = []
+    for env_name in ("CODEX_INSTALL_PREFIX", "CCB_CODEX_INSTALL_PREFIX"):
+        raw_value = os.environ.get(env_name, "").strip()
+        if raw_value:
+            prefixes.append(Path(raw_value).expanduser())
+    xdg_data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    if xdg_data_home:
+        prefixes.append(Path(xdg_data_home).expanduser() / "codex-dual")
+    prefixes.append(Path.home() / ".local" / "share" / "codex-dual")
+
+    expanded: list[Path] = []
+    seen: set[str] = set()
+    for prefix in prefixes:
+        for candidate in _prefix_and_symlink_target(prefix):
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            expanded.append(candidate)
+    return tuple(expanded)
+
+
+def _prefix_and_symlink_target(prefix: Path) -> tuple[Path, ...]:
+    normalized = prefix.expanduser()
     try:
-        prefixes.append(live_prefix.resolve())
+        resolved = normalized.resolve()
     except OSError:
-        pass
-    return tuple(prefixes)
+        return (normalized,)
+    if resolved == normalized:
+        return (normalized,)
+    return (normalized, resolved)
+
+
+def _env_int(name: str, *, default: int) -> tuple[int, str]:
+    raw_value = os.environ.get(name)
+    if raw_value in (None, ""):
+        return default, ""
+    try:
+        return int(str(raw_value).strip()), ""
+    except (TypeError, ValueError):
+        return default, f"invalid integer for {name}: {raw_value!r}"
 
 
 def _is_executable_file(path: Path) -> bool:
