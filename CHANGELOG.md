@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Codex Turn Identity Probe**: Codex startup now verifies `payload.turn_id` from the real session log instead of the removed synthetic `task_id` probe path.
+- **Emergency Probe Override Renamed**: Use `CCB_CODEX_TURN_ID_PROBE_DISABLED=1` only for emergency bypasses; `CCB_CODEX_TASK_ID_PROBE_DISABLED=1` remains as a one-cycle deprecated alias with a warning.
+- **Install Metadata**: `BUILD_INFO.json` now records the installed Codex CLI version observed at install time.
+
 ## v6.0.4 (2026-04-17)
 
 ### 🔁 Legacy Update Compatibility

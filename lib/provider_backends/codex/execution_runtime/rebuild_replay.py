@@ -75,9 +75,7 @@ def reset_poll_binding_fields_for_rebuild(state: dict[str, object]) -> None:
     no_wrap = bool(state.get("no_wrap", False))
     state["anchor_seen"] = no_wrap
     state["bound_turn_id"] = ""
-    state["bound_task_id"] = ""
     state["current_turn_id"] = ""
-    state["current_task_id"] = ""
     state["current_turn_started"] = False
     state["bound_turn_started"] = False
     state["reply_buffer"] = ""

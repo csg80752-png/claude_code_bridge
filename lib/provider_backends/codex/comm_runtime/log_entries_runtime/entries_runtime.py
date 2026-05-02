@@ -34,7 +34,6 @@ def base_entry(entry: dict) -> tuple[dict[str, Any], dict[str, Any]]:
             "timestamp": entry.get("timestamp"),
             "phase": payload.get("phase"),
             "turn_id": payload.get("turn_id"),
-            "task_id": payload.get("task_id"),
             "reason": payload.get("reason"),
             "last_agent_message": payload.get("last_agent_message"),
             "entry": entry,

@@ -87,6 +87,8 @@ This layout means:
 - bottom-right side: a horizontal split between `reviewer` and `qa`
 - `qa` runs in an isolated git worktree; `writer` and `reviewer` run inplace in the main project
 
+Codex startup verifies the installed Codex CLI emits a stable `turn_id` in its session log before prompt delivery. `CCB_CODEX_TURN_ID_PROBE_DISABLED=1` is available only as an emergency bypass; the old `CCB_CODEX_TASK_ID_PROBE_DISABLED` alias is deprecated and will be removed after one compatibility cycle.
+
 <h2 align="center">🚀 What's New</h2>
 
 Historical note: older release notes below may mention `askd`, legacy flags, or removed commands. Those references are kept only as changelog history and do not redefine the current CLI surface.

@@ -39,7 +39,6 @@ def test_extract_user_message_from_response_item_input_text() -> None:
         'timestamp': None,
         'phase': None,
         'turn_id': None,
-        'task_id': None,
         'reason': None,
         'last_agent_message': None,
         'entry': entry,

@@ -53,7 +53,6 @@ def start_active_submission(
         'next_seq': 1,
         'anchor_seen': no_wrap,
         'bound_turn_id': '',
-        'bound_task_id': '',
         'reply_buffer': '',
         'last_agent_message': '',
         'last_final_answer': '',
@@ -63,18 +62,18 @@ def start_active_submission(
         'no_wrap': no_wrap,
     }
     try:
-        from provider_backends.codex.launcher_runtime.task_id_probe import (
-            apply_configured_startup_task_id_probe,
+        from provider_backends.codex.launcher_runtime.turn_id_probe import (
+            apply_configured_startup_turn_id_probe,
         )
 
-        apply_configured_startup_task_id_probe(runtime_state)
+        apply_configured_startup_turn_id_probe(runtime_state)
     except RuntimeError:
         raise
     except Exception as exc:
-        runtime_state['requires_task_id'] = True
-        runtime_state['codex_task_id_probe_state'] = 'BROKEN'
+        runtime_state['requires_turn_id'] = True
+        runtime_state['codex_turn_id_probe_state'] = 'BROKEN'
         runtime_state['requires_rebind'] = True
-        raise RuntimeError(f"Codex task_id startup probe failed: {exc}") from exc
+        raise RuntimeError(f"Codex turn_id startup probe failed: {exc}") from exc
     _stash_reader_freshness(runtime_state, prepared.session)
     send_prompt_to_runtime_target(prepared.backend, prepared.pane_id, prompt)
 

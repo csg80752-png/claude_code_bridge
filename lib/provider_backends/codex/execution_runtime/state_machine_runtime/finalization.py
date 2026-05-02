@@ -33,7 +33,7 @@ def finalize_poll_result(
             **submission.runtime_state,
             "state": state,
             **to_runtime_state(poll),
-            **_task_id_broken_state(poll),
+            **_turn_id_broken_state(poll),
         },
     )
     if not poll.items:
@@ -43,9 +43,9 @@ def finalize_poll_result(
     return ProviderPollResult(submission=updated_submission, items=tuple(poll.items))
 
 
-def _task_id_broken_state(poll: CodexPollState) -> dict[str, object]:
-    if poll.requires_task_id and poll.bound_turn_contaminated:
-        return {"codex_task_id_probe_state": "BROKEN", "requires_rebind": True}
+def _turn_id_broken_state(poll: CodexPollState) -> dict[str, object]:
+    if poll.requires_turn_id and poll.bound_turn_contaminated:
+        return {"codex_turn_id_probe_state": "BROKEN", "requires_rebind": True}
     return {}
 
 

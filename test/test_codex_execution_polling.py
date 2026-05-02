@@ -99,7 +99,6 @@ def test_handle_assistant_entry_records_final_answer() -> None:
         next_seq=1,
         anchor_seen=True,
         bound_turn_id="turn-1",
-        bound_task_id="task-1",
         reply_buffer="",
         last_agent_message="",
         last_final_answer="",
@@ -111,7 +110,7 @@ def test_handle_assistant_entry_records_final_answer() -> None:
     handle_assistant_entry(
         _submission(),
         poll,
-        {"text": "final answer", "phase": "final_answer", "id": "evt-1", "turn_id": "turn-1", "task_id": "task-1"},
+        {"text": "final answer", "phase": "final_answer", "id": "evt-1", "turn_id": "turn-1"},
         now="2026-04-06T00:01:00Z",
     )
 
@@ -119,7 +118,7 @@ def test_handle_assistant_entry_records_final_answer() -> None:
     assert poll.items[0].kind is CompletionItemKind.ASSISTANT_CHUNK
     assert poll.items[0].payload["phase"] == "final_answer"
     assert poll.items[0].payload["turn_id"] == "turn-1"
-    assert poll.items[0].payload["task_id"] == "task-1"
+    assert "task_id" not in poll.items[0].payload
 
 
 def test_handle_terminal_entry_emits_turn_aborted_payload() -> None:
@@ -128,7 +127,6 @@ def test_handle_terminal_entry_emits_turn_aborted_payload() -> None:
         next_seq=2,
         anchor_seen=True,
         bound_turn_id="turn-1",
-        bound_task_id="task-1",
         reply_buffer="partial",
         last_agent_message="",
         last_final_answer="",
@@ -145,7 +143,6 @@ def test_handle_terminal_entry_emits_turn_aborted_payload() -> None:
             "reason": "cancelled",
             "text": "user cancelled",
             "turn_id": "turn-1",
-            "task_id": "task-1",
         },
         now="2026-04-06T00:01:00Z",
     )
