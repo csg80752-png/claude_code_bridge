@@ -645,9 +645,29 @@ detect_codex_cli_version() {
     echo "$CCB_CODEX_CLI_VERSION"
     return
   fi
-  if command -v codex >/dev/null 2>&1; then
-    codex --version 2>/dev/null | head -1 || true
+  if ! command -v codex >/dev/null 2>&1; then
+    return
   fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5s codex --version 2>/dev/null | head -1 || true
+    return
+  fi
+  detect_codex_cli_version_without_timeout
+}
+
+detect_codex_cli_version_without_timeout() {
+  local line probe_fd probe_pid
+  coproc CCB_CODEX_VERSION_PROBE { codex --version 2>/dev/null; }
+  probe_fd="${CCB_CODEX_VERSION_PROBE[0]}"
+  probe_pid="${CCB_CODEX_VERSION_PROBE_PID:-}"
+  if IFS= read -r -t 5 line <&"$probe_fd"; then
+    printf '%s\n' "$line"
+  fi
+  exec {probe_fd}<&- 2>/dev/null || true
+  if [[ -n "$probe_pid" ]] && kill -0 "$probe_pid" 2>/dev/null; then
+    kill "$probe_pid" 2>/dev/null || true
+  fi
+  wait "$probe_pid" 2>/dev/null || true
 }
 
 write_install_metadata() {
