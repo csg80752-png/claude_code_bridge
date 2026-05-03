@@ -854,7 +854,7 @@ def test_ccbd_socket_codex_protocol_turn_completes_via_tracker(monkeypatch, tmp_
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'codex'))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -989,7 +989,7 @@ def test_ccbd_socket_codex_protocol_turn_handles_interrupted_abort(monkeypatch, 
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'codex'))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1105,7 +1105,7 @@ def test_ccbd_socket_claude_session_boundary_completes_via_tracker(monkeypatch, 
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'claude'))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1206,7 +1206,7 @@ def test_ccbd_socket_claude_turn_duration_completion_without_done_marker(monkeyp
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'claude'))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1298,7 +1298,7 @@ def test_ccbd_socket_gemini_session_snapshot_completes_via_tracker(monkeypatch, 
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'gemini'))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1401,7 +1401,7 @@ def test_ccbd_socket_gemini_long_silence_and_session_rotate_do_not_finish_early(
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'gemini'))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1509,7 +1509,7 @@ def test_ccbd_socket_gemini_tool_call_progress_does_not_finish_on_first_round(mo
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'gemini'))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1621,7 +1621,7 @@ def test_ccbd_socket_gemini_rotate_clears_stale_reply_preview(monkeypatch, tmp_p
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'gemini'))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1732,7 +1732,7 @@ def test_ccbd_socket_opencode_completed_reply_uses_session_boundary_tracker(monk
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'opencode'))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1821,7 +1821,7 @@ def test_ccbd_socket_opencode_pane_dead_becomes_failed_degraded(monkeypatch, tmp
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'opencode'))
 
     class DeadBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1901,7 +1901,7 @@ def test_ccbd_socket_droid_legacy_completion_via_tracker(monkeypatch, tmp_path: 
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'droid'))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1995,7 +1995,7 @@ def test_ccbd_socket_droid_pane_dead_becomes_failed_degraded(monkeypatch, tmp_pa
     _write(project_root / '.ccb' / 'ccb.config', _single_agent_config_text('demo', 'droid'))
 
     class DeadBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:

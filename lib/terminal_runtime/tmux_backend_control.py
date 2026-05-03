@@ -12,9 +12,9 @@ from terminal_runtime.tmux_backend_runtime import (
 
 
 class TmuxBackendControlMixin:
-    def send_text_to_pane(self, pane_id: str, text: str) -> None:
+    def send_text_to_pane(self, pane_id: str, text: str, *, extra_enter: bool = False) -> None:
         pane_id = self._require_pane_id(pane_id, action='send_text_to_pane')
-        self.send_text(pane_id, text)
+        self.send_text(pane_id, text, extra_enter=extra_enter)
 
     def is_tmux_pane_alive(self, pane_id: str) -> bool:
         pane_id = self._require_pane_id(pane_id, action='is_tmux_pane_alive')
@@ -24,8 +24,8 @@ class TmuxBackendControlMixin:
         pane_id = self._require_pane_id(pane_id, action='kill_tmux_pane')
         self._tmux_run(['kill-pane', '-t', pane_id], check=False)
 
-    def send_text(self, pane_id: str, text: str) -> None:
-        self._services.text_sender.send_text(pane_id, text)
+    def send_text(self, pane_id: str, text: str, *, extra_enter: bool = False) -> None:
+        self._services.text_sender.send_text(pane_id, text, extra_enter=extra_enter)
 
     def _text_sender(self) -> TmuxTextSender:
         return self._services.text_sender

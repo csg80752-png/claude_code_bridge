@@ -199,7 +199,7 @@ def test_poll_submission_reply_delivery_waits_for_ready_prompt(monkeypatch) -> N
             assert lines == 120
             return "Claude is still busy"
 
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
     prepared = SimpleNamespace(reader=object(), backend=BusyBackend(), pane_id="%1")
@@ -273,7 +273,7 @@ def test_poll_submission_reply_delivery_completes_after_dispatch(monkeypatch) ->
             assert lines == 120
             return "❯\n  ? for shortcuts"
 
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
     prepared = SimpleNamespace(reader=object(), backend=ReadyBackend(), pane_id="%1")

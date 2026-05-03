@@ -21,7 +21,7 @@ class TmuxTextSender:
     randint_fn: Callable[[int, int], int] = random.randint
     sleep_fn: Callable[[float], None] = time.sleep
 
-    def send_text(self, pane_id: str, text: str) -> None:
+    def send_text(self, pane_id: str, text: str, *, extra_enter: bool = False) -> None:
         sanitized = self.sanitize_text_fn(text)
         if not sanitized:
             return
@@ -32,14 +32,17 @@ class TmuxTextSender:
             if self.should_use_inline_legacy_send_fn(target_is_tmux=target_is_tmux, text=sanitized):
                 self.tmux_run_fn(['send-keys', '-t', session, '-l', sanitized], check=True)
                 self.tmux_run_fn(['send-keys', '-t', session, 'Enter'], check=True)
+                if extra_enter:
+                    self.sleep_fn(self.env_float_fn('CCB_TMUX_ENTER_DELAY', 0.5))
+                    self.tmux_run_fn(['send-keys', '-t', session, 'Enter'], check=True)
                 return
-            self._paste_via_buffer(target=session, text=sanitized, pane_target=False)
+            self._paste_via_buffer(target=session, text=sanitized, pane_target=False, extra_enter=extra_enter)
             return
 
         self.ensure_not_in_copy_mode_fn(pane_id)
-        self._paste_via_buffer(target=pane_id, text=sanitized, pane_target=True)
+        self._paste_via_buffer(target=pane_id, text=sanitized, pane_target=True, extra_enter=extra_enter)
 
-    def _paste_via_buffer(self, *, target: str, text: str, pane_target: bool) -> None:
+    def _paste_via_buffer(self, *, target: str, text: str, pane_target: bool, extra_enter: bool = False) -> None:
         buffer_name = self.build_buffer_name_fn(
             pid=self.os_getpid_fn(),
             now_ms=int(self.time_fn() * 1000),
@@ -57,5 +60,11 @@ class TmuxTextSender:
                     ['paste-buffer', '-t', target, '-b', buffer_name, '-p', ';', 'send-keys', '-t', target, 'Enter'],
                     check=True,
                 )
+            if extra_enter:
+                # Claude CLI bracketed paste needs a 2nd Enter to actually submit.
+                # Delay gives the CLI time to consume the bracketed-paste end marker
+                # before the second Enter fires; otherwise tmux merges them.
+                self.sleep_fn(self.env_float_fn('CCB_TMUX_ENTER_DELAY', 0.5))
+                self.tmux_run_fn(['send-keys', '-t', target, 'Enter'], check=True)
         finally:
             self.tmux_run_fn(['delete-buffer', '-b', buffer_name], check=False)

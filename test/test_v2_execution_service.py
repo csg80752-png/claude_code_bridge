@@ -238,7 +238,7 @@ def test_execution_service_claude_adapter_emits_session_boundary_items_from_log(
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -302,7 +302,7 @@ def test_execution_service_claude_adapter_respects_no_wrap_provider_option(
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -355,7 +355,7 @@ def test_execution_service_claude_adapter_completes_on_turn_duration_without_don
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -420,7 +420,7 @@ def test_execution_service_claude_adapter_prefers_exact_hook_artifact(
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -491,10 +491,10 @@ def test_execution_service_claude_exact_hook_submission_uses_strict_tmux_sender(
     strict_sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text_to_pane(self, pane_id: str, text: str) -> None:
+        def send_text_to_pane(self, pane_id: str, text: str, **kwargs) -> None:
             strict_sent.append((pane_id, text))
 
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             raise AssertionError(f'legacy sender should not be used: {pane_id} {text}')
 
     class FakeSession:
@@ -554,7 +554,7 @@ def test_execution_service_claude_adapter_ignores_subagent_turn_boundary(
     fixed_req_id = '20260318-000000-000-3-subagent'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -621,7 +621,7 @@ def test_execution_service_claude_adapter_fails_on_terminal_api_error(
     fixed_req_id = '20260318-000000-000-3-api-error'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -697,7 +697,7 @@ def test_execution_service_claude_adapter_fails_on_pre_anchor_terminal_api_error
     from provider_execution import claude as claude_adapter_module
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -770,7 +770,7 @@ def test_execution_service_claude_adapter_advances_state_across_nonterminal_api_
     fixed_req_id = '20260318-000000-000-3-api-retry'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -861,7 +861,7 @@ def test_execution_service_claude_adapter_reports_pane_dead(monkeypatch: pytest.
     from provider_execution import claude as claude_adapter_module
 
     class DeadBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -907,7 +907,7 @@ def test_execution_service_claude_adapter_reanchors_after_session_rotate(
     fixed_req_id = '20260318-000000-000-3-rotate'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -977,7 +977,7 @@ def test_execution_service_claude_adapter_after_rotate_only_new_main_boundary_co
     fixed_req_id = '20260318-000000-000-3-rotate-subagent'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1101,7 +1101,7 @@ def test_execution_service_claude_adapter_can_resume_after_restart(monkeypatch: 
     fixed_req_id = '20260318-000000-000-3-resume'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1175,7 +1175,7 @@ def test_execution_service_claude_persists_before_ready_wait_and_resumes_prompt_
     pane_text = {'value': 'Starting Claude...'}
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1272,7 +1272,7 @@ def test_execution_service_codex_adapter_emits_protocol_items_from_log(monkeypat
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1371,7 +1371,7 @@ def test_execution_service_codex_adapter_respects_no_wrap_provider_option(
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1454,7 +1454,7 @@ def test_execution_service_codex_adapter_maps_turn_aborted_terminal_states(
     fixed_req_id = f'20260318-000000-000-1-{abort_reason}'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1528,7 +1528,7 @@ def test_execution_service_codex_adapter_reports_pane_dead(monkeypatch: pytest.M
     from provider_execution import codex as codex_adapter_module
 
     class DeadBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1573,13 +1573,13 @@ def test_execution_service_codex_adapter_prefers_strict_tmux_target_helpers(
     calls: list[tuple[str, str]] = []
 
     class StrictBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             raise AssertionError(f'legacy send_text should not be used: {pane_id} {text}')
 
         def is_alive(self, pane_id: str) -> bool:
             raise AssertionError(f'legacy is_alive should not be used: {pane_id}')
 
-        def send_text_to_pane(self, pane_id: str, text: str) -> None:
+        def send_text_to_pane(self, pane_id: str, text: str, **kwargs) -> None:
             calls.append(('send', pane_id))
 
         def is_tmux_pane_alive(self, pane_id: str) -> bool:
@@ -1623,7 +1623,7 @@ def test_execution_service_codex_adapter_can_resume_after_restart(monkeypatch: p
     fixed_req_id = '20260318-000000-000-1-resume'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -1713,7 +1713,7 @@ def test_execution_service_codex_adapter_persists_log_switch_without_immediate_e
     fixed_req_id = '20260318-000000-000-1-logswitch'
 
     class FakeBackend:
-        def send_text_to_pane(self, pane_id: str, text: str) -> None:
+        def send_text_to_pane(self, pane_id: str, text: str, **kwargs) -> None:
             assert pane_id == '%22'
             assert fixed_req_id in text
 
@@ -2130,7 +2130,7 @@ def test_execution_service_gemini_adapter_emits_session_snapshot_items(monkeypat
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2194,7 +2194,7 @@ def test_execution_service_gemini_adapter_respects_no_wrap_provider_option(
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2254,7 +2254,7 @@ def test_execution_service_gemini_adapter_reanchors_after_session_rotate(
     fixed_req_id = '20260318-000000-000-5-rotate'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2322,7 +2322,7 @@ def test_execution_service_gemini_adapter_reports_pane_dead(monkeypatch: pytest.
     from provider_execution import gemini as gemini_adapter_module
 
     class DeadBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2372,7 +2372,7 @@ def test_execution_service_gemini_adapter_prefers_exact_hook_artifact(
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2447,7 +2447,7 @@ def test_execution_service_gemini_adapter_maps_exact_hook_failures_to_api_error(
     )
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2529,10 +2529,10 @@ def test_execution_service_gemini_exact_hook_submission_uses_strict_tmux_sender(
     strict_sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text_to_pane(self, pane_id: str, text: str) -> None:
+        def send_text_to_pane(self, pane_id: str, text: str, **kwargs) -> None:
             strict_sent.append((pane_id, text))
 
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             raise AssertionError(f'legacy sender should not be used: {pane_id} {text}')
 
     class FakeSession:
@@ -2591,7 +2591,7 @@ def test_execution_service_gemini_adapter_can_resume_after_restart(monkeypatch: 
     fixed_req_id = '20260318-000000-000-2-resume'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2659,7 +2659,7 @@ def test_execution_service_gemini_adapter_defers_prompt_until_ready_and_persists
     pane_text = {'value': 'Gemini is starting'}
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2759,7 +2759,7 @@ def test_execution_service_opencode_adapter_emits_boundary_for_completed_reply(m
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2821,7 +2821,7 @@ def test_execution_service_opencode_adapter_respects_no_wrap_provider_option(
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2877,7 +2877,7 @@ def test_execution_service_opencode_adapter_reanchors_after_session_rotate(
     fixed_req_id = '20260318-000000-000-6-rotate'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:
@@ -2944,7 +2944,7 @@ def test_execution_service_droid_adapter_emits_legacy_items_from_events(monkeypa
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -3011,7 +3011,7 @@ def test_execution_service_droid_adapter_respects_no_wrap_provider_option(
     sent: list[tuple[str, str]] = []
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             sent.append((pane_id, text))
 
         def is_alive(self, pane_id: str) -> bool:
@@ -3071,7 +3071,7 @@ def test_execution_service_droid_adapter_reanchors_after_session_rotate(
     fixed_req_id = '20260318-000000-000-7-rotate'
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:

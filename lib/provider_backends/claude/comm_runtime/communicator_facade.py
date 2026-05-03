@@ -86,7 +86,8 @@ class ClaudeCommunicator:
     def _send_via_terminal(self, content: str) -> bool:
         if not self.backend or not self.pane_id:
             raise RuntimeError("Terminal session not configured")
-        self.backend.send_text(self.pane_id, content)
+        # Claude CLI bracketed paste needs a 2nd Enter to submit.
+        self.backend.send_text(self.pane_id, content, extra_enter=True)
         return True
 
     def _remember_claude_session(self, session_path: Path) -> None:

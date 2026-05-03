@@ -21,7 +21,7 @@ class _Backend:
     def get_pane_content(self, pane_id: str, lines: int = 120) -> str:
         return self._pane_text
 
-    def send_text_to_pane(self, pane_id: str, text: str) -> None:
+    def send_text_to_pane(self, pane_id: str, text: str, **kwargs) -> None:
         self.injected.append(text)
 
 

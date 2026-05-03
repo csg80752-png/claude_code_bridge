@@ -48,7 +48,8 @@ def state_session_path(state: dict[str, object]) -> str:
 
 
 def send_prompt(backend: object, pane_id: str, text: str) -> None:
-    send_prompt_to_runtime_target(backend, pane_id, text)
+    # Claude CLI bracketed paste needs a 2nd Enter to submit.
+    send_prompt_to_runtime_target(backend, pane_id, text, extra_enter=True)
 
 
 def resolved_ready_timeout(timeout_s: float = 8.0) -> float:
