@@ -124,6 +124,16 @@ def _deliver_cmd_replies(dispatcher):
     independently deliverable to the pane (root cause confirmed 2026-05-03
     KST via live ack probe; v8.3.3 cmd-pending-sweep fix).
 
+    Ordering preservation: the sweep ONLY skips ahead past events that are
+    fully resolved this tick — already-injected (cache hit), abandoned
+    (malformed payload), or suppressed-and-acked (heartbeat / cancelled
+    empty). Any deferred outcome (gate hold, reply_store race, planning
+    exception, pane unavailability) STOPS the sweep, so a later reply
+    never overtakes an earlier reply still waiting to surface. Without
+    this stop-on-defer rule, a transient pre-plan gate `not ready` on r1
+    would let r2 inject ahead of r1, violating cmd mailbox ordering
+    (codex review [P2] finding 2026-05-03 KST; v8.3.3 R2 fix).
+
     Idempotency: reply_ids already injected are cached in an LRU on the
     dispatcher so we don't spam the pane on every tick while the user
     hasn't acked yet. Environmental failures (no pane, dead backend) return
@@ -213,15 +223,20 @@ def _deliver_cmd_replies(dispatcher):
 
         reply = reply_store.get_latest(reply_id)
         if reply is None:
-            # Rare race with a concurrent reply writer; try this event again next tick.
-            continue
+            # Rare race with a concurrent reply writer. Stop the sweep here
+            # so a later reply that is fully written cannot overtake this
+            # one in the cmd pane; retry this event next tick.
+            break
 
         if _should_suppress_cmd_reply(reply):
             _try_ack(kernel, head, timestamp=dispatcher._clock())
             continue
 
         if not _ensure_pane_init():
-            continue
+            # Pane unavailable. pane_state[2] is now True so any retry is
+            # pointless until next tick; stop the sweep so later events
+            # don't get spuriously skipped past this still-undelivered head.
+            break
         cmd_pane_id = pane_state[0]
         backend = pane_state[1]
 
@@ -242,7 +257,11 @@ def _deliver_cmd_replies(dispatcher):
                 held_reason=held_reason,
                 delivery_mode_result=delivery_mode_result,
             )
-            continue
+            # Stop the sweep on a pre-plan hold of an undelivered reply.
+            # Continuing past a held r1 could let r2's gate probe succeed
+            # and inject r2 into the pane before r1, breaking cmd mailbox
+            # order (codex review [P2] 2026-05-03 KST).
+            break
 
         try:
             plan, fallback = plan_cmd_delivery(
@@ -268,7 +287,9 @@ def _deliver_cmd_replies(dispatcher):
                 pane_alive=True,
                 cached=False,
             )
-            continue
+            # Stop the sweep so a later reply does not inject ahead of
+            # this one while we wait for the next tick to retry planning.
+            break
 
         if fallback is not None:
             record_long_reply_fallback(
@@ -297,7 +318,9 @@ def _deliver_cmd_replies(dispatcher):
                 held_reason=held_reason,
                 delivery_mode_result=delivery_mode_result,
             )
-            continue
+            # Stop the sweep on a post-plan hold for the same ordering
+            # reason as the pre-plan hold above.
+            break
 
         try:
             backend.send_text_to_pane(cmd_pane_id, plan.body)

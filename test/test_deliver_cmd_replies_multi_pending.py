@@ -15,6 +15,13 @@ not as a head-pin. The codex 2026-04-22 contract is preserved — the
 dispatcher still does not consume head for real replies; only suppressed
 events (heartbeats / cancelled-empty) are auto-acked via `_try_ack`, and
 only when they are actually at head.
+
+v8.3.3 R2 ordering preservation (codex review [P2] 2026-05-03 KST): the
+sweep only skips ahead past events that are fully resolved this tick
+(cache hit, abandoned malformed payload, suppressed-and-acked). Any
+deferred outcome (gate hold, reply_store race, planning exception, pane
+unavailability) STOPS the sweep so a later reply never overtakes an
+earlier reply still waiting to surface.
 """
 from pathlib import Path
 from types import SimpleNamespace
@@ -217,3 +224,129 @@ def test_deliver_cmd_replies_chains_heartbeat_acks_across_ticks(monkeypatch, tmp
 
     # No additional injects on tick 2 (heartbeats are suppressed).
     assert len(backend.sent) == 1
+
+
+def test_deliver_cmd_replies_stops_sweep_on_pre_plan_hold(monkeypatch, tmp_path):
+    """[P2] codex 2026-05-03: a pre-plan gate hold on r1 must NOT let r2 inject.
+
+    Pre-fix sweep: hold(r1) → continue → gate(r2)=ready → inject(r2).
+    Post-fix sweep: hold(r1) → break. r2 never touched this tick.
+    """
+    dispatcher, kernel, inbound_store, reply_store, backend = _setup(monkeypatch, tmp_path)
+
+    held = []
+    monkeypatch.setattr(
+        cmd_replies,
+        '_hold_cmd_delivery',
+        lambda dispatcher, reply_id, **kw: held.append(reply_id),
+    )
+    gate_calls = []
+
+    def fake_gate(backend_arg, pane_id, *, project_root):
+        gate_calls.append(pane_id)
+        # First call (r1) returns hold; any further call (r2) would return ready.
+        if len(gate_calls) == 1:
+            return (False, 'claude', 'pane_busy')
+        return (True, 'claude', None)
+
+    monkeypatch.setattr(cmd_replies, '_cmd_delivery_gate', fake_gate)
+
+    inbound_store.append(_reply_event('reply-r1', 'evt-r1'))
+    inbound_store.append(_reply_event('reply-r2', 'evt-r2'))
+    reply_store.append(_real_reply('reply-r1'))
+    reply_store.append(_real_reply('reply-r2'))
+
+    cmd_replies._deliver_cmd_replies(dispatcher)
+
+    assert held == ['reply-r1'], 'r1 should be held'
+    assert len(gate_calls) == 1, 'sweep must stop after r1 hold; r2 gate must NOT be probed'
+    assert backend.sent == [], 'no inject should fire when r1 is held'
+
+    cache = cmd_replies._get_injected_cache(dispatcher)
+    assert 'reply-r1' not in cache
+    assert 'reply-r2' not in cache, '[P2] regression: r2 must not skip ahead of held r1'
+
+
+def test_deliver_cmd_replies_stops_sweep_on_post_plan_hold(monkeypatch, tmp_path):
+    """A post-plan gate hold on r1 must also stop the sweep, not skip to r2.
+
+    Same ordering-preservation reasoning as the pre-plan case.
+    """
+    dispatcher, kernel, inbound_store, reply_store, backend = _setup(monkeypatch, tmp_path)
+
+    held = []
+    monkeypatch.setattr(
+        cmd_replies,
+        '_hold_cmd_delivery',
+        lambda dispatcher, reply_id, **kw: held.append(reply_id),
+    )
+    gate_calls = []
+
+    def fake_gate(backend_arg, pane_id, *, project_root):
+        gate_calls.append(pane_id)
+        # First call: pre-plan, ready. Second call: post-plan for r1, hold.
+        # Any further call (would be r2's pre-plan) returns ready.
+        if len(gate_calls) == 2:
+            return (False, 'claude', 'pane_busy_post_plan')
+        return (True, 'claude', None)
+
+    monkeypatch.setattr(cmd_replies, '_cmd_delivery_gate', fake_gate)
+
+    inbound_store.append(_reply_event('reply-r1', 'evt-r1'))
+    inbound_store.append(_reply_event('reply-r2', 'evt-r2'))
+    reply_store.append(_real_reply('reply-r1'))
+    reply_store.append(_real_reply('reply-r2'))
+
+    cmd_replies._deliver_cmd_replies(dispatcher)
+
+    assert held == ['reply-r1'], 'r1 should be held on post-plan check'
+    assert len(gate_calls) == 2, 'sweep must stop after r1 post-plan hold; no r2 gate probe'
+    assert backend.sent == [], 'no inject should fire when r1 is post-plan held'
+
+
+def test_deliver_cmd_replies_stops_sweep_on_reply_store_race(monkeypatch, tmp_path):
+    """If r1's inbound event has no reply yet (race), r2 must not skip ahead.
+
+    The reply will land soon; we wait one tick rather than reorder the cmd pane.
+    """
+    dispatcher, kernel, inbound_store, reply_store, backend = _setup(monkeypatch, tmp_path)
+
+    inbound_store.append(_reply_event('reply-r1', 'evt-r1'))
+    inbound_store.append(_reply_event('reply-r2', 'evt-r2'))
+    # Only r2 has a reply record (writer for r1 hasn't flushed yet).
+    reply_store.append(_real_reply('reply-r2'))
+
+    cmd_replies._deliver_cmd_replies(dispatcher)
+
+    assert backend.sent == [], 'r2 must not inject ahead of unwritten r1'
+
+
+def test_deliver_cmd_replies_stops_sweep_on_planning_exception(monkeypatch, tmp_path):
+    """If r1 planning raises, r2 must not skip ahead in the same tick.
+
+    Planning will be retried next tick; preserving order over throughput.
+    """
+    dispatcher, kernel, inbound_store, reply_store, backend = _setup(monkeypatch, tmp_path)
+
+    plan_calls = []
+
+    def raising_plan(dispatcher_arg, reply, project_root, body_store, **kwargs):
+        plan_calls.append(reply.reply_id)
+        if reply.reply_id == 'reply-r1':
+            raise RuntimeError('synthetic planning failure for ordering test')
+        return (
+            SimpleNamespace(body=reply.reply, header_only=False, body_file=None),
+            None,
+        )
+
+    monkeypatch.setattr(cmd_replies, 'plan_cmd_delivery', raising_plan)
+
+    inbound_store.append(_reply_event('reply-r1', 'evt-r1'))
+    inbound_store.append(_reply_event('reply-r2', 'evt-r2'))
+    reply_store.append(_real_reply('reply-r1'))
+    reply_store.append(_real_reply('reply-r2'))
+
+    cmd_replies._deliver_cmd_replies(dispatcher)
+
+    assert plan_calls == ['reply-r1'], 'sweep must stop after r1 planning exception; no r2 plan'
+    assert backend.sent == [], 'no inject when r1 planning failed'
