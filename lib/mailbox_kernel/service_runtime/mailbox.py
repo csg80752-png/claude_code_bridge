@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mailbox_runtime.targets import normalize_mailbox_owner_name
 
+from .lease_validation import LEASE_STATUS_ACTIVE, LEASE_STATUS_ORPHAN, classify_lease
 from .queries import latest_events, pending_events
 
 
@@ -10,14 +11,18 @@ def refresh_mailbox(service, agent_name: str, *, updated_at: str | None = None):
     timestamp = updated_at or service._clock()
     prior = service._mailbox_store.load(normalized)
     lease = service._lease_store.load(normalized)
+    lease_status = classify_lease(service, lease)
+    if lease_status is LEASE_STATUS_ORPHAN:
+        service._lease_store.remove(normalized)
     events = pending_events(service, normalized)
     queue_depth = len(events)
     pending_reply_count = sum(1 for event in events if event.event_type is service._reply_event_type)
     mailbox_state, active_inbound_event_id, lease_version = _mailbox_facts(
-        service,
         prior=prior,
         lease=lease,
+        lease_status=lease_status,
         queue_depth=queue_depth,
+        service=service,
     )
     last_started, last_finished = _latest_activity(
         service,
@@ -41,43 +46,32 @@ def refresh_mailbox(service, agent_name: str, *, updated_at: str | None = None):
     return record
 
 
-def _mailbox_facts(service, *, prior, lease, queue_depth: int):
-    active_lease = _validate_acquired_lease(service, lease)
-    if active_lease is not None:
+def _mailbox_facts(*, prior, lease, lease_status: str, queue_depth: int, service):
+    if lease_status is LEASE_STATUS_ACTIVE:
         return (
             service._mailbox_state_delivering,
-            active_lease.inbound_event_id,
-            active_lease.lease_version,
+            lease.inbound_event_id,
+            lease.lease_version,
         )
+    fallback_version = _fallback_lease_version(prior, lease, lease_status)
     if queue_depth > 0:
         return (
             service._mailbox_state_blocked,
             None,
-            _prior_lease_version(prior),
+            fallback_version,
         )
     return (
         service._mailbox_state_idle,
         None,
-        _prior_lease_version(prior),
+        fallback_version,
     )
 
 
-def _validate_acquired_lease(service, lease):
-    """Drop orphan leases pointing to terminal or missing events.
-
-    A lease is valid only if (a) it is in the acquired state and (b) the
-    inbound event it references still exists with a non-terminal status.
-    Stale leases survive ccbd restart because `_release_matching_lease` is
-    skipped on event-id mismatch and leases have no expires_at TTL — without
-    this gate the mailbox stays wedged in DELIVERING forever.
-    """
-    if lease is None or lease.lease_state is not service._lease_state_acquired:
-        return None
-    event = service._inbound_store.get_latest(lease.agent_name, lease.inbound_event_id)
-    if event is None or event.status in service._terminal_event_states:
-        service._lease_store.remove(lease.agent_name)
-        return None
-    return lease
+def _fallback_lease_version(prior, lease, lease_status: str) -> int:
+    prior_version = _prior_lease_version(prior)
+    if lease_status is LEASE_STATUS_ORPHAN and lease is not None:
+        return max(prior_version, lease.lease_version)
+    return prior_version
 
 
 def _prior_lease_version(prior) -> int:

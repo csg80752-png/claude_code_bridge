@@ -208,3 +208,74 @@ def test_orphan_lease_recovers_across_kernel_restart(tmp_path: Path) -> None:
     assert lease_store_b.load('agent1') is None
     assert mailbox.mailbox_state is MailboxState.IDLE
     assert mailbox.active_inbound_event_id is None
+
+
+def test_first_claim_after_orphan_lease_succeeds_without_extra_pass(tmp_path: Path) -> None:
+    service, inbound_store, mailbox_store, lease_store = _make_service(tmp_path)
+    _seed_orphan_lease(inbound_store, lease_store, agent='agent1', event_id='evt-stale')
+    inbound_store.append(
+        InboundEventRecord(
+            inbound_event_id='evt-fresh',
+            agent_name='agent1',
+            event_type=InboundEventType.TASK_REQUEST,
+            message_id='msg-fresh',
+            attempt_id='att-fresh',
+            payload_ref='job:fresh',
+            priority=100,
+            status=InboundEventStatus.QUEUED,
+            created_at='2026-05-04T02:30:00Z',
+        )
+    )
+
+    claimed = service.claim('agent1', 'evt-fresh', started_at='2026-05-04T03:00:00Z')
+
+    assert claimed is not None
+    assert claimed.inbound_event_id == 'evt-fresh'
+    assert claimed.status is InboundEventStatus.DELIVERING
+    fresh_lease = lease_store.load('agent1')
+    assert fresh_lease is not None
+    assert fresh_lease.inbound_event_id == 'evt-fresh'
+    mailbox = mailbox_store.load('agent1')
+    assert mailbox is not None
+    assert mailbox.mailbox_state is MailboxState.DELIVERING
+    assert mailbox.active_inbound_event_id == 'evt-fresh'
+
+
+def test_lease_version_stays_monotonic_across_orphan_recovery(tmp_path: Path) -> None:
+    layout = PathLayout(tmp_path / 'repo')
+    inbound_store_a = InboundEventStore(layout)
+    mailbox_store_a = MailboxStore(layout)
+    lease_store_a = DeliveryLeaseStore(layout)
+    _seed_orphan_lease(inbound_store_a, lease_store_a, agent='agent1', event_id='evt-stale')
+    inbound_store_a.append(
+        InboundEventRecord(
+            inbound_event_id='evt-after',
+            agent_name='agent1',
+            event_type=InboundEventType.TASK_REQUEST,
+            message_id='msg-after',
+            attempt_id='att-after',
+            payload_ref='job:after',
+            priority=100,
+            status=InboundEventStatus.QUEUED,
+            created_at='2026-05-04T02:30:00Z',
+        )
+    )
+    orphan_version = lease_store_a.load('agent1').lease_version
+
+    inbound_store_b = InboundEventStore(layout)
+    mailbox_store_b = MailboxStore(layout)
+    lease_store_b = DeliveryLeaseStore(layout)
+    service_b = MailboxKernelService(
+        layout,
+        clock=lambda: '2026-05-04T03:00:00Z',
+        inbound_store=inbound_store_b,
+        mailbox_store=mailbox_store_b,
+        lease_store=lease_store_b,
+    )
+
+    claimed = service_b.claim('agent1', 'evt-after', started_at='2026-05-04T03:00:00Z')
+
+    assert claimed is not None
+    new_lease = lease_store_b.load('agent1')
+    assert new_lease is not None
+    assert new_lease.lease_version > orphan_version

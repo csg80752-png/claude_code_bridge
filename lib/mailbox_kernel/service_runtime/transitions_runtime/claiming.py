@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from ..lease_validation import LEASE_STATUS_ACTIVE, classify_lease
 from ..mailbox import refresh_mailbox
 from ..queries import head_pending_event, peek_next
 from .leasing import next_lease_version
@@ -32,11 +33,9 @@ def _load_claim_candidate(service, agent_name: str, inbound_event_id: str):
 
 def _has_conflicting_lease(service, agent_name: str, inbound_event_id: str) -> bool:
     lease = service._lease_store.load(agent_name)
-    return (
-        lease is not None
-        and lease.lease_state is service._lease_state_acquired
-        and lease.inbound_event_id != inbound_event_id
-    )
+    if classify_lease(service, lease) is not LEASE_STATUS_ACTIVE:
+        return False
+    return lease.inbound_event_id != inbound_event_id
 
 
 def _is_claimable_head(service, agent_name: str, current) -> bool:
