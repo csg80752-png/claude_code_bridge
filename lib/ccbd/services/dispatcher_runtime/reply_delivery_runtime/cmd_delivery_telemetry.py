@@ -121,6 +121,8 @@ def record_cmd_delivery_header_inject_error(
     failed_at: str,
     body_char_count: int,
     reason: str,
+    delivery_mode: str,
+    header_only_compatible: bool,
 ) -> None:
     _append_record(project_root, _v3_record(
         'cmd_delivery_header_inject_error',
@@ -129,6 +131,8 @@ def record_cmd_delivery_header_inject_error(
         body_char_count=body_char_count,
         failed_at=failed_at,
         reason=reason,
+        delivery_mode=delivery_mode,
+        header_only_compatible=bool(header_only_compatible),
     ))
 
 
@@ -224,6 +228,9 @@ def record_phase2_failure(
     reason: str,
     body_char_count: int,
     failed_at: str,
+    foreground_command: str,
+    pane_alive: bool,
+    cached: bool,
 ) -> None:
     _append_record(project_root, _v3_record(
         'cmd_phase2_failure',
@@ -232,6 +239,9 @@ def record_phase2_failure(
         reason=reason,
         body_char_count=body_char_count,
         failed_at=failed_at,
+        foreground_command=foreground_command,
+        pane_alive=bool(pane_alive),
+        cached=bool(cached),
     ))
 
 
@@ -260,6 +270,8 @@ def record_cmd_delivery_held(
     held_at: str,
     body_char_count: int,
     held_reason: str = 'not_safe_consumer',
+    delivery_mode: str = 'full_body',
+    header_only_compatible: bool = False,
 ) -> None:
     _append_record(project_root, _v3_record(
         'cmd_delivery_held',
@@ -268,6 +280,8 @@ def record_cmd_delivery_held(
         held_reason=held_reason,
         body_char_count=body_char_count,
         held_at=held_at,
+        delivery_mode=delivery_mode,
+        header_only_compatible=bool(header_only_compatible),
     ))
 
 

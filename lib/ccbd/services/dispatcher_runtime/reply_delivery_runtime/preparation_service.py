@@ -30,6 +30,7 @@ from .cmd_delivery_telemetry import (
     record_phase2_failure,
 )
 from .cmd_transport_planner import plan_cmd_delivery, prepare_cmd_payload as _prepare_cmd_payload
+from .cmd_transport_planner import resolve_cmd_delivery_mode
 from .common import head_reply_id, project_id_for_agent
 from .preparation_head import resolve_existing_delivery_job
 from .preparation_message import build_reply_delivery_job
@@ -92,12 +93,14 @@ def _maybe_compact_mailboxes(dispatcher) -> None:
 
     agent_names = tuple(dict.fromkeys(('cmd', *tuple(getattr(config, 'agents', ()) or ()))))
     cache_owner = getattr(getattr(kernel, '_inbound_store', None), '_store', None)
+    reply_cache_owner = getattr(getattr(control, '_reply_store', None), '_store', None)
     try:
         compact_mailbox_jsonl(
             layout,
             agent_names=agent_names,
-            now='',
+            now=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             cache_owner=cache_owner,
+            reply_cache_owner=reply_cache_owner,
         )
     except Exception:
         _logger.debug('mailbox jsonl gc failed', exc_info=True)
@@ -165,6 +168,7 @@ def _deliver_cmd_replies(dispatcher):
         return
 
     project_root = _resolve_project_root(dispatcher)
+    delivery_mode_result = _get_cmd_delivery_mode_result(dispatcher, project_root)
 
     cmd_pane_id = _discover_cmd_pane_id(dispatcher)
     if not cmd_pane_id:
@@ -201,6 +205,7 @@ def _deliver_cmd_replies(dispatcher):
             foreground_command=foreground_command,
             body_char_count=body_char_count,
             held_reason=held_reason,
+            delivery_mode_result=delivery_mode_result,
         )
         return
 
@@ -210,6 +215,7 @@ def _deliver_cmd_replies(dispatcher):
             reply,
             project_root=project_root,
             body_store=cmd_body_store,
+            delivery_mode_result=delivery_mode_result,
         )
     except Exception:
         _logger.warning(
@@ -223,6 +229,9 @@ def _deliver_cmd_replies(dispatcher):
             reason='exception',
             body_char_count=body_char_count,
             failed_at=dispatcher._clock(),
+            foreground_command=foreground_command,
+            pane_alive=True,
+            cached=False,
         )
         return
 
@@ -249,6 +258,7 @@ def _deliver_cmd_replies(dispatcher):
             foreground_command=foreground_command,
             body_char_count=body_char_count,
             held_reason=held_reason,
+            delivery_mode_result=delivery_mode_result,
         )
         return
 
@@ -267,6 +277,9 @@ def _deliver_cmd_replies(dispatcher):
             reason='exception',
             body_char_count=body_char_count,
             failed_at=dispatcher._clock(),
+            foreground_command=foreground_command,
+            pane_alive=True,
+            cached=False,
         )
         if plan.header_only:
             record_cmd_delivery_header_inject_error(
@@ -276,6 +289,8 @@ def _deliver_cmd_replies(dispatcher):
                 failed_at=dispatcher._clock(),
                 body_char_count=body_char_count,
                 reason='exception',
+                delivery_mode=delivery_mode_result.mode.value,
+                header_only_compatible=delivery_mode_result.header_only_compatible,
             )
         return
 
@@ -287,8 +302,8 @@ def _deliver_cmd_replies(dispatcher):
             foreground_command=foreground_command,
             delivered_at=delivered_at,
             body_char_count=body_char_count,
-            delivery_mode='header_only',
-            header_only_compatible=True,
+            delivery_mode=delivery_mode_result.mode.value,
+            header_only_compatible=delivery_mode_result.header_only_compatible,
         )
     else:
         record_cmd_delivery_success(
@@ -307,6 +322,22 @@ def _deliver_cmd_replies(dispatcher):
     while len(injected_cache) > _CMD_INJECTED_CACHE_MAX:
         injected_cache.popitem(last=False)
     _persist_injected_reply(dispatcher, reply_id, injected_at)
+
+
+def _get_cmd_delivery_mode_result(dispatcher, project_root):
+    result = getattr(dispatcher, '_cmd_delivery_mode_result', None)
+    if result is not None:
+        return result
+    compatible_override = getattr(dispatcher, '_cmd_header_only_compatible', None)
+    result = resolve_cmd_delivery_mode(
+        project_root=project_root,
+        header_only_compatible=compatible_override if compatible_override is not None else None,
+    )
+    try:
+        dispatcher._cmd_delivery_mode_result = result
+    except AttributeError:
+        pass
+    return result
 
 
 def _get_injected_cache(dispatcher):
@@ -420,6 +451,7 @@ def _hold_cmd_delivery(
     foreground_command: str,
     body_char_count: int,
     held_reason: str,
+    delivery_mode_result=None,
 ) -> None:
     held_key = (reply_id, held_reason, foreground_command)
     held_cache = getattr(dispatcher, '_cmd_held_replies', None)
@@ -439,6 +471,8 @@ def _hold_cmd_delivery(
         held_at=dispatcher._clock(),
         body_char_count=body_char_count,
         held_reason=held_reason,
+        delivery_mode=getattr(getattr(delivery_mode_result, 'mode', None), 'value', 'full_body'),
+        header_only_compatible=bool(getattr(delivery_mode_result, 'header_only_compatible', False)),
     )
 
 

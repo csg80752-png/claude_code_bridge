@@ -10,6 +10,8 @@ from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_transport_plann
     MAX_CMD_HEADER_BYTES_FIELD,
     MAX_CMD_HEADER_LEN,
     CmdHeaderValidationError,
+    CmdDeliveryMode,
+    CmdDeliveryModeResult,
     parse_cmd_header_tokens,
     plan_cmd_delivery,
 )
@@ -119,10 +121,15 @@ def test_parse_cmd_header_tokens_splits_on_first_equal() -> None:
 
 
 def test_plan_cmd_delivery_in_header_mode_never_injects_reply_body(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("CCB_CMD_DELIVERY_MODE", "header_only")
     reply = _reply(body="this body must stay in mailbox")
 
-    plan, fallback = plan_cmd_delivery(_dispatcher(), reply, project_root=tmp_path, body_store=None)
+    plan, fallback = plan_cmd_delivery(
+        _dispatcher(),
+        reply,
+        project_root=tmp_path,
+        body_store=None,
+        delivery_mode_result=CmdDeliveryModeResult(CmdDeliveryMode.HEADER_ONLY, "test", header_only_compatible=True),
+    )
 
     assert plan.header_only is True
     assert plan.body_file is None
@@ -132,10 +139,15 @@ def test_plan_cmd_delivery_in_header_mode_never_injects_reply_body(monkeypatch, 
 
 
 def test_plan_cmd_delivery_full_body_mode_preserves_legacy_body(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("CCB_CMD_DELIVERY_MODE", "full_body")
     reply = _reply(body="legacy body")
 
-    plan, fallback = plan_cmd_delivery(_dispatcher(), reply, project_root=tmp_path, body_store=None)
+    plan, fallback = plan_cmd_delivery(
+        _dispatcher(),
+        reply,
+        project_root=tmp_path,
+        body_store=None,
+        delivery_mode_result=CmdDeliveryModeResult(CmdDeliveryMode.FULL_BODY, "test"),
+    )
 
     assert plan.header_only is False
     assert "legacy body" in plan.body
@@ -143,9 +155,13 @@ def test_plan_cmd_delivery_full_body_mode_preserves_legacy_body(monkeypatch, tmp
 
 
 def test_plan_cmd_delivery_uses_cmd_fallback_when_source_job_missing(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("CCB_CMD_DELIVERY_MODE", "header_only")
-
-    plan, _ = plan_cmd_delivery(_dispatcher(job_id=None), _reply(), project_root=tmp_path, body_store=None)
+    plan, _ = plan_cmd_delivery(
+        _dispatcher(job_id=None),
+        _reply(),
+        project_root=tmp_path,
+        body_store=None,
+        delivery_mode_result=CmdDeliveryModeResult(CmdDeliveryMode.HEADER_ONLY, "test", header_only_compatible=True),
+    )
 
     assert plan.body == "[CCB] job=target=cmd from=agent2 bytes=5 pend=ccb-pend"
 

@@ -6,6 +6,7 @@ import pytest
 
 from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_transport_planner import (
     CmdDeliveryMode,
+    effective_cmd_delivery_mode,
     resolve_cmd_delivery_mode,
 )
 
@@ -84,3 +85,15 @@ def test_legacy_header_only_malformed_fails_closed(monkeypatch, tmp_path) -> Non
     assert result.mode is CmdDeliveryMode.FULL_BODY
     assert result.reason == "invalid_legacy"
     assert _events(tmp_path)[-1]["event"] == "cmd_delivery_mode_invalid"
+
+
+def test_delivery_mode_result_is_restart_only_after_startup_resolution(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CCB_CMD_DELIVERY_MODE", "header_only")
+    monkeypatch.setenv("CCB_CMD_HEADER_ONLY_COMPATIBLE", "1")
+    startup_result = resolve_cmd_delivery_mode(project_root=tmp_path)
+
+    monkeypatch.setenv("CCB_CMD_DELIVERY_MODE", "full_body")
+    monkeypatch.setenv("CCB_CMD_HEADER_ONLY_COMPATIBLE", "0")
+
+    assert startup_result.mode is CmdDeliveryMode.HEADER_ONLY
+    assert effective_cmd_delivery_mode(startup_result) is CmdDeliveryMode.HEADER_ONLY

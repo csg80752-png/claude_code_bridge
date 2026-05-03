@@ -10,6 +10,7 @@ from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_transport_plann
     CMD_HEADER_RE,
     CmdDeliveryFallback,
     CmdDeliveryMode,
+    CmdDeliveryModeResult,
     CmdDeliveryPlan,
     header_only_enabled,
     plan_cmd_delivery,
@@ -45,6 +46,7 @@ def _make_dispatcher(*, job_id: str = 'job_1234abcd'):
 def _clean_env(monkeypatch):
     monkeypatch.delenv('CCB_CMD_DELIVERY_MODE', raising=False)
     monkeypatch.delenv('CCB_HEADER_ONLY', raising=False)
+    monkeypatch.delenv('CCB_CMD_HEADER_ONLY_COMPATIBLE', raising=False)
 
 
 def test_default_beta_gate_returns_full_body(tmp_path: Path, _clean_env) -> None:
@@ -58,10 +60,15 @@ def test_default_beta_gate_returns_full_body(tmp_path: Path, _clean_env) -> None
 
 
 def test_explicit_header_only_uses_single_line_header_for_long_body(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv('CCB_CMD_DELIVERY_MODE', 'header_only')
     long_body = 'x' * 2000
     reply = _make_reply(body=long_body, reply_id='rep-long-1')
-    plan, fallback = plan_cmd_delivery(_make_dispatcher(), reply, project_root=tmp_path, body_store=cmd_body_store)
+    plan, fallback = plan_cmd_delivery(
+        _make_dispatcher(),
+        reply,
+        project_root=tmp_path,
+        body_store=cmd_body_store,
+        delivery_mode_result=CmdDeliveryModeResult(CmdDeliveryMode.HEADER_ONLY, 'test', header_only_compatible=True),
+    )
     assert plan.header_only is True
     assert plan.body_file is None
     assert CMD_HEADER_RE.fullmatch(plan.body)
@@ -71,10 +78,15 @@ def test_explicit_header_only_uses_single_line_header_for_long_body(monkeypatch,
 
 
 def test_heartbeat_always_full_even_in_header_mode(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv('CCB_CMD_DELIVERY_MODE', 'header_only')
     long_body = 'z' * 2000
     reply = _make_reply(body=long_body, reply_id='rep-hb-1', heartbeat=True)
-    plan, fallback = plan_cmd_delivery(_make_dispatcher(), reply, project_root=tmp_path, body_store=cmd_body_store)
+    plan, fallback = plan_cmd_delivery(
+        _make_dispatcher(),
+        reply,
+        project_root=tmp_path,
+        body_store=cmd_body_store,
+        delivery_mode_result=CmdDeliveryModeResult(CmdDeliveryMode.HEADER_ONLY, 'test', header_only_compatible=True),
+    )
     assert plan.header_only is False
     assert plan.body_file is None
     assert long_body in plan.body
@@ -82,13 +94,13 @@ def test_heartbeat_always_full_even_in_header_mode(monkeypatch, tmp_path: Path) 
 
 
 def test_source_job_id_included_when_valid(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv('CCB_CMD_DELIVERY_MODE', 'header_only')
     reply = _make_reply(body='body', reply_id='rep-job-1')
     plan, _ = plan_cmd_delivery(
         _make_dispatcher(job_id='job_12345678'),
         reply,
         project_root=tmp_path,
         body_store=cmd_body_store,
+        delivery_mode_result=CmdDeliveryModeResult(CmdDeliveryMode.HEADER_ONLY, 'test', header_only_compatible=True),
     )
     assert 'job=job_12345678' in plan.body
     assert 'from=agent2' in plan.body
@@ -110,6 +122,7 @@ def test_legacy_header_only_falsy_env_disables(monkeypatch, value: str) -> None:
 def test_legacy_header_only_truthy_env_enables(monkeypatch, value: str) -> None:
     monkeypatch.delenv('CCB_CMD_DELIVERY_MODE', raising=False)
     monkeypatch.setenv('CCB_HEADER_ONLY', value)
+    monkeypatch.setenv('CCB_CMD_HEADER_ONLY_COMPATIBLE', '1')
     assert header_only_enabled() is True
 
 

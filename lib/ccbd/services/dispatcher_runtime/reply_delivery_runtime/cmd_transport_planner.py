@@ -25,6 +25,7 @@ _SENDER_RE = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
 _FORBIDDEN_HEADER_CHARS = frozenset("`$\\'\";|><(){}")
 _NEW_MODE_ENV = 'CCB_CMD_DELIVERY_MODE'
 _LEGACY_MODE_ENV = 'CCB_HEADER_ONLY'
+_COMPAT_ENV = 'CCB_CMD_HEADER_ONLY_COMPATIBLE'
 _LEGACY_TRUTHY = frozenset({'1', 'true', 'yes', 'on'})
 _LEGACY_FALSY = frozenset({'0', 'false', 'no', 'off'})
 
@@ -44,6 +45,7 @@ class CmdDeliveryModeResult:
     reason: str
     raw_value: str | None = None
     legacy_raw_value: str | None = None
+    header_only_compatible: bool = False
 
 
 @dataclass(frozen=True)
@@ -63,12 +65,17 @@ def beta_header_only_allowed(*, smoke_passed: bool) -> bool:
     return bool(smoke_passed)
 
 
-def resolve_cmd_delivery_mode(*, project_root: Optional[Path]) -> CmdDeliveryModeResult:
+def resolve_cmd_delivery_mode(
+    *,
+    project_root: Optional[Path],
+    header_only_compatible: bool | None = None,
+) -> CmdDeliveryModeResult:
     from .cmd_delivery_telemetry import (
         record_cmd_delivery_legacy_env_seen,
         record_cmd_delivery_mode_invalid,
     )
 
+    compatible = _header_only_compatible_from_env() if header_only_compatible is None else bool(header_only_compatible)
     raw = os.environ.get(_NEW_MODE_ENV)
     legacy = os.environ.get(_LEGACY_MODE_ENV)
     if raw is not None:
@@ -81,16 +88,34 @@ def resolve_cmd_delivery_mode(*, project_root: Optional[Path]) -> CmdDeliveryMod
                 reason='new_env_precedence',
             )
         if normalized == CmdDeliveryMode.HEADER_ONLY.value:
-            return CmdDeliveryModeResult(CmdDeliveryMode.HEADER_ONLY, 'explicit', raw_value=str(raw), legacy_raw_value=legacy)
+            return CmdDeliveryModeResult(
+                CmdDeliveryMode.HEADER_ONLY,
+                'explicit',
+                raw_value=str(raw),
+                legacy_raw_value=legacy,
+                header_only_compatible=compatible,
+            )
         if normalized == CmdDeliveryMode.FULL_BODY.value:
-            return CmdDeliveryModeResult(CmdDeliveryMode.FULL_BODY, 'explicit', raw_value=str(raw), legacy_raw_value=legacy)
+            return CmdDeliveryModeResult(
+                CmdDeliveryMode.FULL_BODY,
+                'explicit',
+                raw_value=str(raw),
+                legacy_raw_value=legacy,
+                header_only_compatible=compatible,
+            )
         record_cmd_delivery_mode_invalid(
             project_root,
             env_name=_NEW_MODE_ENV,
             raw_value=str(raw),
             reason='invalid',
         )
-        return CmdDeliveryModeResult(CmdDeliveryMode.FULL_BODY, 'invalid', raw_value=str(raw), legacy_raw_value=legacy)
+        return CmdDeliveryModeResult(
+            CmdDeliveryMode.FULL_BODY,
+            'invalid',
+            raw_value=str(raw),
+            legacy_raw_value=legacy,
+            header_only_compatible=compatible,
+        )
 
     if legacy is not None:
         normalized = str(legacy).strip().lower()
@@ -101,22 +126,47 @@ def resolve_cmd_delivery_mode(*, project_root: Optional[Path]) -> CmdDeliveryMod
             reason='legacy_only',
         )
         if normalized in _LEGACY_TRUTHY:
-            return CmdDeliveryModeResult(CmdDeliveryMode.HEADER_ONLY, 'legacy', legacy_raw_value=str(legacy))
+            return CmdDeliveryModeResult(
+                CmdDeliveryMode.HEADER_ONLY,
+                'legacy',
+                legacy_raw_value=str(legacy),
+                header_only_compatible=compatible,
+            )
         if normalized in _LEGACY_FALSY:
-            return CmdDeliveryModeResult(CmdDeliveryMode.FULL_BODY, 'legacy', legacy_raw_value=str(legacy))
+            return CmdDeliveryModeResult(
+                CmdDeliveryMode.FULL_BODY,
+                'legacy',
+                legacy_raw_value=str(legacy),
+                header_only_compatible=compatible,
+            )
         record_cmd_delivery_mode_invalid(
             project_root,
             env_name=_LEGACY_MODE_ENV,
             raw_value=str(legacy),
             reason='invalid_legacy',
         )
-        return CmdDeliveryModeResult(CmdDeliveryMode.FULL_BODY, 'invalid_legacy', legacy_raw_value=str(legacy))
+        return CmdDeliveryModeResult(
+            CmdDeliveryMode.FULL_BODY,
+            'invalid_legacy',
+            legacy_raw_value=str(legacy),
+            header_only_compatible=compatible,
+        )
 
-    return CmdDeliveryModeResult(CmdDeliveryMode.FULL_BODY, 'default_beta_full_body')
+    return CmdDeliveryModeResult(
+        CmdDeliveryMode.FULL_BODY,
+        'default_beta_full_body',
+        header_only_compatible=compatible,
+    )
 
 
 def header_only_enabled() -> bool:
-    return resolve_cmd_delivery_mode(project_root=None).mode is CmdDeliveryMode.HEADER_ONLY
+    return effective_cmd_delivery_mode(resolve_cmd_delivery_mode(project_root=None)) is CmdDeliveryMode.HEADER_ONLY
+
+
+def effective_cmd_delivery_mode(result: CmdDeliveryModeResult) -> CmdDeliveryMode:
+    if result.mode is CmdDeliveryMode.HEADER_ONLY and not result.header_only_compatible:
+        return CmdDeliveryMode.FULL_BODY
+    return result.mode
 
 
 def parse_cmd_header_tokens(header: str) -> dict[str, str]:
@@ -153,10 +203,11 @@ def plan_cmd_delivery(
     *,
     project_root: Optional[Path],
     body_store,
+    delivery_mode_result: CmdDeliveryModeResult | None = None,
 ) -> tuple[CmdDeliveryPlan, Optional[CmdDeliveryFallback]]:
     del body_store
-    mode = resolve_cmd_delivery_mode(project_root=project_root)
-    if mode.mode is CmdDeliveryMode.FULL_BODY or _is_heartbeat(reply):
+    mode = delivery_mode_result or CmdDeliveryModeResult(CmdDeliveryMode.FULL_BODY, 'default_beta_full_body')
+    if effective_cmd_delivery_mode(mode) is CmdDeliveryMode.FULL_BODY or _is_heartbeat(reply):
         return CmdDeliveryPlan(body=format_reply_delivery_body(dispatcher, reply), header_only=False, body_file=None), None
 
     raw_body = str(reply.reply or '')
@@ -202,6 +253,10 @@ def _validated_job_or_fallback(value: str | None) -> str:
     if _JOB_ID_RE.fullmatch(text):
         return text
     return 'target=cmd'
+
+
+def _header_only_compatible_from_env() -> bool:
+    return str(os.environ.get(_COMPAT_ENV, '') or '').strip().lower() in _LEGACY_TRUTHY
 
 
 def _validate_header_text(header: str) -> None:
@@ -258,6 +313,7 @@ __all__ = [
     'CmdDeliveryPlan',
     'CmdHeaderValidationError',
     'beta_header_only_allowed',
+    'effective_cmd_delivery_mode',
     'header_only_enabled',
     'parse_cmd_header_tokens',
     'plan_cmd_delivery',

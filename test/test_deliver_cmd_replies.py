@@ -679,6 +679,7 @@ def test_long_body_happy_path_emits_header_only_dispatch_telemetry(
         _BODY_CHAR_THRESHOLD,
     )
     monkeypatch.setenv('CCB_CMD_DELIVERY_MODE', 'header_only')
+    monkeypatch.setenv('CCB_CMD_HEADER_ONLY_COMPATIBLE', '1')
     monkeypatch.delenv('CCB_HEADER_ONLY', raising=False)
     head = _make_head()
     long_body = 'w' * (_BODY_CHAR_THRESHOLD + 1)
