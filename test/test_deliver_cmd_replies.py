@@ -41,6 +41,13 @@ class _RecordingKernel:
     def head_pending_event(self, agent_name: str):
         return self._head
 
+    def pending_events(self, agent_name: str, *, event_type=None):
+        if self._head is None:
+            return ()
+        if event_type is not None and self._head.event_type is not event_type:
+            return ()
+        return (self._head,)
+
     def claim(self, agent_name: str, inbound_event_id: str, *, started_at=None):
         self.calls.append(('claim', inbound_event_id))
         return self._head
@@ -748,8 +755,15 @@ def test_long_body_without_project_root_records_fallback_telemetry(monkeypatch, 
 
 def test_plan_exception_records_phase2_failure_telemetry(monkeypatch, tmp_path):
     """If plan_cmd_delivery itself raises (e.g., body_store write failed on
-    disk-full), the planner telemetry event should fire so the failure is
-    visible, and the head must NOT be burned."""
+    disk-full, body over MAX_CMD_HEADER_BYTES_FIELD, etc.), the planner
+    telemetry event must fire so the failure is visible.
+
+    v8.3.3 R3 (codex review [P2] 2026-05-03 KST): the event is now
+    ABANDONED via kernel.abandon so a deterministic plan failure cannot
+    wedge every later cmd reply behind it. Pre-R3 behavior (head stays
+    QUEUED, retried every tick) caused permanent queue stalls when the
+    failure was deterministic.
+    """
     from ccbd.services.dispatcher_runtime.reply_delivery_runtime import preparation_service as ps
     head = _make_head()
     reply = _make_reply(body='y' * 10)
@@ -758,7 +772,7 @@ def test_plan_exception_records_phase2_failure_telemetry(monkeypatch, tmp_path):
     monkeypatch.setattr(ps, '_get_tmux_backend', lambda d: backend)
     monkeypatch.setattr(ps, '_cmd_pane_foreground_command', lambda backend, pane_id: 'claude')
 
-    def _boom(dispatcher, reply, *, project_root, body_store):
+    def _boom(dispatcher, reply, *, project_root, body_store, **_kwargs):
         raise RuntimeError('disk full')
     monkeypatch.setattr(ps, 'plan_cmd_delivery', _boom)
 
@@ -768,11 +782,17 @@ def test_plan_exception_records_phase2_failure_telemetry(monkeypatch, tmp_path):
 
     ps._deliver_cmd_replies(dispatcher)
 
-    # No inject, head untouched.
+    # No inject (planning never produced a plan).
     assert backend.injected == []
-    assert kernel.calls == []
 
-    # Phase2 plan failure event recorded.
+    # R3: head event is abandoned via kernel so the queue can progress
+    # past the failed event next tick.
+    assert kernel.calls == [('abandon', head.inbound_event_id)], (
+        f'plan exception must abandon event to unblock queue, got {kernel.calls}'
+    )
+
+    # Phase2 plan failure event recorded for telemetry / triage so the
+    # abandoned reply is not silently lost.
     metrics_file = tmp_path / '.ccb' / 'metrics' / 'body_read_followup.jsonl'
     assert metrics_file.exists()
     records = [json.loads(line) for line in metrics_file.read_text(encoding='utf-8').splitlines() if line.strip()]
@@ -784,7 +804,7 @@ def test_plan_exception_records_phase2_failure_telemetry(monkeypatch, tmp_path):
     assert plan_failures[0]['reason'] == 'exception'
     assert plan_failures[0]['reply_id'] == reply.reply_id
 
-    # Not cached — next tick retries.
+    # Not cached — abandoned events should never enter the dedup cache.
     cache = ps._get_injected_cache(dispatcher)
     assert reply.reply_id not in cache
 
