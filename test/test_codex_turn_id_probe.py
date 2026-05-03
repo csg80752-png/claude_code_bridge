@@ -328,6 +328,21 @@ def test_codex_startup_probe_uses_installed_cli_auto_discovery_when_no_log(
     assert result.turn_id == "turn-auto-probe"
 
 
+def test_codex_startup_probe_default_timeout_is_30_seconds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _clear_turn_id_probe_env(monkeypatch)
+    fake_bin = tmp_path / "bin"
+    _write_fake_codex(fake_bin)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
+
+    result = configured_startup_turn_id_probe()
+
+    assert result is not None
+    assert result.state == "PASS"
+    assert result.probe_timeout_seconds == 30
+
+
 def test_codex_discovery_uses_home_default_prefix_without_speed_literal(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

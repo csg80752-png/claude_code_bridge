@@ -23,6 +23,31 @@ from provider_backends.codex.launcher_runtime.codex_namespace_isolation import p
 
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "codex_turn_id_probe"
+_CODEX_AUTH_SKIP_MESSAGE = "B5 canary requires authenticated codex-cli; set CODEX_HOME or run in an authed shell"
+_CODEX_AUTH_ERROR_MARKERS = (
+    "401 Unauthorized",
+    "Missing bearer or basic authentication",
+)
+
+
+def _codex_auth_path() -> Path:
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home).expanduser() / "auth.json"
+    return Path.home() / ".codex" / "auth.json"
+
+
+def _skip_if_codex_auth_missing() -> None:
+    if not _codex_auth_path().is_file():
+        pytest.skip(_CODEX_AUTH_SKIP_MESSAGE)
+
+
+def _skip_if_codex_probe_auth_error(result: object) -> None:
+    if getattr(result, "state", None) != BROKEN_STATE:
+        return
+    error = str(getattr(result, "error", "") or "")
+    if any(marker in error for marker in _CODEX_AUTH_ERROR_MARKERS):
+        pytest.skip(_CODEX_AUTH_SKIP_MESSAGE)
 
 
 def test_b5_cmd_readiness_canary_accepts_ready_prompt_and_rejects_modal_wrap() -> None:
@@ -43,6 +68,7 @@ def test_b5_codex_identity_canary_requires_turn_id_probe_artifact() -> None:
 
 
 def test_b5_codex_turn_id_probe_succeeds_against_installed_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Requires real codex-cli auth and network reachability to api.openai.com; auto-skips when unauth detected."""
     for key in (
         "CCB_CODEX_TURN_ID_PROBE_LOG",
         "CCB_CODEX_TURN_ID_PROBE_BINARY",
@@ -53,7 +79,9 @@ def test_b5_codex_turn_id_probe_succeeds_against_installed_cli(monkeypatch: pyte
     ):
         monkeypatch.delenv(key, raising=False)
 
+    _skip_if_codex_auth_missing()
     result = configured_startup_turn_id_probe()
+    _skip_if_codex_probe_auth_error(result)
 
     assert result is not None
     assert result.state == "PASS", result
