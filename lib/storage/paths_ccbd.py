@@ -25,6 +25,10 @@ class ProjectAnchorPathMixin:
     def ccbd_dir(self):
         return self.ccb_dir / 'ccbd'
 
+    @property
+    def ccbd_cmd_header_only_compatibility_path(self):
+        return self.ccbd_dir / 'cmd-header-only-compatibility.json'
+
 
 class CcbdMailboxPathMixin:
     @property

@@ -1,65 +1,231 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
 import logging
 import os
-import shlex
-from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Optional
 
 from .formatting import format_reply_delivery_body
-
-# cmd-only transport planner.
-#
-# Decides whether a reply's body should be injected full (short) or sent as a
-# header-only pointer with the body persisted to disk (long). Keeps this
-# decision OUT of the shared reply formatter so agent-to-agent delivery stays
-# on the existing contract. See codex structural review 2026-04-22.
-#
-# Threshold chosen from empirical measurement over 226 replies across 3 active
-# CCB projects: median body is 2025 chars, p90 is 5013 chars, p95 is 5899
-# chars. Cutting at 1500 removes 92.7% of total body bytes while affecting
-# 67.7% of replies.
+from .cmd_header_compatibility import validate_cmd_header_only_compatibility_marker
 
 _logger = logging.getLogger(__name__)
 
-_BODY_CHAR_THRESHOLD = 1500
-_SUMMARY_LINES = 3
-_SUMMARY_LINE_MAX = 160
+_BODY_CHAR_THRESHOLD = 1500  # kept for compatibility with older tests/imports
+MAX_CMD_HEADER_LEN = 100
+MAX_CMD_HEADER_BYTES_FIELD = 9_999_999
+CMD_HEADER_RE = re.compile(
+    r'^\[CCB\] job=(job_[0-9a-f]{8,16}|target=cmd) '
+    r'from=[a-z][a-z0-9_-]{0,31} '
+    r'bytes=(0|[1-9][0-9]{0,6}) pend=ccb-pend$'
+)
+_JOB_ID_RE = re.compile(r'^job_[0-9a-f]{8,16}$')
+_SENDER_RE = re.compile(r'^[a-z][a-z0-9_-]{0,31}$')
+_FORBIDDEN_HEADER_CHARS = frozenset("`$\\'\";|><(){}")
+_NEW_MODE_ENV = 'CCB_CMD_DELIVERY_MODE'
+_LEGACY_MODE_ENV = 'CCB_HEADER_ONLY'
+_LEGACY_TRUTHY = frozenset({'1', 'true', 'yes', 'on'})
+_LEGACY_FALSY = frozenset({'0', 'false', 'no', 'off'})
 
-# Kill switch. Set CCB_HEADER_ONLY=0 (or false/no/off) to force full-body
-# delivery for every cmd reply. Read on every call so toggling the env var and
-# restarting the daemon takes effect without editing code.
-_KILL_SWITCH_ENV = 'CCB_HEADER_ONLY'
-_KILL_SWITCH_FALSY = frozenset({'0', 'false', 'no', 'off', ''})
+
+class CmdHeaderValidationError(ValueError):
+    pass
 
 
-def header_only_enabled() -> bool:
-    raw = os.environ.get(_KILL_SWITCH_ENV)
-    if raw is None:
-        return True
-    return str(raw).strip().lower() not in _KILL_SWITCH_FALSY
+class CmdDeliveryMode(str, Enum):
+    HEADER_ONLY = 'header_only'
+    FULL_BODY = 'full_body'
+
+
+@dataclass(frozen=True)
+class CmdDeliveryModeResult:
+    mode: CmdDeliveryMode
+    reason: str
+    raw_value: str | None = None
+    legacy_raw_value: str | None = None
+    header_only_compatible: bool = False
 
 
 @dataclass(frozen=True)
 class CmdDeliveryPlan:
-    body: str                # text to inject into cmd tmux pane
-    header_only: bool        # True when long-body path was taken
-    body_file: Path | None   # absolute path where body was persisted, when header_only
+    body: str
+    header_only: bool
+    body_file: Path | None
 
 
 @dataclass(frozen=True)
 class CmdDeliveryFallback:
-    """Records why a long-body reply did NOT take the header-only path.
-
-    Returned as the second tuple element of `plan_cmd_delivery`. `None` means
-    header-only was taken (when plan.header_only is True) or the reply was
-    short/heartbeat (when plan.header_only is False and fallback is None).
-    When a long reply falls back to full-body, this object names the reason
-    so telemetry and debugging are not flying blind.
-    """
     reason: str
     body_char_count: int
+
+
+def beta_header_only_allowed(*, smoke_passed: bool) -> bool:
+    return bool(smoke_passed)
+
+
+def resolve_cmd_delivery_mode(
+    *,
+    project_root: Optional[Path],
+    header_only_compatible: bool | None = None,
+) -> CmdDeliveryModeResult:
+    from .cmd_delivery_telemetry import (
+        record_cmd_delivery_legacy_env_seen,
+        record_cmd_delivery_mode_invalid,
+    )
+
+    raw = os.environ.get(_NEW_MODE_ENV)
+    legacy = os.environ.get(_LEGACY_MODE_ENV)
+    if raw is not None:
+        normalized = str(raw).strip().lower()
+        if legacy is not None:
+            record_cmd_delivery_legacy_env_seen(
+                project_root,
+                ignored=True,
+                raw_value=str(legacy),
+                reason='new_env_precedence',
+            )
+        if normalized == CmdDeliveryMode.HEADER_ONLY.value:
+            compatible = _resolve_header_only_compatible(
+                project_root=project_root,
+                header_only_compatible=header_only_compatible,
+                requested_mode=CmdDeliveryMode.HEADER_ONLY,
+            )
+            return CmdDeliveryModeResult(
+                CmdDeliveryMode.HEADER_ONLY,
+                'explicit',
+                raw_value=str(raw),
+                legacy_raw_value=legacy,
+                header_only_compatible=compatible,
+            )
+        if normalized == CmdDeliveryMode.FULL_BODY.value:
+            compatible = _resolve_header_only_compatible(
+                project_root=project_root,
+                header_only_compatible=header_only_compatible,
+                requested_mode=CmdDeliveryMode.FULL_BODY,
+            )
+            return CmdDeliveryModeResult(
+                CmdDeliveryMode.FULL_BODY,
+                'explicit',
+                raw_value=str(raw),
+                legacy_raw_value=legacy,
+                header_only_compatible=compatible,
+            )
+        record_cmd_delivery_mode_invalid(
+            project_root,
+            env_name=_NEW_MODE_ENV,
+            raw_value=str(raw),
+            reason='invalid',
+        )
+        return CmdDeliveryModeResult(
+            CmdDeliveryMode.FULL_BODY,
+            'invalid',
+            raw_value=str(raw),
+            legacy_raw_value=legacy,
+            header_only_compatible=_resolve_header_only_compatible(
+                project_root=project_root,
+                header_only_compatible=header_only_compatible,
+                requested_mode=CmdDeliveryMode.FULL_BODY,
+            ),
+        )
+
+    if legacy is not None:
+        normalized = str(legacy).strip().lower()
+        record_cmd_delivery_legacy_env_seen(
+            project_root,
+            ignored=False,
+            raw_value=str(legacy),
+            reason='legacy_only',
+        )
+        if normalized in _LEGACY_TRUTHY:
+            compatible = _resolve_header_only_compatible(
+                project_root=project_root,
+                header_only_compatible=header_only_compatible,
+                requested_mode=CmdDeliveryMode.HEADER_ONLY,
+            )
+            return CmdDeliveryModeResult(
+                CmdDeliveryMode.HEADER_ONLY,
+                'legacy',
+                legacy_raw_value=str(legacy),
+                header_only_compatible=compatible,
+            )
+        if normalized in _LEGACY_FALSY:
+            compatible = _resolve_header_only_compatible(
+                project_root=project_root,
+                header_only_compatible=header_only_compatible,
+                requested_mode=CmdDeliveryMode.FULL_BODY,
+            )
+            return CmdDeliveryModeResult(
+                CmdDeliveryMode.FULL_BODY,
+                'legacy',
+                legacy_raw_value=str(legacy),
+                header_only_compatible=compatible,
+            )
+        record_cmd_delivery_mode_invalid(
+            project_root,
+            env_name=_LEGACY_MODE_ENV,
+            raw_value=str(legacy),
+            reason='invalid_legacy',
+        )
+        return CmdDeliveryModeResult(
+            CmdDeliveryMode.FULL_BODY,
+            'invalid_legacy',
+            legacy_raw_value=str(legacy),
+            header_only_compatible=_resolve_header_only_compatible(
+                project_root=project_root,
+                header_only_compatible=header_only_compatible,
+                requested_mode=CmdDeliveryMode.FULL_BODY,
+            ),
+        )
+
+    return CmdDeliveryModeResult(
+        CmdDeliveryMode.FULL_BODY,
+        'default_beta_full_body',
+        header_only_compatible=_resolve_header_only_compatible(
+            project_root=project_root,
+            header_only_compatible=header_only_compatible,
+            requested_mode=CmdDeliveryMode.FULL_BODY,
+        ),
+    )
+
+
+def header_only_enabled(project_root: Optional[Path] = None) -> bool:
+    return effective_cmd_delivery_mode(resolve_cmd_delivery_mode(project_root=project_root)) is CmdDeliveryMode.HEADER_ONLY
+
+
+def effective_cmd_delivery_mode(result: CmdDeliveryModeResult) -> CmdDeliveryMode:
+    if result.mode is CmdDeliveryMode.HEADER_ONLY and not result.header_only_compatible:
+        return CmdDeliveryMode.FULL_BODY
+    return result.mode
+
+
+def parse_cmd_header_tokens(header: str) -> dict[str, str]:
+    if not CMD_HEADER_RE.match(header):
+        raise CmdHeaderValidationError('invalid cmd header')
+    tokens = header.split()
+    if len(tokens) != 5 or tokens[0] != '[CCB]':
+        raise CmdHeaderValidationError('invalid cmd header token count')
+    parsed: dict[str, str] = {}
+    for token in tokens[1:]:
+        if '=' not in token:
+            raise CmdHeaderValidationError(f'invalid cmd header token: {token}')
+        key, value = token.split('=', 1)
+        if key in parsed:
+            raise CmdHeaderValidationError(f'duplicate cmd header token: {key}')
+        parsed[key] = value
+    if set(parsed) != {'job', 'from', 'bytes', 'pend'}:
+        raise CmdHeaderValidationError('invalid cmd header keys')
+    return parsed
+
+
+def prepare_cmd_payload(*, sender_id: str, body_bytes: int, source_job_id: str | None) -> str:
+    sender = _validated_sender(sender_id)
+    body_size = _validated_body_bytes(body_bytes)
+    job_target = _validated_job_or_fallback(source_job_id)
+    header = f'[CCB] job={job_target} from={sender} bytes={body_size} pend=ccb-pend'
+    _validate_header_text(header)
+    return header
 
 
 def plan_cmd_delivery(
@@ -68,128 +234,96 @@ def plan_cmd_delivery(
     *,
     project_root: Optional[Path],
     body_store,
-) -> tuple['CmdDeliveryPlan', Optional['CmdDeliveryFallback']]:
-    full_body = format_reply_delivery_body(dispatcher, reply)
-    if _is_heartbeat(reply):
-        # Heartbeats are small by construction and semantically must arrive
-        # intact (silence notices, job status). Never truncate.
-        return CmdDeliveryPlan(body=full_body, header_only=False, body_file=None), None
+    delivery_mode_result: CmdDeliveryModeResult | None = None,
+) -> tuple[CmdDeliveryPlan, Optional[CmdDeliveryFallback]]:
+    del body_store
+    mode = delivery_mode_result or CmdDeliveryModeResult(CmdDeliveryMode.FULL_BODY, 'default_beta_full_body')
+    if effective_cmd_delivery_mode(mode) is CmdDeliveryMode.FULL_BODY or _is_heartbeat(reply):
+        return CmdDeliveryPlan(body=format_reply_delivery_body(dispatcher, reply), header_only=False, body_file=None), None
 
     raw_body = str(reply.reply or '')
-    if len(raw_body) <= _BODY_CHAR_THRESHOLD:
-        # Short-body path does not require project_root; preserves pre-B
-        # warm-cache short-inject behavior when layout is temporarily missing.
-        return CmdDeliveryPlan(body=full_body, header_only=False, body_file=None), None
-
-    if not header_only_enabled():
-        # Kill switch off: force full-body regardless of length.
-        _logger.debug(
-            'cmd reply %s is long (%d chars) but header-only is disabled via '
-            '%s — falling back to full-body inject',
-            reply.reply_id, len(raw_body), _KILL_SWITCH_ENV,
+    try:
+        header = prepare_cmd_payload(
+            sender_id=str(getattr(reply, 'agent_name', '') or ''),
+            body_bytes=len(raw_body.encode('utf-8')),
+            source_job_id=_source_job_id(dispatcher, reply),
         )
-        return (
-            CmdDeliveryPlan(body=full_body, header_only=False, body_file=None),
-            CmdDeliveryFallback(reason='kill_switch_disabled', body_char_count=len(raw_body)),
-        )
+    except CmdHeaderValidationError as exc:
+        from .cmd_delivery_telemetry import record_cmd_delivery_header_too_large
 
-    if project_root is None:
-        # Long body but no place to persist — degrade gracefully to full body.
-        # Costs transcript bloat on this one reply but keeps delivery working.
-        # Telemetry surfaces this so the observation window cannot lie about
-        # header-only adoption (codex structural review 2026-04-22).
-        _logger.warning(
-            'cmd reply %s is long (%d chars) but project_root is unavailable — '
-            'falling back to full-body inject', reply.reply_id, len(raw_body),
-        )
-        return (
-            CmdDeliveryPlan(body=full_body, header_only=False, body_file=None),
-            CmdDeliveryFallback(reason='project_root_unavailable', body_char_count=len(raw_body)),
-        )
-
-    # Long path: persist full body, replace transcript payload with
-    # header + body_file pointer + 3-line summary. Must run in phase 2.
-    body_file = body_store.write_reply_body(project_root, reply.reply_id, raw_body)
-    header_only_body = _build_header_only_body(
-        dispatcher=dispatcher,
-        reply=reply,
-        body_file=body_file,
-        raw_body=raw_body,
-    )
-    return (
-        CmdDeliveryPlan(body=header_only_body, header_only=True, body_file=body_file),
-        None,
-    )
+        if 'body bytes' in str(exc):
+            record_cmd_delivery_header_too_large(
+                project_root,
+                reply_id=str(getattr(reply, 'reply_id', '') or ''),
+                body_char_count=len(raw_body),
+                body_byte_count=len(raw_body.encode('utf-8')),
+            )
+        raise
+    return CmdDeliveryPlan(body=header, header_only=True, body_file=None), None
 
 
-def _build_header_only_body(*, dispatcher, reply, body_file: Path, raw_body: str) -> str:
-    header_tokens = [
-        'CCB_REPLY',
-        f'from={reply.agent_name}',
-        f'reply={reply.reply_id}',
-        f'status={reply.terminal_status.value}',
-    ]
-    source_job = _source_job(dispatcher, reply)
-    if source_job is not None:
-        header_tokens.append(f'job={source_job.job_id}')
-        task_id = str(source_job.request.task_id or '').strip()
-        if task_id:
-            header_tokens.append(f'task={task_id}')
-    # shlex.quote preserves CCB_REPLY token boundaries even when body_file
-    # path contains spaces or shell metacharacters.
-    quoted_body_file = shlex.quote(str(body_file))
-    header_tokens.append(f'body_file={quoted_body_file}')
-    header_tokens.append('must_read=1')
-
-    # Structured, machine-parseable notice. Per codex structural review
-    # 2026-04-22: prose notices are easy to skim past; key=value tokens on
-    # their own line mirror the CCB_REPLY header and repeat must_read=1 so
-    # the hard signal cannot be missed. The human-readable hint sits below
-    # as orientation only.
-    notice_line = (
-        f'CCB_NOTICE kind=external_body must_read=1 body_file={quoted_body_file}'
-    )
-    human_hint = (
-        'Call the Read tool on body_file before responding. '
-        'Preview below is a 3-line excerpt; the full reply is on disk.'
-    )
-
-    summary = _extract_summary(raw_body)
-    parts = [
-        ' '.join(header_tokens),
-        notice_line,
-        human_hint,
-        '',
-        summary,
-    ]
-    return '\n'.join(parts).rstrip()
+def _validated_sender(value: str) -> str:
+    text = str(value or '').strip()
+    if not _SENDER_RE.fullmatch(text):
+        raise CmdHeaderValidationError(f'invalid sender: {value!r}')
+    return text
 
 
-def _extract_summary(body: str) -> str:
-    lines = []
-    for line in body.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if len(stripped) > _SUMMARY_LINE_MAX:
-            stripped = stripped[: _SUMMARY_LINE_MAX - 1] + '…'
-        lines.append(stripped)
-        if len(lines) >= _SUMMARY_LINES:
-            break
-    if not lines:
-        return '(long body — see body_file)'
-    lines.append('')
-    lines.append('(body truncated; read body_file for full content)')
-    return '\n'.join(lines)
+def _validated_body_bytes(value: int) -> int:
+    try:
+        number = int(value)
+    except Exception as exc:
+        raise CmdHeaderValidationError(f'invalid body bytes: {value!r}') from exc
+    if number < 0 or number > MAX_CMD_HEADER_BYTES_FIELD:
+        raise CmdHeaderValidationError(f'body bytes out of range: {number}')
+    return number
 
 
-# Local helpers — intentionally duplicated from formatting.py so this planner
-# survives any formatting.py refactor without silently breaking. See codex
-# review adjust #2.
+def _validated_job_or_fallback(value: str | None) -> str:
+    text = str(value or '').strip()
+    if _JOB_ID_RE.fullmatch(text):
+        return text
+    return 'target=cmd'
+
+
+def _resolve_header_only_compatible(
+    *,
+    project_root: Optional[Path],
+    header_only_compatible: bool | None,
+    requested_mode: CmdDeliveryMode,
+) -> bool:
+    if header_only_compatible is not None:
+        return bool(header_only_compatible)
+    if requested_mode is not CmdDeliveryMode.HEADER_ONLY:
+        return False
+    return validate_cmd_header_only_compatibility_marker(project_root).compatible
+
+
+def _validate_header_text(header: str) -> None:
+    try:
+        header.encode('ascii')
+    except UnicodeEncodeError as exc:
+        raise CmdHeaderValidationError('cmd header must be ASCII') from exc
+    if any(char in header for char in _FORBIDDEN_HEADER_CHARS):
+        raise CmdHeaderValidationError('cmd header contains forbidden shell metacharacter')
+    if '\n' in header or '\r' in header or '\x1b' in header:
+        raise CmdHeaderValidationError('cmd header contains control characters')
+    if len(header) > MAX_CMD_HEADER_LEN:
+        raise CmdHeaderValidationError(f'cmd header exceeds {MAX_CMD_HEADER_LEN} chars')
+    if not CMD_HEADER_RE.fullmatch(header):
+        raise CmdHeaderValidationError(f'invalid cmd header: {header!r}')
+
 
 def _is_heartbeat(reply) -> bool:
     diagnostics = getattr(reply, 'diagnostics', {}) or {}
     return str(diagnostics.get('notice_kind') or '').strip().lower() == 'heartbeat'
+
+
+def _source_job_id(dispatcher, reply) -> str | None:
+    source_job = _source_job(dispatcher, reply)
+    if source_job is None:
+        return None
+    return str(getattr(source_job, 'job_id', '') or '').strip() or None
 
 
 def _source_job(dispatcher, reply):
@@ -200,9 +334,8 @@ def _source_job(dispatcher, reply):
     attempt = attempt_store.get_latest(reply.attempt_id)
     if attempt is None:
         return None
-    source_job = dispatcher.get_job(attempt.job_id) if hasattr(dispatcher, 'get_job') else None
-    if source_job is not None:
-        return source_job
+    if hasattr(dispatcher, 'get_job'):
+        return dispatcher.get_job(attempt.job_id)
     try:
         from ..records import get_job
     except ImportError:
@@ -211,8 +344,19 @@ def _source_job(dispatcher, reply):
 
 
 __all__ = [
-    'CmdDeliveryPlan',
+    'CMD_HEADER_RE',
+    'MAX_CMD_HEADER_BYTES_FIELD',
+    'MAX_CMD_HEADER_LEN',
     'CmdDeliveryFallback',
+    'CmdDeliveryMode',
+    'CmdDeliveryModeResult',
+    'CmdDeliveryPlan',
+    'CmdHeaderValidationError',
+    'beta_header_only_allowed',
+    'effective_cmd_delivery_mode',
     'header_only_enabled',
+    'parse_cmd_header_tokens',
     'plan_cmd_delivery',
+    'prepare_cmd_payload',
+    'resolve_cmd_delivery_mode',
 ]

@@ -32,7 +32,7 @@ def test_tmux_text_sender_deletes_buffer_after_paste_failure() -> None:
 
     assert calls[0] == ['ensure-copy-mode', '%1']
     assert ['load-buffer', '-b', 'buf-1', '-'] in calls
-    assert ['paste-buffer', '-p', '-t', '%1', '-b', 'buf-1'] in calls
+    assert ['paste-buffer', '-p', '-t', '%1', '-b', 'buf-1', ';', 'send-keys', '-t', '%1', 'Enter'] in calls
     assert calls[-1] == ['delete-buffer', '-b', 'buf-1']
 
 
@@ -53,4 +53,34 @@ def test_tmux_text_sender_uses_inline_legacy_mode_for_session_targets() -> None:
     assert calls == [
         ['send-keys', '-t', 'session-x', '-l', 'hello'],
         ['send-keys', '-t', 'session-x', 'Enter'],
+    ]
+
+
+def test_race_pane_dies_mid_send_uses_single_tmux_command_for_paste_and_enter() -> None:
+    calls: list[list[str]] = []
+
+    def _tmux_run(args, **kwargs):
+        calls.append(args)
+        if args and args[0] == 'send-keys' and args[-1] == 'Enter':
+            raise AssertionError('Enter must not be sent in a separate command after paste')
+        return _cp()
+
+    sender = TmuxTextSender(
+        tmux_run_fn=_tmux_run,
+        looks_like_tmux_target_fn=lambda value: True,
+        ensure_not_in_copy_mode_fn=lambda pane_id: calls.append(['ensure-copy-mode', pane_id]),
+        build_buffer_name_fn=lambda **kwargs: 'buf-race',
+        sanitize_text_fn=lambda text: text,
+        should_use_inline_legacy_send_fn=lambda **kwargs: False,
+        env_float_fn=lambda name, default: 99.0,
+        sleep_fn=lambda seconds: (_ for _ in ()).throw(AssertionError('paste/enter path must not sleep')),
+    )
+
+    sender.send_text('%1', '[CCB] job=job_1234abcd from=agent1 bytes=1 pend=ccb-pend')
+
+    paste_calls = [call for call in calls if call and call[0] == 'paste-buffer']
+    assert len(paste_calls) == 1
+    assert paste_calls[0] == [
+        'paste-buffer', '-p', '-t', '%1', '-b', 'buf-race',
+        ';', 'send-keys', '-t', '%1', 'Enter',
     ]

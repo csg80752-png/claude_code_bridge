@@ -115,6 +115,11 @@ def initialize_app(app, project_root: str | Path, *, clock, pid: int | None) -> 
         snapshot_writer=app.snapshot_writer,
         clock=app.clock,
     )
+    from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_transport_planner import (
+        resolve_cmd_delivery_mode,
+    )
+
+    app.dispatcher._cmd_delivery_mode_result = resolve_cmd_delivery_mode(project_root=app.project_root)
     app.heartbeat_state_store = HeartbeatStateStore(app.paths)
     app.job_heartbeat = JobHeartbeatService(
         app.paths,

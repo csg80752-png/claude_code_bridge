@@ -48,12 +48,14 @@ class TmuxTextSender:
         self.tmux_run_fn(['load-buffer', '-b', buffer_name, '-'], check=True, input_bytes=text.encode('utf-8'))
         try:
             if pane_target:
-                self.tmux_run_fn(['paste-buffer', '-p', '-t', target, '-b', buffer_name], check=True)
+                self.tmux_run_fn(
+                    ['paste-buffer', '-p', '-t', target, '-b', buffer_name, ';', 'send-keys', '-t', target, 'Enter'],
+                    check=True,
+                )
             else:
-                self.tmux_run_fn(['paste-buffer', '-t', target, '-b', buffer_name, '-p'], check=True)
-            enter_delay = self.env_float_fn('CCB_TMUX_ENTER_DELAY', 0.5)
-            if enter_delay:
-                self.sleep_fn(enter_delay)
-            self.tmux_run_fn(['send-keys', '-t', target, 'Enter'], check=True)
+                self.tmux_run_fn(
+                    ['paste-buffer', '-t', target, '-b', buffer_name, '-p', ';', 'send-keys', '-t', target, 'Enter'],
+                    check=True,
+                )
         finally:
             self.tmux_run_fn(['delete-buffer', '-b', buffer_name], check=False)

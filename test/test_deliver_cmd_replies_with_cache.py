@@ -69,7 +69,7 @@ def test_deliver_cmd_replies_sees_reply_appended_after_cached_empty_head(monkeyp
     monkeypatch.setattr(
         cmd_replies,
         'plan_cmd_delivery',
-        lambda dispatcher, reply, project_root, body_store: (
+        lambda dispatcher, reply, project_root, body_store, **kwargs: (
             SimpleNamespace(body=reply.reply, header_only=False, body_file=None),
             None,
         ),
