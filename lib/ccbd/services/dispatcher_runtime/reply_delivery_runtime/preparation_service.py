@@ -42,6 +42,15 @@ _logger = logging.getLogger(__name__)
 _CMD_PANE_CACHE_TTL = 30.0
 _PROBE_LINES = 20
 DEFAULT_CMD_SAFE_CONSUMERS = frozenset({'claude'})
+
+# v8.4 PR #2 (diag round) — non-behavioral. Spec: docs/v8.4-plan.md lines
+# 128-136. One-shot per ccbd lifetime: on the first _deliver_cmd_replies
+# call, log the dispatcher's cmd pane view (cached id, fresh tmux discovery,
+# is_alive) plus the on-disk startup-report's bootstrap_cmd_pane (which may
+# be supervisor-overwritten — see project_startup_report_overwrite_supervisor_vs_app).
+# The Issue #3 fix PR (v8.4-cmd) consumes these warnings to lock the fix
+# shape (re-resolve via __ccb_ctl pane title vs invalidate-on-stale).
+_cmd_pane_diag_emitted: bool = False
 # In-memory LRU of reply_ids already injected into the cmd pane. Prevents
 # re-injecting the same reply on every tick while the head still waits for
 # `client.ack('cmd')` from the cmd user. Bounded so long-lived daemons do
@@ -108,6 +117,11 @@ def _maybe_compact_mailboxes(dispatcher) -> None:
 
 
 def _deliver_cmd_replies(dispatcher):
+    _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+    return _deliver_cmd_replies_impl(dispatcher)
+
+
+def _deliver_cmd_replies_impl(dispatcher):
     """Side-effect-only cmd delivery: inject pane text, leave head for human ack.
 
     CCB contract: `client.ack('cmd')` is the human-driven consumer of the cmd
@@ -790,6 +804,122 @@ def _invalidate_cmd_pane_cache(dispatcher):
         dispatcher._cmd_pane_cache = None
     except AttributeError:
         pass
+
+
+def _maybe_emit_cmd_pane_discovery_diag(dispatcher) -> None:
+    global _cmd_pane_diag_emitted
+    if _cmd_pane_diag_emitted:
+        return
+    _cmd_pane_diag_emitted = True
+
+    cached = getattr(dispatcher, '_cmd_pane_cache', None)
+    cached_pane_id = None
+    cached_age = None
+    if cached is not None:
+        try:
+            cached_pane_id, cached_at = cached
+            cached_age = time.monotonic() - float(cached_at)
+        except Exception:
+            cached_pane_id, cached_age = None, None
+
+    layout = getattr(dispatcher, '_layout', None)
+    fresh_pane_id = None
+    if layout is not None:
+        try:
+            fresh_pane_id = _lookup_cmd_pane_id(dispatcher, layout)
+        except Exception:
+            _logger.debug('v8.4-diag fresh discovery raised', exc_info=True)
+            fresh_pane_id = None
+
+    is_alive_cached = None
+    is_alive_fresh = None
+    backend = None
+    try:
+        backend = _get_tmux_backend(dispatcher)
+    except Exception:
+        _logger.debug('v8.4-diag backend lookup raised', exc_info=True)
+        backend = None
+    if backend is not None:
+        if cached_pane_id:
+            try:
+                is_alive_cached = bool(backend.is_alive(cached_pane_id))
+            except Exception:
+                is_alive_cached = None
+        if fresh_pane_id and fresh_pane_id != cached_pane_id:
+            try:
+                is_alive_fresh = bool(backend.is_alive(fresh_pane_id))
+            except Exception:
+                is_alive_fresh = None
+        elif fresh_pane_id and fresh_pane_id == cached_pane_id:
+            is_alive_fresh = is_alive_cached
+
+    bootstrap_pane_id, bootstrap_report_path = _read_startup_report_bootstrap_pane(dispatcher)
+
+    pending_count = _count_pending_cmd_replies(dispatcher)
+
+    _logger.warning(
+        'v8.4-diag cmd-pane-discovery cached_pane_id=%r cached_age_s=%s '
+        'fresh_pane_id=%r is_alive_cached=%s is_alive_fresh=%s '
+        'bootstrap_cmd_pane=%r bootstrap_report_path=%s '
+        'pending_cmd_replies=%s '
+        'note=bootstrap_cmd_pane_may_be_supervisor_overwritten',
+        cached_pane_id,
+        f'{cached_age:.3f}' if cached_age is not None else None,
+        fresh_pane_id,
+        is_alive_cached,
+        is_alive_fresh,
+        bootstrap_pane_id,
+        bootstrap_report_path,
+        pending_count,
+    )
+
+
+def _read_startup_report_bootstrap_pane(dispatcher) -> tuple[str | None, str | None]:
+    layout = getattr(dispatcher, '_layout', None)
+    if layout is None:
+        return None, None
+    project_root = getattr(layout, 'project_root', None)
+    if project_root is None:
+        return None, None
+    candidate = Path(project_root) / '.ccb' / 'ccbd' / 'startup-report.json'
+    if not candidate.exists():
+        return None, str(candidate)
+    try:
+        with candidate.open('r', encoding='utf-8') as handle:
+            data = json.load(handle)
+    except Exception:
+        return None, str(candidate)
+    bootstrap = data.get('bootstrap_cmd_pane') if isinstance(data, dict) else None
+    if bootstrap is None and isinstance(data, dict):
+        actions = data.get('actions_taken') or data.get('actions')
+        if isinstance(actions, list):
+            for entry in actions:
+                text = str(entry or '')
+                if text.startswith('bootstrap_cmd_pane:'):
+                    bootstrap = text.split(':', 1)[1] or None
+                    break
+    return (str(bootstrap) if bootstrap else None), str(candidate)
+
+
+def _count_pending_cmd_replies(dispatcher) -> int:
+    control = getattr(dispatcher, '_message_bureau_control', None)
+    kernel = getattr(control, '_mailbox_kernel', None) if control is not None else None
+    if kernel is None:
+        return -1
+    try:
+        pending = kernel.pending_events('cmd', event_type=InboundEventType.TASK_REPLY)
+    except Exception:
+        return -1
+    try:
+        return len(pending or ())
+    except TypeError:
+        return -1
+
+
+def reset_cmd_pane_diag_for_test() -> None:
+    """Test helper. Resets the one-shot gate so tests can simulate restart."""
+    global _cmd_pane_diag_emitted
+    _cmd_pane_diag_emitted = False
 
 
 def _resolve_project_root(dispatcher):
