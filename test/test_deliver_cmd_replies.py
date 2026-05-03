@@ -91,7 +91,7 @@ class _RecordingBackend:
     def is_alive(self, pane_id: str) -> bool:
         return self._alive
 
-    def send_text_to_pane(self, pane_id: str, text: str):
+    def send_text_to_pane(self, pane_id: str, text: str, **kwargs):
         if self._send_raises:
             raise RuntimeError('inject failed')
         self.injected.append((pane_id, text))

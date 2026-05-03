@@ -1246,7 +1246,7 @@ def test_dispatcher_delivers_failed_reply_to_sender_when_claude_hits_pre_anchor_
     registry.upsert(_runtime('claude', project_id=ctx.project_id, layout=layout, pid=102))
 
     class FakeBackend:
-        def send_text(self, pane_id: str, text: str) -> None:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
             del pane_id, text
 
         def is_alive(self, pane_id: str) -> bool:

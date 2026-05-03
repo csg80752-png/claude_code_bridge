@@ -58,7 +58,7 @@ class _Backend:
     def is_alive(self, pane_id):
         return True
 
-    def send_text_to_pane(self, pane_id, text):
+    def send_text_to_pane(self, pane_id, text, **kwargs):
         self.sent.append((pane_id, text))
 
 
