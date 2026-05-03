@@ -39,40 +39,64 @@ def _write_session_jsonl(path: Path, *entries: dict) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _user_entry(text: str, turn_id: str = "t1") -> dict:
+    return {
+        "type": "event_msg",
+        "timestamp": "2026-05-04T00:00:00Z",
+        "turn_id": turn_id,
+        "payload": {"type": "user_message", "role": "user", "message": text},
+    }
+
+
+def _assistant_entry(text: str, turn_id: str = "t1") -> dict:
+    return {
+        "type": "event_msg",
+        "timestamp": "2026-05-04T00:00:01Z",
+        "turn_id": turn_id,
+        "payload": {"type": "agent_message", "role": "assistant", "message": text},
+    }
+
+
 def test_emits_warning_on_wedge(tmp_path, caplog):
     log_path = tmp_path / "session.jsonl"
     _write_session_jsonl(
         log_path,
-        {"role": "user", "text": "hi"},
-        {"role": "assistant", "text": "answer", "turn_id": "abc", "timestamp": "2026-05-04T00:00:00Z"},
+        _user_entry("hi"),
+        _assistant_entry("answer", turn_id="abc"),
     )
     submission = SimpleNamespace(job_id="job_test1")
     poll = _make_wedged_poll()
-    state = {"log_path": log_path, "offset": 0}
+    state = {"log_path": log_path, "offset": log_path.stat().st_size}
+    pre_poll_state = {"log_path": log_path, "offset": 0}
 
     with caplog.at_level(logging.WARNING):
-        maybe_emit_binding_diag(submission, poll, state)
+        maybe_emit_binding_diag(submission, poll, state, pre_poll_state=pre_poll_state)
 
     assert any("v8.4-diag binding-wedge" in record.getMessage() for record in caplog.records)
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag binding-wedge" in r.getMessage())
     assert "job=job_test1" in msg
     assert "bound_turn_contaminated=True" in msg
     assert "predicate_blocker=requires_turn_id_unsatisfied" in msg
-    assert "lines_past_offset=2" in msg
-    assert "role='assistant'" in msg
+    assert "pre_poll_offset=0" in msg
+    assert "lines_consumed_this_tick=2" in msg
+    assert "lines_past_post_offset=0" in msg
+    assert "normalized_role='assistant'" in msg
+    assert "raw_payload_type='agent_message'" in msg
+    assert "text_preview='answer'" in msg
 
 
 def test_one_shot_per_job_id(tmp_path, caplog):
     log_path = tmp_path / "session.jsonl"
-    _write_session_jsonl(log_path, {"role": "user", "text": "x"})
+    _write_session_jsonl(log_path, _user_entry("x"))
     submission = SimpleNamespace(job_id="job_oneshot")
     poll = _make_wedged_poll()
-    state = {"log_path": log_path, "offset": 0}
+    state = {"log_path": log_path, "offset": log_path.stat().st_size}
+    pre = {"log_path": log_path, "offset": 0}
 
     with caplog.at_level(logging.WARNING):
-        maybe_emit_binding_diag(submission, poll, state)
-        maybe_emit_binding_diag(submission, poll, state)
-        maybe_emit_binding_diag(submission, poll, state)
+        maybe_emit_binding_diag(submission, poll, state, pre_poll_state=pre)
+        maybe_emit_binding_diag(submission, poll, state, pre_poll_state=pre)
+        maybe_emit_binding_diag(submission, poll, state, pre_poll_state=pre)
 
     wedge_records = [r for r in caplog.records if "v8.4-diag binding-wedge" in r.getMessage()]
     assert len(wedge_records) == 1
@@ -80,7 +104,7 @@ def test_one_shot_per_job_id(tmp_path, caplog):
 
 def test_skips_when_not_contaminated(tmp_path, caplog):
     log_path = tmp_path / "session.jsonl"
-    _write_session_jsonl(log_path, {"role": "user", "text": "x"})
+    _write_session_jsonl(log_path, _user_entry("x"))
     submission = SimpleNamespace(job_id="job_clean")
     poll = CodexPollState(anchor_seen=True, bound_turn_contaminated=False, reply_buffer="")
     state = {"log_path": log_path, "offset": 0}
@@ -93,7 +117,7 @@ def test_skips_when_not_contaminated(tmp_path, caplog):
 
 def test_skips_when_reply_buffer_nonempty(tmp_path, caplog):
     log_path = tmp_path / "session.jsonl"
-    _write_session_jsonl(log_path, {"role": "user", "text": "x"})
+    _write_session_jsonl(log_path, _user_entry("x"))
     submission = SimpleNamespace(job_id="job_progressing")
     poll = CodexPollState(
         anchor_seen=True,
@@ -110,7 +134,7 @@ def test_skips_when_reply_buffer_nonempty(tmp_path, caplog):
 
 def test_skips_when_reached_terminal(tmp_path, caplog):
     log_path = tmp_path / "session.jsonl"
-    _write_session_jsonl(log_path, {"role": "user", "text": "x"})
+    _write_session_jsonl(log_path, _user_entry("x"))
     submission = SimpleNamespace(job_id="job_terminal")
     poll = CodexPollState(
         anchor_seen=True,
@@ -136,7 +160,7 @@ def test_handles_missing_log_path(caplog):
 
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag binding-wedge" in r.getMessage())
     assert "log_path=None" in msg
-    assert "lines_past_offset=-1" in msg
+    assert "lines_past_post_offset=-1" in msg
     assert "last_entry=no_log_path" in msg
 
 
@@ -154,14 +178,10 @@ def test_handles_missing_file(tmp_path, caplog):
     assert "file_size=-1" in msg
 
 
-def test_offset_at_eof_reports_zero_lines_past(tmp_path, caplog):
+def test_no_pre_poll_state_reports_negative_one(tmp_path, caplog):
     log_path = tmp_path / "session.jsonl"
-    _write_session_jsonl(
-        log_path,
-        {"role": "user", "text": "x"},
-        {"role": "assistant", "text": "y", "turn_id": "t1"},
-    )
-    submission = SimpleNamespace(job_id="job_at_eof")
+    _write_session_jsonl(log_path, _user_entry("x"))
+    submission = SimpleNamespace(job_id="job_no_pre")
     poll = _make_wedged_poll()
     state = {"log_path": log_path, "offset": log_path.stat().st_size}
 
@@ -169,7 +189,8 @@ def test_offset_at_eof_reports_zero_lines_past(tmp_path, caplog):
         maybe_emit_binding_diag(submission, poll, state)
 
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag binding-wedge" in r.getMessage())
-    assert "lines_past_offset=0" in msg
+    assert "pre_poll_offset=-1" in msg
+    assert "lines_consumed_this_tick=-1" in msg
 
 
 def test_skips_empty_job_id(caplog):
@@ -181,6 +202,27 @@ def test_skips_empty_job_id(caplog):
         maybe_emit_binding_diag(submission, poll, state)
 
     assert not any("v8.4-diag binding-wedge" in r.getMessage() for r in caplog.records)
+
+
+def test_extracts_assistant_text_from_raw_codex_payload(tmp_path, caplog):
+    log_path = tmp_path / "session.jsonl"
+    _write_session_jsonl(
+        log_path,
+        _user_entry("hello"),
+        _assistant_entry("real answer text", turn_id="abc"),
+    )
+    submission = SimpleNamespace(job_id="job_raw_codex")
+    poll = _make_wedged_poll()
+    state = {"log_path": log_path, "offset": log_path.stat().st_size}
+
+    with caplog.at_level(logging.WARNING):
+        maybe_emit_binding_diag(submission, poll, state, pre_poll_state={"log_path": log_path, "offset": 0})
+
+    msg = next(r.getMessage() for r in caplog.records if "v8.4-diag binding-wedge" in r.getMessage())
+    assert "raw_entry_type='event_msg'" in msg
+    assert "raw_payload_type='agent_message'" in msg
+    assert "normalized_role='assistant'" in msg
+    assert "text_preview='real answer text'" in msg
 
 
 def test_predicate_blocker_anchor_not_seen():
@@ -246,16 +288,13 @@ def test_includes_envvar_value(monkeypatch, caplog):
 def test_summary_truncates_long_text(tmp_path, caplog):
     log_path = tmp_path / "session.jsonl"
     long_text = "x" * 5000
-    _write_session_jsonl(
-        log_path,
-        {"role": "assistant", "text": long_text, "turn_id": "t1", "timestamp": "ts"},
-    )
+    _write_session_jsonl(log_path, _assistant_entry(long_text, turn_id="t1"))
     submission = SimpleNamespace(job_id="job_long_text")
     poll = _make_wedged_poll()
-    state = {"log_path": log_path, "offset": 0}
+    state = {"log_path": log_path, "offset": log_path.stat().st_size}
 
     with caplog.at_level(logging.WARNING):
-        maybe_emit_binding_diag(submission, poll, state)
+        maybe_emit_binding_diag(submission, poll, state, pre_poll_state={"log_path": log_path, "offset": 0})
 
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag binding-wedge" in r.getMessage())
     assert long_text not in msg

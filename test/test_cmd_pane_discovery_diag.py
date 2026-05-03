@@ -9,6 +9,7 @@ import pytest
 
 from ccbd.services.dispatcher_runtime.reply_delivery_runtime import preparation_service
 from ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service import (
+    _deliver_cmd_replies,
     _maybe_emit_cmd_pane_discovery_diag,
     reset_cmd_pane_diag_for_test,
 )
@@ -65,7 +66,7 @@ def test_emits_warning_first_call(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: backend)
 
     with caplog.at_level(logging.WARNING):
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=8)
 
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag cmd-pane-discovery" in r.getMessage())
     assert "cached_pane_id='%5'" in msg
@@ -83,9 +84,9 @@ def test_one_shot_per_lifetime(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: None)
 
     with caplog.at_level(logging.WARNING):
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=8)
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=8)
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=8)
 
     records = [r for r in caplog.records if "v8.4-diag cmd-pane-discovery" in r.getMessage()]
     assert len(records) == 1
@@ -101,13 +102,13 @@ def test_handles_missing_layout(monkeypatch, caplog):
     monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: None)
 
     with caplog.at_level(logging.WARNING):
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=8)
 
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag cmd-pane-discovery" in r.getMessage())
     assert "cached_pane_id=None" in msg
     assert "fresh_pane_id=None" in msg
     assert "bootstrap_cmd_pane=None" in msg
-    assert "pending_cmd_replies=-1" in msg
+    assert "pending_cmd_replies=8" in msg
 
 
 def test_handles_missing_startup_report(monkeypatch, tmp_path, caplog):
@@ -117,7 +118,7 @@ def test_handles_missing_startup_report(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: backend)
 
     with caplog.at_level(logging.WARNING):
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=8)
 
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag cmd-pane-discovery" in r.getMessage())
     assert "bootstrap_cmd_pane=None" in msg
@@ -132,7 +133,7 @@ def test_falls_back_to_actions_taken(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: None)
 
     with caplog.at_level(logging.WARNING):
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=8)
 
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag cmd-pane-discovery" in r.getMessage())
     assert "bootstrap_cmd_pane='%4'" in msg
@@ -148,7 +149,7 @@ def test_handles_lookup_exception(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: None)
 
     with caplog.at_level(logging.WARNING):
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=8)
 
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag cmd-pane-discovery" in r.getMessage())
     assert "fresh_pane_id=None" in msg
@@ -165,7 +166,7 @@ def test_handles_is_alive_exception(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: backend)
 
     with caplog.at_level(logging.WARNING):
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=8)
 
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag cmd-pane-discovery" in r.getMessage())
     assert "is_alive_cached=None" in msg
@@ -180,13 +181,43 @@ def test_handles_invalid_startup_report_json(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: None)
 
     with caplog.at_level(logging.WARNING):
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=8)
 
     msg = next(r.getMessage() for r in caplog.records if "v8.4-diag cmd-pane-discovery" in r.getMessage())
     assert "bootstrap_cmd_pane=None" in msg
 
 
-def test_pending_kernel_exception(monkeypatch, tmp_path, caplog):
+def test_wrapper_skips_diag_when_pending_zero(monkeypatch, tmp_path, caplog):
+    """The pending>0 gate prevents burning the one-shot at idle ticks."""
+    dispatcher = _make_dispatcher(project_root=tmp_path, pending_count=0)
+    monkeypatch.setattr(preparation_service, "_deliver_cmd_replies_impl", lambda d: None)
+    monkeypatch.setattr(preparation_service, "_lookup_cmd_pane_id", lambda d, l: None)
+    monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: None)
+
+    with caplog.at_level(logging.WARNING):
+        _deliver_cmd_replies(dispatcher)
+
+    assert not any(
+        "v8.4-diag cmd-pane-discovery" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_wrapper_invokes_diag_when_pending_positive(monkeypatch, tmp_path, caplog):
+    dispatcher = _make_dispatcher(project_root=tmp_path, cached_pane_id="%2", pending_count=3)
+    monkeypatch.setattr(preparation_service, "_deliver_cmd_replies_impl", lambda d: None)
+    monkeypatch.setattr(preparation_service, "_lookup_cmd_pane_id", lambda d, l: "%2")
+    backend = SimpleNamespace(is_alive=lambda pane_id: True)
+    monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: backend)
+
+    with caplog.at_level(logging.WARNING):
+        _deliver_cmd_replies(dispatcher)
+
+    msg = next(r.getMessage() for r in caplog.records if "v8.4-diag cmd-pane-discovery" in r.getMessage())
+    assert "pending_cmd_replies=3" in msg
+
+
+def test_wrapper_handles_kernel_exception_silently(monkeypatch, tmp_path, caplog):
+    """Kernel pending_events failure → wrapper sees -1 → diag not invoked."""
     layout = SimpleNamespace(project_root=tmp_path)
 
     def _raise(*a, **k):
@@ -200,11 +231,13 @@ def test_pending_kernel_exception(monkeypatch, tmp_path, caplog):
         _message_bureau_control=control,
     )
 
+    monkeypatch.setattr(preparation_service, "_deliver_cmd_replies_impl", lambda d: None)
     monkeypatch.setattr(preparation_service, "_lookup_cmd_pane_id", lambda d, l: None)
     monkeypatch.setattr(preparation_service, "_get_tmux_backend", lambda d: None)
 
     with caplog.at_level(logging.WARNING):
-        _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+        _deliver_cmd_replies(dispatcher)
 
-    msg = next(r.getMessage() for r in caplog.records if "v8.4-diag cmd-pane-discovery" in r.getMessage())
-    assert "pending_cmd_replies=-1" in msg
+    assert not any(
+        "v8.4-diag cmd-pane-discovery" in r.getMessage() for r in caplog.records
+    )

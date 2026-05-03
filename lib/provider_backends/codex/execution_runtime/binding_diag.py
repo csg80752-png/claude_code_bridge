@@ -5,6 +5,8 @@ import logging
 import os
 from pathlib import Path
 
+from provider_backends.codex.comm_runtime.log_entries import extract_entry
+
 from .state_machine_runtime.models import CodexPollState
 
 # v8.4 PR #2 (diag round) — non-behavioral. Spec: docs/v8.4-plan.md lines 58-65.
@@ -37,6 +39,8 @@ def maybe_emit_binding_diag(
     submission,
     poll: CodexPollState,
     state: dict[str, object],
+    *,
+    pre_poll_state: dict[str, object] | None = None,
 ) -> None:
     if not _is_wedge_condition(poll):
         return
@@ -46,9 +50,11 @@ def maybe_emit_binding_diag(
         return
 
     log_path = _coerce_path(state.get('log_path'))
-    offset = _coerce_int(state.get('offset'))
+    post_offset = _coerce_int(state.get('offset'))
+    pre_offset = _coerce_int((pre_poll_state or {}).get('offset')) if pre_poll_state else -1
     file_size = _stat_size(log_path)
-    lines_past_offset = _count_lines_past_offset(log_path, offset)
+    lines_consumed_this_tick = _count_lines_in_range(log_path, pre_offset, post_offset)
+    lines_past_post_offset = _count_lines_past_offset(log_path, post_offset)
     last_entry = _summarize_last_entry(log_path)
     predicate_blocker = _predicate_blocker(poll)
     requires_turn_id_envvar = os.environ.get('CCB_CODEX_REQUIRES_TURN_ID')
@@ -56,8 +62,9 @@ def maybe_emit_binding_diag(
     _emitted.add(job_id)
 
     _logger.warning(
-        'v8.4-diag binding-wedge job=%s log_path=%s offset=%s file_size=%s '
-        'lines_past_offset=%s anchor_seen=%s '
+        'v8.4-diag binding-wedge job=%s log_path=%s pre_poll_offset=%s post_poll_offset=%s '
+        'file_size=%s lines_consumed_this_tick=%s lines_past_post_offset=%s '
+        'anchor_seen=%s '
         'bound_turn_id=%r current_turn_id=%r requires_turn_id=%s '
         'bound_turn_contaminated=%s bound_turn_started=%s current_turn_started=%s '
         'reply_buffer_len=%d last_assistant_message_len=%d '
@@ -65,9 +72,11 @@ def maybe_emit_binding_diag(
         'last_entry=%s',
         job_id,
         log_path,
-        offset,
+        pre_offset,
+        post_offset,
         file_size,
-        lines_past_offset,
+        lines_consumed_this_tick,
+        lines_past_post_offset,
         poll.anchor_seen,
         poll.bound_turn_id,
         poll.current_turn_id,
@@ -157,6 +166,27 @@ def _count_lines_past_offset(log_path: Path | None, offset: int) -> int:
         return -1
 
 
+def _count_lines_in_range(log_path: Path | None, start: int, end: int) -> int:
+    if log_path is None or start < 0 or end < 0 or end < start:
+        return -1
+    if end == start:
+        return 0
+    try:
+        with log_path.open('rb') as handle:
+            handle.seek(start)
+            remaining = end - start
+            count = 0
+            while remaining > 0:
+                chunk = handle.read(min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                count += chunk.count(b'\n')
+                remaining -= len(chunk)
+            return count
+    except OSError:
+        return -1
+
+
 def _summarize_last_entry(log_path: Path | None) -> str:
     if log_path is None:
         return 'no_log_path'
@@ -193,16 +223,34 @@ def _summarize_last_entry(log_path: Path | None) -> str:
 def _summarize_entry_obj(obj: object) -> str:
     if not isinstance(obj, dict):
         return f'non_dict:{type(obj).__name__}'
-    role = str(obj.get('role') or '').strip()
-    entry_type = str(obj.get('entry_type') or '').strip()
-    payload_type = str(obj.get('payload_type') or '').strip()
-    turn_id = str(obj.get('turn_id') or '').strip()
+    raw_entry_type = str(obj.get('type') or obj.get('entry_type') or '').strip()
+    raw_payload = obj.get('payload') if isinstance(obj.get('payload'), dict) else {}
+    raw_payload_type = str(
+        (raw_payload.get('type') if raw_payload else None) or obj.get('payload_type') or ''
+    ).strip()
+    raw_turn_id = str(
+        obj.get('turn_id')
+        or (raw_payload.get('turn_id') if raw_payload else '')
+        or ''
+    ).strip()
     timestamp = str(obj.get('timestamp') or '').strip()
-    text = obj.get('text') or obj.get('message') or ''
+    try:
+        normalized = extract_entry(obj)
+    except Exception:
+        normalized = None
+    if normalized:
+        role = str(normalized.get('role') or '').strip()
+        text = normalized.get('text') or ''
+        normalized_payload_type = str(normalized.get('payload_type') or '').strip()
+    else:
+        role = ''
+        text = ''
+        normalized_payload_type = ''
     text_preview = str(text)[:_SUMMARY_TEXT_PREVIEW]
     return (
-        f'role={role!r} entry_type={entry_type!r} payload_type={payload_type!r} '
-        f'turn_id={turn_id!r} timestamp={timestamp!r} text_preview={text_preview!r}'
+        f'raw_entry_type={raw_entry_type!r} raw_payload_type={raw_payload_type!r} '
+        f'normalized_role={role!r} normalized_payload_type={normalized_payload_type!r} '
+        f'turn_id={raw_turn_id!r} timestamp={timestamp!r} text_preview={text_preview!r}'
     )
 
 

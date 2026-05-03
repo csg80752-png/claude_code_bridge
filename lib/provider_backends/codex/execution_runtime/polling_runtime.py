@@ -23,9 +23,10 @@ def poll_submission(submission: ProviderSubmission, *, now: str) -> ProviderPoll
         return prepared
 
     state = submission.runtime_state.get("state") or {}
+    pre_poll_state = dict(state)
     poll = build_poll_state(submission)
     state = poll_entry_batches(submission, poll, prepared.reader, state, now=now)
-    maybe_emit_binding_diag(submission, poll, state)
+    maybe_emit_binding_diag(submission, poll, state, pre_poll_state=pre_poll_state)
     return finalize_poll_result(submission, poll, state=state)
 
 

@@ -44,10 +44,14 @@ _PROBE_LINES = 20
 DEFAULT_CMD_SAFE_CONSUMERS = frozenset({'claude'})
 
 # v8.4 PR #2 (diag round) — non-behavioral. Spec: docs/v8.4-plan.md lines
-# 128-136. One-shot per ccbd lifetime: on the first _deliver_cmd_replies
-# call, log the dispatcher's cmd pane view (cached id, fresh tmux discovery,
-# is_alive) plus the on-disk startup-report's bootstrap_cmd_pane (which may
-# be supervisor-overwritten — see project_startup_report_overwrite_supervisor_vs_app).
+# 128-136. One-shot per ccbd lifetime, gated on pending_cmd_replies > 0:
+# the first tick where cmd has unflushed task_reply events logs the
+# dispatcher's cmd pane view (cached id, fresh tmux discovery, is_alive)
+# plus the on-disk startup-report's bootstrap_cmd_pane (which may be
+# supervisor-overwritten — see project_startup_report_overwrite_supervisor_vs_app).
+# The pending>0 gate is required: _deliver_cmd_replies runs every tick
+# regardless of traffic, so an unconditional emit would burn the one-shot
+# at startup tick=0 and lose the wedge evidence we actually need (codex R1).
 # The Issue #3 fix PR (v8.4-cmd) consumes these warnings to lock the fix
 # shape (re-resolve via __ccb_ctl pane title vs invalidate-on-stale).
 _cmd_pane_diag_emitted: bool = False
@@ -117,7 +121,9 @@ def _maybe_compact_mailboxes(dispatcher) -> None:
 
 
 def _deliver_cmd_replies(dispatcher):
-    _maybe_emit_cmd_pane_discovery_diag(dispatcher)
+    pending_count = _count_pending_cmd_replies(dispatcher)
+    if pending_count > 0:
+        _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=pending_count)
     return _deliver_cmd_replies_impl(dispatcher)
 
 
@@ -806,7 +812,7 @@ def _invalidate_cmd_pane_cache(dispatcher):
         pass
 
 
-def _maybe_emit_cmd_pane_discovery_diag(dispatcher) -> None:
+def _maybe_emit_cmd_pane_discovery_diag(dispatcher, *, pending_count: int) -> None:
     global _cmd_pane_diag_emitted
     if _cmd_pane_diag_emitted:
         return
@@ -854,8 +860,6 @@ def _maybe_emit_cmd_pane_discovery_diag(dispatcher) -> None:
             is_alive_fresh = is_alive_cached
 
     bootstrap_pane_id, bootstrap_report_path = _read_startup_report_bootstrap_pane(dispatcher)
-
-    pending_count = _count_pending_cmd_replies(dispatcher)
 
     _logger.warning(
         'v8.4-diag cmd-pane-discovery cached_pane_id=%r cached_age_s=%s '
