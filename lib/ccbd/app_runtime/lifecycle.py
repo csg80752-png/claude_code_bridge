@@ -39,12 +39,20 @@ def start(app):
         restore_report = app.dispatcher.last_restore_report(project_id=app.project_id)
         if restore_report is not None:
             app.restore_report_store.save(restore_report)
+        orphan_summary = _abandon_orphan_executions(app)
+        restore_summary = restore_report.summary_fields() if restore_report is not None else {}
+        restore_summary.update(orphan_summary)
         record_startup_report(
             app,
             trigger='daemon_boot',
             status='ok',
-            actions_taken=('mount_backend', 'listen_socket', 'restore_running_jobs'),
-            restore_summary=restore_report.summary_fields() if restore_report is not None else {},
+            actions_taken=(
+                'mount_backend',
+                'listen_socket',
+                'restore_running_jobs',
+                'abandon_orphan_executions',
+            ),
+            restore_summary=restore_summary,
         )
     except Exception as exc:
         request_shutdown(app)
@@ -129,6 +137,16 @@ def record_startup_report(
         app.startup_report_store.save(report)
     except Exception:
         return
+
+
+def _abandon_orphan_executions(app) -> dict[str, object]:
+    if app.execution_service is None:
+        return {'orphan_executions_removed': 0}
+    active_job_ids: frozenset[str] = frozenset(
+        job_id for _kind, _name, job_id in app.dispatcher._state.active_items()
+    )
+    removed = app.execution_service.abandon_orphan_persisted_states(active_job_ids=active_job_ids)
+    return {'orphan_executions_removed': len(removed)}
 
 
 def effective_poll_interval(poll_interval: float) -> float:

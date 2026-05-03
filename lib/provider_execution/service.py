@@ -7,6 +7,7 @@ from fault_injection import FaultInjectionService
 from .base import ProviderRuntimeContext, ProviderSubmission
 from .registry import ProviderExecutionRegistry
 from .state_store import ExecutionStateStore
+from .state_validation import EXECUTION_STATUS_ORPHAN, classify_execution
 from .service_state import ExecutionServiceRuntimeState, ExecutionServiceStateMixin
 from .service_runtime import (
     ExecutionRestoreResult,
@@ -78,6 +79,34 @@ class ExecutionService(ExecutionServiceStateMixin):
 
     def restore(self, job: JobRecord, *, runtime_context: ProviderRuntimeContext | None = None) -> ExecutionRestoreResult:
         return restore_submission(self, job, runtime_context=runtime_context)
+
+    def abandon_orphan_persisted_states(
+        self,
+        *,
+        active_job_ids: frozenset[str],
+    ) -> tuple[str, ...]:
+        """Remove persisted execution_state files the dispatcher no longer tracks.
+
+        A persisted state is an orphan when its submission is ``INCOMPLETE``
+        but its ``job_id`` is not in ``active_job_ids`` (the set the
+        dispatcher knows about after ``restore_running_jobs``). Terminal
+        submissions are left in place — they do not cause a wedge and any
+        cleanup belongs to a separate sweeper. Returns the tuple of
+        removed ``job_id`` values for telemetry. No-op when no state store
+        is configured.
+
+        Intended call site: ccbd boot, immediately after the dispatcher's
+        own ``restore_running_jobs`` settles ``active_items``.
+        """
+        if self._state_store is None:
+            return ()
+        removed: list[str] = []
+        for state in self._state_store.list_all():
+            status = classify_execution(state, active_job_ids=active_job_ids)
+            if status == EXECUTION_STATUS_ORPHAN:
+                self._state_store.remove(state.job_id)
+                removed.append(state.job_id)
+        return tuple(removed)
 
     def poll(self) -> tuple[ExecutionUpdate, ...]:
         return poll_updates(self)
