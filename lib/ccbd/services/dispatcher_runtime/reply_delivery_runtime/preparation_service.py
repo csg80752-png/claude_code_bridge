@@ -303,10 +303,19 @@ def _deliver_cmd_replies(dispatcher):
             # plan failures lose their retry, but record_phase2_failure
             # above keeps them visible for telemetry / triage
             # (codex review [P2] 2026-05-03 KST; v8.3.3 R3 fix).
+            abandoned = False
             try:
                 kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
+                abandoned = True
             except Exception:
                 _logger.debug('cmd event abandon (planning failure) failed', exc_info=True)
+            if not abandoned:
+                # Abandon I/O failure → event remains non-terminal. Stop the
+                # sweep so a later reply does not inject ahead of this still
+                # unresolved event (preserves the R2 ordering rule under
+                # abandon failure; codex review [P2] 2026-05-03 KST;
+                # v8.3.3 R4 fix).
+                break
             continue
 
         if fallback is not None:

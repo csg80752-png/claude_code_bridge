@@ -27,6 +27,12 @@ v8.3.3 R3 (codex review [P2] 2026-05-03 KST): planning exceptions are
 terminal not deferred — abandoned via kernel.abandon so deterministic
 failures (oversize body etc.) cannot wedge the queue forever. The
 phase-2 failure record is still emitted for telemetry.
+
+v8.3.3 R4 (codex review [P2] 2026-05-03 KST): if kernel.abandon itself
+fails (mailbox I/O error), the event remains non-terminal, so the
+sweep must STOP rather than `continue`. Unconditional continue would
+let a later reply inject ahead of the still-unresolved event,
+re-introducing the R2 ordering bug under abandon failure.
 """
 from pathlib import Path
 from types import SimpleNamespace
@@ -416,3 +422,71 @@ def test_deliver_cmd_replies_planning_failure_with_held_predecessor(monkeypatch,
     assert held == ['reply-r1']
     assert plan_calls == [], 'r2 must not be reached when r1 is the held predecessor'
     assert backend.sent == []
+
+
+def test_deliver_cmd_replies_stops_sweep_on_abandon_failure(monkeypatch, tmp_path):
+    """[P2] codex 2026-05-03 R4: if abandoning a plan-failed event itself
+    fails (mailbox kernel I/O error), the sweep must STOP — not continue
+    past r1 to inject r2. Otherwise we re-introduce the R2 ordering bug
+    under abandon failure: r1 stays non-terminal in the queue while r2
+    surfaces in the cmd pane ahead of it.
+
+    Pre-R4 behavior: try/except around kernel.abandon swallows the
+    failure and the loop continues. r2 injects, r1 stays QUEUED, ordering
+    is silently violated.
+    Post-R4 behavior: abandon success is tracked via a flag; on failure
+    the sweep breaks, leaving r1 head-of-line as expected. The next
+    dispatcher tick retries the abandon (transient I/O may recover) or
+    surfaces the wedge for triage.
+    """
+    dispatcher, kernel, inbound_store, reply_store, backend = _setup(monkeypatch, tmp_path)
+
+    plan_calls = []
+
+    def raising_plan(dispatcher_arg, reply, project_root, body_store, **kwargs):
+        plan_calls.append(reply.reply_id)
+        if reply.reply_id == 'reply-r1':
+            raise RuntimeError('synthetic deterministic planning failure')
+        return (
+            SimpleNamespace(body=reply.reply, header_only=False, body_file=None),
+            None,
+        )
+
+    monkeypatch.setattr(cmd_replies, 'plan_cmd_delivery', raising_plan)
+
+    abandon_calls = []
+
+    def boom_abandon(mailbox, iev, **kw):
+        abandon_calls.append((mailbox, iev))
+        raise RuntimeError('synthetic mailbox kernel I/O failure during abandon')
+
+    monkeypatch.setattr(kernel, 'abandon', boom_abandon)
+
+    inbound_store.append(_reply_event('reply-r1', 'evt-r1'))
+    inbound_store.append(_reply_event('reply-r2', 'evt-r2'))
+    reply_store.append(_real_reply('reply-r1'))
+    reply_store.append(_real_reply('reply-r2'))
+
+    cmd_replies._deliver_cmd_replies(dispatcher)
+
+    # r1 plan was attempted (and raised), abandon was attempted (and raised),
+    # sweep stopped — r2 was never reached.
+    assert plan_calls == ['reply-r1'], (
+        'sweep must stop after r1 abandon failure; r2 plan must NOT be invoked'
+    )
+    assert abandon_calls == [('cmd', 'evt-r1')], (
+        'abandon should be invoked exactly once for r1 with cmd mailbox'
+    )
+    assert backend.sent == [], (
+        '[P2] regression: r2 must not inject ahead of r1 when r1 abandon failed'
+    )
+
+    # r1 stays QUEUED (non-terminal) so the next dispatcher tick can retry.
+    assert inbound_store.get_latest('cmd', 'evt-r1').status == InboundEventStatus.QUEUED
+    # r2 untouched, still QUEUED.
+    assert inbound_store.get_latest('cmd', 'evt-r2').status == InboundEventStatus.QUEUED
+
+    # No cache entries — neither reply was successfully resolved this tick.
+    cache = cmd_replies._get_injected_cache(dispatcher)
+    assert 'reply-r1' not in cache
+    assert 'reply-r2' not in cache
