@@ -41,6 +41,13 @@ class _RecordingKernel:
     def head_pending_event(self, agent_name: str):
         return self._head
 
+    def pending_events(self, agent_name: str, *, event_type=None):
+        if self._head is None:
+            return ()
+        if event_type is not None and self._head.event_type is not event_type:
+            return ()
+        return (self._head,)
+
     def claim(self, agent_name: str, inbound_event_id: str, *, started_at=None):
         self.calls.append(('claim', inbound_event_id))
         return self._head

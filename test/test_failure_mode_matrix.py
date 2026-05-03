@@ -42,7 +42,12 @@ def _dispatcher(tmp_path, *, compatible: bool = True):
     )
     return SimpleNamespace(
         _message_bureau_control=SimpleNamespace(
-            _mailbox_kernel=SimpleNamespace(head_pending_event=lambda agent_name: head),
+            _mailbox_kernel=SimpleNamespace(
+                head_pending_event=lambda agent_name: head,
+                pending_events=lambda agent_name, *, event_type=None: (
+                    (head,) if (event_type is None or head.event_type is event_type) else ()
+                ),
+            ),
             _reply_store=SimpleNamespace(get_latest=lambda reply_id: reply),
             _attempt_store=SimpleNamespace(get_latest=lambda attempt_id: SimpleNamespace(job_id="job_1234abcd")),
         ),

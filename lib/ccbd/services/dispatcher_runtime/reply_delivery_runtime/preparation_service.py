@@ -116,6 +116,14 @@ def _deliver_cmd_replies(dispatcher):
     against the user's ack call (and was the root cause of the reply-loss
     finding from codex structural review 2026-04-22).
 
+    Per-tick sweep: process ALL pending non-terminal task_reply events on
+    the cmd queue, not just the head. The injected_cache acts as the
+    idempotent guard so events injected on a previous tick are not re-sent.
+    Without this sweep, a pinned-head real reply (still awaiting human ack)
+    would block subsequent replies indefinitely, even though they are
+    independently deliverable to the pane (root cause confirmed 2026-05-03
+    KST via live ack probe; v8.3.3 cmd-pending-sweep fix).
+
     Idempotency: reply_ids already injected are cached in an LRU on the
     dispatcher so we don't spam the pane on every tick while the user
     hasn't acked yet. Environmental failures (no pane, dead backend) return
@@ -129,203 +137,235 @@ def _deliver_cmd_replies(dispatcher):
     if kernel is None:
         return
 
-    head = kernel.head_pending_event('cmd')
-    if head is None or head.event_type is not InboundEventType.TASK_REPLY:
-        return
-
-    # Only act on fresh heads. If the head is DELIVERING, an older flow did
-    # claim it — we leave it for the legacy stale-repair path (or the ack
-    # handler) rather than re-acting. CONSUMED/ABANDONED/SUPERSEDED are
-    # already filtered out by head_pending_event.
-    if head.status not in (InboundEventStatus.CREATED, InboundEventStatus.QUEUED):
-        return
-
-    reply_id = reply_id_from_payload(head.payload_ref)
-    if not reply_id:
-        # Malformed payload. We can't look up the reply, and there's no
-        # point re-scanning the same head forever. Leaving it QUEUED would
-        # stall the cmd mailbox. This is a true permanent failure — abandon.
-        try:
-            kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
-        except Exception:
-            _logger.debug('cmd head abandon (malformed payload) failed', exc_info=True)
-        return
-
-    injected_cache = _get_injected_cache(dispatcher)
-    if reply_id in injected_cache:
-        injected_cache.move_to_end(reply_id)
+    pending = kernel.pending_events('cmd', event_type=InboundEventType.TASK_REPLY)
+    if not pending:
         return
 
     reply_store = getattr(control, '_reply_store', None)
     if reply_store is None:
         return
-    reply = reply_store.get_latest(reply_id)
-    if reply is None:
-        # Rare race with a concurrent reply writer; try again next tick.
-        return
 
-    if _should_suppress_cmd_reply(reply):
-        _try_ack(kernel, head, timestamp=dispatcher._clock())
-        return
-
+    injected_cache = _get_injected_cache(dispatcher)
     project_root = _resolve_project_root(dispatcher)
     delivery_mode_result = _get_cmd_delivery_mode_result(dispatcher, project_root)
 
-    cmd_pane_id = _discover_cmd_pane_id(dispatcher)
-    if not cmd_pane_id:
-        _logger.debug('cmd pane not discoverable; leaving head queued for next tick')
-        return
+    # Lazy pane/backend discovery: suppressed replies (heartbeats / cancelled
+    # empty) auto-ack via `_try_ack` and never touch the pane, so we only
+    # probe pane state when an actual inject is needed. `pane_state[0]` is
+    # the pane id, `pane_state[1]` is the backend, `pane_state[2]` flags
+    # known-bad env so subsequent inject events skip without re-probing.
+    pane_state: list = [None, None, False]
 
-    backend = _get_tmux_backend(dispatcher)
-    if backend is None:
-        _logger.debug('cmd tmux backend unavailable; leaving head queued for next tick')
-        return
-
-    try:
-        if not backend.is_alive(cmd_pane_id):
+    def _ensure_pane_init() -> bool:
+        if pane_state[2]:
+            return False
+        if pane_state[0] is not None and pane_state[1] is not None:
+            return True
+        candidate_pane_id = _discover_cmd_pane_id(dispatcher)
+        if not candidate_pane_id:
+            _logger.debug('cmd pane not discoverable; leaving inject events queued for next tick')
+            pane_state[2] = True
+            return False
+        candidate_backend = _get_tmux_backend(dispatcher)
+        if candidate_backend is None:
+            _logger.debug('cmd tmux backend unavailable; leaving inject events queued for next tick')
+            pane_state[2] = True
+            return False
+        try:
+            alive = candidate_backend.is_alive(candidate_pane_id)
+        except Exception:
             _invalidate_cmd_pane_cache(dispatcher)
-            _logger.debug('cmd pane %s not alive; leaving head queued for next tick', cmd_pane_id)
-            return
-    except Exception:
-        _invalidate_cmd_pane_cache(dispatcher)
-        _logger.debug('cmd pane liveness check raised; leaving head queued', exc_info=True)
-        return
+            _logger.debug('cmd pane liveness check raised; leaving inject events queued', exc_info=True)
+            pane_state[2] = True
+            return False
+        if not alive:
+            _invalidate_cmd_pane_cache(dispatcher)
+            _logger.debug('cmd pane %s not alive; leaving inject events queued for next tick', candidate_pane_id)
+            pane_state[2] = True
+            return False
+        pane_state[0] = candidate_pane_id
+        pane_state[1] = candidate_backend
+        return True
 
-    body_char_count = len(reply.reply or '')
-    ready, foreground_command, held_reason = _cmd_delivery_gate(
-        backend,
-        cmd_pane_id,
-        project_root=project_root,
-    )
-    if not ready:
-        _hold_cmd_delivery(
-            dispatcher,
-            reply_id,
-            reply=reply,
+    for head in pending:
+        # Only act on fresh events. DELIVERING means an older flow did claim
+        # the event — leave it for the legacy stale-repair path (or the ack
+        # handler) rather than re-acting. CONSUMED/ABANDONED/SUPERSEDED are
+        # already filtered out by pending_events.
+        if head.status not in (InboundEventStatus.CREATED, InboundEventStatus.QUEUED):
+            continue
+
+        reply_id = reply_id_from_payload(head.payload_ref)
+        if not reply_id:
+            # Malformed payload. We can't look up the reply, and there's no
+            # point re-scanning the same event forever. Leaving it QUEUED
+            # would only stall this slot in the cmd mailbox. Permanent
+            # failure — abandon and move on to the next pending event.
+            try:
+                kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
+            except Exception:
+                _logger.debug('cmd event abandon (malformed payload) failed', exc_info=True)
+            continue
+
+        if reply_id in injected_cache:
+            injected_cache.move_to_end(reply_id)
+            continue
+
+        reply = reply_store.get_latest(reply_id)
+        if reply is None:
+            # Rare race with a concurrent reply writer; try this event again next tick.
+            continue
+
+        if _should_suppress_cmd_reply(reply):
+            _try_ack(kernel, head, timestamp=dispatcher._clock())
+            continue
+
+        if not _ensure_pane_init():
+            continue
+        cmd_pane_id = pane_state[0]
+        backend = pane_state[1]
+
+        body_char_count = len(reply.reply or '')
+        ready, foreground_command, held_reason = _cmd_delivery_gate(
+            backend,
+            cmd_pane_id,
             project_root=project_root,
-            foreground_command=foreground_command,
-            body_char_count=body_char_count,
-            held_reason=held_reason,
-            delivery_mode_result=delivery_mode_result,
         )
-        return
+        if not ready:
+            _hold_cmd_delivery(
+                dispatcher,
+                reply_id,
+                reply=reply,
+                project_root=project_root,
+                foreground_command=foreground_command,
+                body_char_count=body_char_count,
+                held_reason=held_reason,
+                delivery_mode_result=delivery_mode_result,
+            )
+            continue
 
-    try:
-        plan, fallback = plan_cmd_delivery(
-            dispatcher,
-            reply,
+        try:
+            plan, fallback = plan_cmd_delivery(
+                dispatcher,
+                reply,
+                project_root=project_root,
+                body_store=cmd_body_store,
+                delivery_mode_result=delivery_mode_result,
+            )
+        except Exception:
+            _logger.warning(
+                'cmd reply %s planning failed; leaving event queued for next tick',
+                reply_id, exc_info=True,
+            )
+            record_phase2_failure(
+                project_root,
+                reply_id=reply.reply_id,
+                stage='plan',
+                reason='exception',
+                body_char_count=body_char_count,
+                failed_at=dispatcher._clock(),
+                foreground_command=foreground_command,
+                pane_alive=True,
+                cached=False,
+            )
+            continue
+
+        if fallback is not None:
+            record_long_reply_fallback(
+                project_root,
+                reply_id=reply.reply_id,
+                reason=fallback.reason,
+                body_char_count=fallback.body_char_count,
+                dispatched_at=dispatcher._clock(),
+            )
+
+        # Re-check gate after planning. Race protection: tmux foreground
+        # command may have changed between the pre-plan check and now.
+        ready, foreground_command, held_reason = _cmd_delivery_gate(
+            backend,
+            cmd_pane_id,
             project_root=project_root,
-            body_store=cmd_body_store,
-            delivery_mode_result=delivery_mode_result,
         )
-    except Exception:
-        _logger.warning(
-            'cmd reply %s planning failed; leaving head queued for next tick',
-            reply_id, exc_info=True,
-        )
-        record_phase2_failure(
-            project_root,
-            reply_id=reply.reply_id,
-            stage='plan',
-            reason='exception',
-            body_char_count=body_char_count,
-            failed_at=dispatcher._clock(),
-            foreground_command=foreground_command,
-            pane_alive=True,
-            cached=False,
-        )
-        return
+        if not ready:
+            _hold_cmd_delivery(
+                dispatcher,
+                reply_id,
+                reply=reply,
+                project_root=project_root,
+                foreground_command=foreground_command,
+                body_char_count=body_char_count,
+                held_reason=held_reason,
+                delivery_mode_result=delivery_mode_result,
+            )
+            continue
 
-    if fallback is not None:
-        record_long_reply_fallback(
-            project_root,
-            reply_id=reply.reply_id,
-            reason=fallback.reason,
-            body_char_count=fallback.body_char_count,
-            dispatched_at=dispatcher._clock(),
-        )
+        try:
+            backend.send_text_to_pane(cmd_pane_id, plan.body)
+        except Exception:
+            _logger.warning(
+                'cmd reply %s pane injection failed; leaving event queued for next tick',
+                reply_id, exc_info=True,
+            )
+            _invalidate_cmd_pane_cache(dispatcher)
+            record_phase2_failure(
+                project_root,
+                reply_id=reply.reply_id,
+                stage='send',
+                reason='exception',
+                body_char_count=body_char_count,
+                failed_at=dispatcher._clock(),
+                foreground_command=foreground_command,
+                pane_alive=True,
+                cached=False,
+            )
+            if plan.header_only:
+                record_cmd_delivery_header_inject_error(
+                    project_root,
+                    reply_id=reply.reply_id,
+                    foreground_command=foreground_command,
+                    failed_at=dispatcher._clock(),
+                    body_char_count=body_char_count,
+                    reason='exception',
+                    delivery_mode=delivery_mode_result.mode.value,
+                    header_only_compatible=delivery_mode_result.header_only_compatible,
+                )
+            # Pane invalidation: subsequent events would also hit a dead pane.
+            # Stop the sweep early so we re-discover next tick rather than
+            # hammering a known-bad pane.
+            break
 
-    ready, foreground_command, held_reason = _cmd_delivery_gate(
-        backend,
-        cmd_pane_id,
-        project_root=project_root,
-    )
-    if not ready:
-        _hold_cmd_delivery(
-            dispatcher,
-            reply_id,
-            reply=reply,
-            project_root=project_root,
-            foreground_command=foreground_command,
-            body_char_count=body_char_count,
-            held_reason=held_reason,
-            delivery_mode_result=delivery_mode_result,
-        )
-        return
-
-    try:
-        backend.send_text_to_pane(cmd_pane_id, plan.body)
-    except Exception:
-        _logger.warning(
-            'cmd reply %s pane injection failed; leaving head queued for next tick',
-            reply_id, exc_info=True,
-        )
-        _invalidate_cmd_pane_cache(dispatcher)
-        record_phase2_failure(
-            project_root,
-            reply_id=reply.reply_id,
-            stage='send',
-            reason='exception',
-            body_char_count=body_char_count,
-            failed_at=dispatcher._clock(),
-            foreground_command=foreground_command,
-            pane_alive=True,
-            cached=False,
-        )
+        delivered_at = dispatcher._clock()
         if plan.header_only:
-            record_cmd_delivery_header_inject_error(
+            record_cmd_delivery_header_inject_success(
                 project_root,
                 reply_id=reply.reply_id,
                 foreground_command=foreground_command,
-                failed_at=dispatcher._clock(),
+                delivered_at=delivered_at,
                 body_char_count=body_char_count,
-                reason='exception',
                 delivery_mode=delivery_mode_result.mode.value,
                 header_only_compatible=delivery_mode_result.header_only_compatible,
             )
-        return
+        else:
+            record_cmd_delivery_success(
+                project_root,
+                reply_id=reply.reply_id,
+                foreground_command=foreground_command,
+                delivered_at=delivered_at,
+                body_char_count=body_char_count,
+                delivery_mode=delivery_mode_result.mode.value,
+                header_only_compatible=delivery_mode_result.header_only_compatible,
+            )
 
-    delivered_at = dispatcher._clock()
-    if plan.header_only:
-        record_cmd_delivery_header_inject_success(
-            project_root,
-            reply_id=reply.reply_id,
-            foreground_command=foreground_command,
-            delivered_at=delivered_at,
-            body_char_count=body_char_count,
-            delivery_mode=delivery_mode_result.mode.value,
-            header_only_compatible=delivery_mode_result.header_only_compatible,
-        )
-    else:
-        record_cmd_delivery_success(
-            project_root,
-            reply_id=reply.reply_id,
-            foreground_command=foreground_command,
-            delivered_at=delivered_at,
-            body_char_count=body_char_count,
-            delivery_mode=delivery_mode_result.mode.value,
-            header_only_compatible=delivery_mode_result.header_only_compatible,
-        )
-
-    # Mark as injected so subsequent ticks don't re-inject. Added AFTER the
-    # inject succeeds so a transient send failure retries on the next tick.
-    if _should_cache_cmd_delivery(plan, delivery_mode_result):
-        injected_at = _normalize_cache_timestamp(dispatcher._clock())
-        injected_cache[reply_id] = injected_at
-        injected_cache.move_to_end(reply_id)
-        while len(injected_cache) > _CMD_INJECTED_CACHE_MAX:
-            injected_cache.popitem(last=False)
-        _persist_injected_reply(dispatcher, reply_id, injected_at)
+        # Mark as injected so subsequent ticks don't re-inject. Added AFTER
+        # the inject succeeds so a transient send failure retries on the
+        # next tick.
+        if _should_cache_cmd_delivery(plan, delivery_mode_result):
+            injected_at = _normalize_cache_timestamp(dispatcher._clock())
+            injected_cache[reply_id] = injected_at
+            injected_cache.move_to_end(reply_id)
+            while len(injected_cache) > _CMD_INJECTED_CACHE_MAX:
+                injected_cache.popitem(last=False)
+            _persist_injected_reply(dispatcher, reply_id, injected_at)
 
 
 def _get_cmd_delivery_mode_result(dispatcher, project_root):
