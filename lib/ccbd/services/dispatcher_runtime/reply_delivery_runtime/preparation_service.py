@@ -126,13 +126,21 @@ def _deliver_cmd_replies(dispatcher):
 
     Ordering preservation: the sweep ONLY skips ahead past events that are
     fully resolved this tick — already-injected (cache hit), abandoned
-    (malformed payload), or suppressed-and-acked (heartbeat / cancelled
-    empty). Any deferred outcome (gate hold, reply_store race, planning
-    exception, pane unavailability) STOPS the sweep, so a later reply
-    never overtakes an earlier reply still waiting to surface. Without
-    this stop-on-defer rule, a transient pre-plan gate `not ready` on r1
-    would let r2 inject ahead of r1, violating cmd mailbox ordering
-    (codex review [P2] finding 2026-05-03 KST; v8.3.3 R2 fix).
+    (malformed payload OR planning exception), or suppressed-and-acked
+    (heartbeat / cancelled empty). Any TRANSIENT deferred outcome (gate
+    hold, reply_store race, pane unavailability) STOPS the sweep, so a
+    later reply never overtakes an earlier reply still waiting to surface.
+    Without this stop-on-defer rule, a transient pre-plan gate `not ready`
+    on r1 would let r2 inject ahead of r1, violating cmd mailbox ordering
+    (codex review [P2] 2026-05-03 KST; v8.3.3 R2 fix).
+
+    Planning exceptions are TERMINAL not deferred: the event is abandoned
+    via `kernel.abandon` and the sweep continues. Deterministic plan
+    failures (e.g., body over MAX_CMD_HEADER_BYTES_FIELD) would otherwise
+    retry-and-block forever if the sweep stopped on them, wedging every
+    later cmd reply behind the bad event (codex review [P2] 2026-05-03
+    KST; v8.3.3 R3 fix). The phase-2 failure record is still emitted for
+    telemetry / triage so the abandoned reply is not silently lost.
 
     Idempotency: reply_ids already injected are cached in an LRU on the
     dispatcher so we don't spam the pane on every tick while the user
@@ -273,7 +281,7 @@ def _deliver_cmd_replies(dispatcher):
             )
         except Exception:
             _logger.warning(
-                'cmd reply %s planning failed; leaving event queued for next tick',
+                'cmd reply %s planning failed; abandoning event to unblock queue',
                 reply_id, exc_info=True,
             )
             record_phase2_failure(
@@ -287,9 +295,19 @@ def _deliver_cmd_replies(dispatcher):
                 pane_alive=True,
                 cached=False,
             )
-            # Stop the sweep so a later reply does not inject ahead of
-            # this one while we wait for the next tick to retry planning.
-            break
+            # Deterministic plan failures (e.g., body over MAX_CMD_HEADER_BYTES_FIELD)
+            # would retry-and-block forever if we just `break` here, wedging
+            # every later cmd reply behind the bad event. Treat planning
+            # exceptions as terminal: abandon the event so the queue can
+            # progress, then continue to the next pending event. Transient
+            # plan failures lose their retry, but record_phase2_failure
+            # above keeps them visible for telemetry / triage
+            # (codex review [P2] 2026-05-03 KST; v8.3.3 R3 fix).
+            try:
+                kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
+            except Exception:
+                _logger.debug('cmd event abandon (planning failure) failed', exc_info=True)
+            continue
 
         if fallback is not None:
             record_long_reply_fallback(

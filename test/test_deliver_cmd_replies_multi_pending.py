@@ -18,10 +18,15 @@ only when they are actually at head.
 
 v8.3.3 R2 ordering preservation (codex review [P2] 2026-05-03 KST): the
 sweep only skips ahead past events that are fully resolved this tick
-(cache hit, abandoned malformed payload, suppressed-and-acked). Any
-deferred outcome (gate hold, reply_store race, planning exception, pane
-unavailability) STOPS the sweep so a later reply never overtakes an
-earlier reply still waiting to surface.
+(cache hit, abandoned malformed payload OR abandoned planning exception,
+suppressed-and-acked). Any TRANSIENT deferred outcome (gate hold,
+reply_store race, pane unavailability) STOPS the sweep so a later reply
+never overtakes an earlier reply still waiting to surface.
+
+v8.3.3 R3 (codex review [P2] 2026-05-03 KST): planning exceptions are
+terminal not deferred — abandoned via kernel.abandon so deterministic
+failures (oversize body etc.) cannot wedge the queue forever. The
+phase-2 failure record is still emitted for telemetry.
 """
 from pathlib import Path
 from types import SimpleNamespace
@@ -321,10 +326,16 @@ def test_deliver_cmd_replies_stops_sweep_on_reply_store_race(monkeypatch, tmp_pa
     assert backend.sent == [], 'r2 must not inject ahead of unwritten r1'
 
 
-def test_deliver_cmd_replies_stops_sweep_on_planning_exception(monkeypatch, tmp_path):
-    """If r1 planning raises, r2 must not skip ahead in the same tick.
+def test_deliver_cmd_replies_abandons_on_planning_exception(monkeypatch, tmp_path):
+    """[P2] codex 2026-05-03 R3: a planning exception on r1 must abandon r1
+    and let the sweep continue, NOT block the queue.
 
-    Planning will be retried next tick; preserving order over throughput.
+    Pre-R3 behavior: break on plan exception → if r1's failure is
+    deterministic (oversize body, etc.) the queue wedges forever.
+    Post-R3 behavior: record phase-2 failure → kernel.abandon(r1) →
+    continue. r2 injects, r1 is removed from the queue (CONSUMED status
+    via abandon). Retry-on-transient-failure is sacrificed for
+    progress-on-deterministic-failure.
     """
     dispatcher, kernel, inbound_store, reply_store, backend = _setup(monkeypatch, tmp_path)
 
@@ -333,7 +344,7 @@ def test_deliver_cmd_replies_stops_sweep_on_planning_exception(monkeypatch, tmp_
     def raising_plan(dispatcher_arg, reply, project_root, body_store, **kwargs):
         plan_calls.append(reply.reply_id)
         if reply.reply_id == 'reply-r1':
-            raise RuntimeError('synthetic planning failure for ordering test')
+            raise RuntimeError('synthetic deterministic planning failure (e.g. oversize body)')
         return (
             SimpleNamespace(body=reply.reply, header_only=False, body_file=None),
             None,
@@ -348,5 +359,60 @@ def test_deliver_cmd_replies_stops_sweep_on_planning_exception(monkeypatch, tmp_
 
     cmd_replies._deliver_cmd_replies(dispatcher)
 
-    assert plan_calls == ['reply-r1'], 'sweep must stop after r1 planning exception; no r2 plan'
-    assert backend.sent == [], 'no inject when r1 planning failed'
+    # r1 plan was attempted (and raised). Sweep continued to r2 instead
+    # of blocking — r2's plan was attempted and succeeded.
+    assert plan_calls == ['reply-r1', 'reply-r2'], (
+        'sweep must continue past abandoned r1 to attempt r2'
+    )
+    # r2's body landed in the pane.
+    assert len(backend.sent) == 1
+    assert 'reply-r2' in backend.sent[0][1]
+
+    # r1 was abandoned (terminal status, removed from QUEUED set).
+    r1_status = inbound_store.get_latest('cmd', 'evt-r1').status
+    assert r1_status != InboundEventStatus.QUEUED, (
+        f'r1 must be abandoned to terminal status to unblock queue, got {r1_status}'
+    )
+
+    # r2 stays QUEUED for the human ack (codex 2026-04-22 contract).
+    assert inbound_store.get_latest('cmd', 'evt-r2').status == InboundEventStatus.QUEUED
+
+
+def test_deliver_cmd_replies_planning_failure_with_held_predecessor(monkeypatch, tmp_path):
+    """Combined invariant: held r1 stops sweep BEFORE r2's planning failure
+    can be tested. Confirms the R2 break-on-hold still wins over R3
+    abandon-on-plan-exception when the hold is the earlier event.
+    """
+    dispatcher, kernel, inbound_store, reply_store, backend = _setup(monkeypatch, tmp_path)
+
+    held = []
+    monkeypatch.setattr(
+        cmd_replies,
+        '_hold_cmd_delivery',
+        lambda dispatcher, reply_id, **kw: held.append(reply_id),
+    )
+
+    def fake_gate(backend_arg, pane_id, *, project_root):
+        # r1's pre-plan gate holds; sweep should break here.
+        return (False, 'claude', 'pane_busy')
+
+    monkeypatch.setattr(cmd_replies, '_cmd_delivery_gate', fake_gate)
+
+    plan_calls = []
+
+    def raising_plan(dispatcher_arg, reply, project_root, body_store, **kwargs):
+        plan_calls.append(reply.reply_id)
+        raise RuntimeError('would deterministically fail on r2, but r2 should never plan')
+
+    monkeypatch.setattr(cmd_replies, 'plan_cmd_delivery', raising_plan)
+
+    inbound_store.append(_reply_event('reply-r1', 'evt-r1'))
+    inbound_store.append(_reply_event('reply-r2', 'evt-r2'))
+    reply_store.append(_real_reply('reply-r1'))
+    reply_store.append(_real_reply('reply-r2'))
+
+    cmd_replies._deliver_cmd_replies(dispatcher)
+
+    assert held == ['reply-r1']
+    assert plan_calls == [], 'r2 must not be reached when r1 is the held predecessor'
+    assert backend.sent == []
