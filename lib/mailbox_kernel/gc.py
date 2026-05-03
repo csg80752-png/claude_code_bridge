@@ -66,16 +66,16 @@ def compact_jsonl_file_atomic(
                     handle.write(json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n')
                 handle.flush()
                 os.fsync(handle.fileno())
+            _fsync_parent(tmp_path)
             os.replace(tmp_path, target)
             _fsync_parent(target)
             _quarantine_corrupt_rows(target, corrupt_payloads)
+            _invalidate_jsonl_caches(cache_owner, cache_keys)
         finally:
             try:
                 tmp_path.unlink()
             except FileNotFoundError:
                 pass
-
-    _invalidate_jsonl_caches(cache_owner, cache_keys)
 
 
 def compact_mailbox_jsonl(
@@ -94,8 +94,9 @@ def compact_mailbox_jsonl(
     )
     now_dt = _parse_timestamp(now) or datetime.now(timezone.utc)
 
+    agent_names_tuple = tuple(agent_names)
     reachable_reply_ids: set[str] = set()
-    for agent_name in tuple(agent_names):
+    for agent_name in agent_names_tuple:
         path = layout.agent_inbox_path(agent_name)
         compacted = _compact_jsonl_file_with_locked_transform(
             path,
@@ -109,7 +110,13 @@ def compact_mailbox_jsonl(
                 if reply_id:
                     reachable_reply_ids.add(reply_id)
 
-    _compact_reachable_replies(layout, reachable_reply_ids, cache_owner=reply_cache_owner, options=options)
+    _compact_reachable_replies(
+        layout,
+        reachable_reply_ids,
+        agent_names=agent_names_tuple,
+        cache_owner=reply_cache_owner,
+        options=options,
+    )
 
 
 def _compact_inbound_rows(
@@ -149,6 +156,7 @@ def _compact_reachable_replies(
     layout,
     reachable_reply_ids: set[str],
     *,
+    agent_names: Iterable[str],
     cache_owner=None,
     options: MailboxGcOptions,
 ) -> None:
@@ -158,12 +166,32 @@ def _compact_reachable_replies(
     path = Path(path)
     if not path.exists():
         return
+
+    def _transform(rows):
+        live_reply_ids = set(reachable_reply_ids)
+        live_reply_ids.update(_reachable_reply_ids_from_current_inboxes(layout, agent_names))
+        return _compact_reply_rows(rows, live_reply_ids, options=options)
+
     _compact_jsonl_file_with_locked_transform(
         path,
-        transform=lambda rows: _compact_reply_rows(rows, reachable_reply_ids, options=options),
+        transform=_transform,
         cache_owner=cache_owner,
         cache_keys=(('replies', str(path)),),
     )
+
+
+def _reachable_reply_ids_from_current_inboxes(layout, agent_names: Iterable[str]) -> set[str]:
+    reply_ids: set[str] = set()
+    for agent_name in tuple(agent_names):
+        path = layout.agent_inbox_path(agent_name)
+        rows, _corrupt_rows = _load_jsonl_objects(path)
+        for row in rows:
+            if _is_terminal(row):
+                continue
+            reply_id = reply_id_from_payload(row.get('payload_ref'))
+            if reply_id:
+                reply_ids.add(reply_id)
+    return reply_ids
 
 
 def _compact_reply_rows(
@@ -208,15 +236,16 @@ def _compact_jsonl_file_with_locked_transform(
                     handle.write(json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n')
                 handle.flush()
                 os.fsync(handle.fileno())
+            _fsync_parent(tmp_path)
             os.replace(tmp_path, target)
             _fsync_parent(target)
             _quarantine_corrupt_rows(target, corrupt_rows)
+            _invalidate_jsonl_caches(cache_owner, cache_keys)
         finally:
             try:
                 tmp_path.unlink()
             except FileNotFoundError:
                 pass
-    _invalidate_jsonl_caches(cache_owner, cache_keys)
     return compacted
 
 

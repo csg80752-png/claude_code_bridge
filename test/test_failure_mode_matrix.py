@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from ccbd.services.dispatcher_runtime.reply_delivery_runtime import preparation_service
+from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_transport_planner import resolve_cmd_delivery_mode
 from mailbox_kernel import InboundEventStatus, InboundEventType
 
 
@@ -47,7 +48,10 @@ def _dispatcher(tmp_path, *, compatible: bool = True):
         ),
         _layout=SimpleNamespace(project_root=tmp_path),
         _clock=lambda: "2026-05-03T00:00:00Z",
-        _cmd_header_only_compatible=compatible,
+        _cmd_delivery_mode_result=resolve_cmd_delivery_mode(
+            project_root=tmp_path,
+            header_only_compatible=compatible,
+        ),
         get_job=lambda job_id: SimpleNamespace(job_id="job_1234abcd", request=SimpleNamespace(task_id="task_1")),
     )
 

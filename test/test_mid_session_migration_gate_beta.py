@@ -24,7 +24,7 @@ def test_beta_gate_allows_header_only_after_restart_smoke(monkeypatch, tmp_path)
     monkeypatch.setenv("CCB_CMD_DELIVERY_MODE", "header_only")
 
     assert beta_header_only_allowed(smoke_passed=True) is True
-    assert resolve_cmd_delivery_mode(project_root=tmp_path).mode is CmdDeliveryMode.HEADER_ONLY
+    assert resolve_cmd_delivery_mode(project_root=tmp_path, header_only_compatible=True).mode is CmdDeliveryMode.HEADER_ONLY
 
 
 def test_beta_deploy_checklist_documents_restart_and_fallback() -> None:
@@ -78,7 +78,10 @@ def _dispatcher(tmp_path: Path, *, header_only_compatible: bool):
         ),
         _layout=SimpleNamespace(project_root=tmp_path),
         _clock=lambda: "2026-05-03T00:00:00Z",
-        _cmd_header_only_compatible=header_only_compatible,
+        _cmd_delivery_mode_result=resolve_cmd_delivery_mode(
+            project_root=tmp_path,
+            header_only_compatible=header_only_compatible,
+        ),
         get_job=lambda job_id: SimpleNamespace(job_id="job_1234abcd", request=SimpleNamespace(task_id="task_1")),
     )
     return dispatcher
@@ -97,6 +100,9 @@ def test_beta_gate_stale_session_uses_full_body_and_does_not_cache_header(monkey
     assert len(backend.injected) == 1
     assert "body for cmd" in backend.injected[0][1]
     assert not backend.injected[0][1].startswith("[CCB] ")
+    assert getattr(dispatcher, "_cmd_injected_replies", {}) == {}
+    cache_path = tmp_path / ".ccb" / "ccbd" / "cmd-delivered-cache.jsonl"
+    assert not cache_path.exists()
     metrics = (tmp_path / ".ccb" / "metrics" / "body_read_followup.jsonl").read_text(encoding="utf-8")
     assert "cmd_delivery_success" in metrics
     assert "cmd_delivery_header_inject_success" not in metrics

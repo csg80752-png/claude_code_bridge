@@ -89,11 +89,21 @@ def test_legacy_header_only_malformed_fails_closed(monkeypatch, tmp_path) -> Non
 
 def test_delivery_mode_result_is_restart_only_after_startup_resolution(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("CCB_CMD_DELIVERY_MODE", "header_only")
-    monkeypatch.setenv("CCB_CMD_HEADER_ONLY_COMPATIBLE", "1")
-    startup_result = resolve_cmd_delivery_mode(project_root=tmp_path)
+    startup_result = resolve_cmd_delivery_mode(project_root=tmp_path, header_only_compatible=True)
 
     monkeypatch.setenv("CCB_CMD_DELIVERY_MODE", "full_body")
     monkeypatch.setenv("CCB_CMD_HEADER_ONLY_COMPATIBLE", "0")
 
     assert startup_result.mode is CmdDeliveryMode.HEADER_ONLY
     assert effective_cmd_delivery_mode(startup_result) is CmdDeliveryMode.HEADER_ONLY
+
+
+def test_hidden_compat_env_is_ignored_without_marker(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CCB_CMD_DELIVERY_MODE", "header_only")
+    monkeypatch.setenv("CCB_CMD_HEADER_ONLY_COMPATIBLE", "1")
+
+    result = resolve_cmd_delivery_mode(project_root=tmp_path)
+
+    assert result.mode is CmdDeliveryMode.HEADER_ONLY
+    assert result.header_only_compatible is False
+    assert effective_cmd_delivery_mode(result) is CmdDeliveryMode.FULL_BODY

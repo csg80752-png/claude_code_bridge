@@ -123,7 +123,8 @@ def test_legacy_header_only_truthy_env_enables(monkeypatch, value: str) -> None:
     monkeypatch.delenv('CCB_CMD_DELIVERY_MODE', raising=False)
     monkeypatch.setenv('CCB_HEADER_ONLY', value)
     monkeypatch.setenv('CCB_CMD_HEADER_ONLY_COMPATIBLE', '1')
-    assert header_only_enabled() is True
+    assert header_only_enabled() is False
+    assert resolve_cmd_delivery_mode(project_root=None, header_only_compatible=True).mode is CmdDeliveryMode.HEADER_ONLY
 
 
 def test_legacy_header_only_malformed_fails_closed(monkeypatch) -> None:

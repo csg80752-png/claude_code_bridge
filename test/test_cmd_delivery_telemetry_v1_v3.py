@@ -83,6 +83,24 @@ def test_telemetry_v3_phase2_failure_includes_debug_fields(tmp_path) -> None:
     assert record["cached"] is False
 
 
+def test_telemetry_v3_full_body_success_includes_delivery_contract_fields(tmp_path) -> None:
+    telemetry.record_cmd_delivery_success(
+        tmp_path,
+        reply_id="rep_5",
+        foreground_command="claude",
+        delivered_at="2026-05-03T00:00:04Z",
+        body_char_count=12,
+        delivery_mode="full_body",
+        header_only_compatible=False,
+    )
+
+    record = telemetry.read_body_read_followup_records(tmp_path)[0]
+
+    assert record["event"] == "cmd_delivery_success"
+    assert record["delivery_mode"] == "full_body"
+    assert record["header_only_compatible"] is False
+
+
 def test_telemetry_reader_tolerates_mixed_v1_v3_and_quarantines_future_schema(tmp_path) -> None:
     path = telemetry.metrics_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -677,6 +677,7 @@ def test_long_body_happy_path_emits_header_only_dispatch_telemetry(
     from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_transport_planner import (
         CMD_HEADER_RE,
         _BODY_CHAR_THRESHOLD,
+        resolve_cmd_delivery_mode,
     )
     monkeypatch.setenv('CCB_CMD_DELIVERY_MODE', 'header_only')
     monkeypatch.setenv('CCB_CMD_HEADER_ONLY_COMPATIBLE', '1')
@@ -686,6 +687,10 @@ def test_long_body_happy_path_emits_header_only_dispatch_telemetry(
     reply = _make_reply(body=long_body)
     dispatcher, kernel = _make_dispatcher(
         head=head, reply=reply, backend=_stub_pane_and_backend, project_root=tmp_path,
+    )
+    dispatcher._cmd_delivery_mode_result = resolve_cmd_delivery_mode(
+        project_root=tmp_path,
+        header_only_compatible=True,
     )
 
     preparation_service._deliver_cmd_replies(dispatcher)

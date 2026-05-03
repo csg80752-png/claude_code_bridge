@@ -184,6 +184,21 @@ def record_cmd_delivery_header_too_large(
     ))
 
 
+def record_cmd_header_only_compatibility_marker(
+    project_root: Optional[Path],
+    *,
+    compatible: bool,
+    reason: str,
+    marker_path: str | None,
+) -> None:
+    _append_record(project_root, _v3_record(
+        'cmd_header_only_compatibility_marker',
+        compatible=bool(compatible),
+        reason=reason,
+        marker_path=marker_path,
+    ))
+
+
 def record_header_only_dispatch(
     project_root: Path,
     *,
@@ -252,6 +267,8 @@ def record_cmd_delivery_success(
     foreground_command: str,
     delivered_at: str,
     body_char_count: int,
+    delivery_mode: str,
+    header_only_compatible: bool,
 ) -> None:
     _append_record(project_root, _v3_record(
         'cmd_delivery_success',
@@ -259,6 +276,8 @@ def record_cmd_delivery_success(
         foreground_command=foreground_command,
         body_char_count=body_char_count,
         delivered_at=delivered_at,
+        delivery_mode=delivery_mode,
+        header_only_compatible=bool(header_only_compatible),
     ))
 
 
@@ -291,6 +310,7 @@ __all__ = [
     'BODY_READ_FOLLOWUP_SCHEMA_V3',
     'metrics_path',
     'read_body_read_followup_records',
+    'record_cmd_header_only_compatibility_marker',
     'record_cmd_delivery_header_inject_error',
     'record_cmd_delivery_header_inject_success',
     'record_cmd_delivery_header_too_large',

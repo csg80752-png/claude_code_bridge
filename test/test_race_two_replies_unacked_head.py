@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from ccbd.services.dispatcher_runtime.reply_delivery_runtime import preparation_service
+from ccbd.services.dispatcher_runtime.reply_delivery_runtime.cmd_transport_planner import resolve_cmd_delivery_mode
 from mailbox_kernel import InboundEventStatus, InboundEventType
 
 
@@ -58,7 +59,7 @@ def test_second_reply_waits_behind_first_unacked_cmd_head(monkeypatch, tmp_path)
         ),
         _layout=SimpleNamespace(project_root=tmp_path),
         _clock=lambda: "2026-05-03T00:00:00Z",
-        _cmd_header_only_compatible=True,
+        _cmd_delivery_mode_result=resolve_cmd_delivery_mode(project_root=tmp_path, header_only_compatible=True),
         get_job=lambda job_id: SimpleNamespace(job_id="job_1234abcd"),
     )
 

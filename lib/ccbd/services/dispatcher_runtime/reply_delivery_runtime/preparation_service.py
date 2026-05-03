@@ -29,6 +29,7 @@ from .cmd_delivery_telemetry import (
     record_long_reply_fallback,
     record_phase2_failure,
 )
+from .cmd_transport_planner import CmdDeliveryMode, effective_cmd_delivery_mode
 from .cmd_transport_planner import plan_cmd_delivery, prepare_cmd_payload as _prepare_cmd_payload
 from .cmd_transport_planner import resolve_cmd_delivery_mode
 from .common import head_reply_id, project_id_for_agent
@@ -312,32 +313,41 @@ def _deliver_cmd_replies(dispatcher):
             foreground_command=foreground_command,
             delivered_at=delivered_at,
             body_char_count=body_char_count,
+            delivery_mode=delivery_mode_result.mode.value,
+            header_only_compatible=delivery_mode_result.header_only_compatible,
         )
 
     # Mark as injected so subsequent ticks don't re-inject. Added AFTER the
     # inject succeeds so a transient send failure retries on the next tick.
-    injected_at = _normalize_cache_timestamp(dispatcher._clock())
-    injected_cache[reply_id] = injected_at
-    injected_cache.move_to_end(reply_id)
-    while len(injected_cache) > _CMD_INJECTED_CACHE_MAX:
-        injected_cache.popitem(last=False)
-    _persist_injected_reply(dispatcher, reply_id, injected_at)
+    if _should_cache_cmd_delivery(plan, delivery_mode_result):
+        injected_at = _normalize_cache_timestamp(dispatcher._clock())
+        injected_cache[reply_id] = injected_at
+        injected_cache.move_to_end(reply_id)
+        while len(injected_cache) > _CMD_INJECTED_CACHE_MAX:
+            injected_cache.popitem(last=False)
+        _persist_injected_reply(dispatcher, reply_id, injected_at)
 
 
 def _get_cmd_delivery_mode_result(dispatcher, project_root):
     result = getattr(dispatcher, '_cmd_delivery_mode_result', None)
     if result is not None:
         return result
-    compatible_override = getattr(dispatcher, '_cmd_header_only_compatible', None)
-    result = resolve_cmd_delivery_mode(
-        project_root=project_root,
-        header_only_compatible=compatible_override if compatible_override is not None else None,
-    )
+    result = resolve_cmd_delivery_mode(project_root=project_root)
     try:
         dispatcher._cmd_delivery_mode_result = result
     except AttributeError:
         pass
     return result
+
+
+def _should_cache_cmd_delivery(plan, delivery_mode_result) -> bool:
+    if delivery_mode_result.mode is CmdDeliveryMode.HEADER_ONLY:
+        return (
+            bool(plan.header_only)
+            and delivery_mode_result.header_only_compatible
+            and effective_cmd_delivery_mode(delivery_mode_result) is CmdDeliveryMode.HEADER_ONLY
+        )
+    return True
 
 
 def _get_injected_cache(dispatcher):
