@@ -307,6 +307,7 @@ def _deliver_cmd_replies_impl(dispatcher):
         # handler) rather than re-acting. CONSUMED/ABANDONED/SUPERSEDED are
         # already filtered out by pending_events.
         if head.status not in (InboundEventStatus.CREATED, InboundEventStatus.QUEUED):
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             continue
 
         reply_id = reply_id_from_payload(head.payload_ref)
@@ -315,6 +316,7 @@ def _deliver_cmd_replies_impl(dispatcher):
             # point re-scanning the same event forever. Leaving it QUEUED
             # would only stall this slot in the cmd mailbox. Permanent
             # failure — abandon and move on to the next pending event.
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             try:
                 kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
             except Exception:
@@ -322,6 +324,7 @@ def _deliver_cmd_replies_impl(dispatcher):
             continue
 
         if reply_id in injected_cache:
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             injected_cache.move_to_end(reply_id)
             continue
 
@@ -330,9 +333,11 @@ def _deliver_cmd_replies_impl(dispatcher):
             # Rare race with a concurrent reply writer. Stop the sweep here
             # so a later reply that is fully written cannot overtake this
             # one in the cmd pane; retry this event next tick.
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             break
 
         if _should_suppress_cmd_reply(reply):
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             _try_ack(kernel, head, timestamp=dispatcher._clock())
             continue
 
@@ -370,6 +375,7 @@ def _deliver_cmd_replies_impl(dispatcher):
                 held_reason=held_reason,
                 delivery_mode_result=delivery_mode_result,
             )
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             # Stop the sweep on a pre-plan hold of an undelivered reply.
             # Continuing past a held r1 could let r2's gate probe succeed
             # and inject r2 into the pane before r1, breaking cmd mailbox
@@ -409,6 +415,7 @@ def _deliver_cmd_replies_impl(dispatcher):
             # above keeps them visible for telemetry / triage
             # (codex review [P2] 2026-05-03 KST; v8.3.3 R3 fix).
             abandoned = False
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             try:
                 kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
                 abandoned = True
@@ -450,6 +457,7 @@ def _deliver_cmd_replies_impl(dispatcher):
                 held_reason=held_reason,
                 delivery_mode_result=delivery_mode_result,
             )
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             # Stop the sweep on a post-plan hold for the same ordering
             # reason as the pre-plan hold above.
             break

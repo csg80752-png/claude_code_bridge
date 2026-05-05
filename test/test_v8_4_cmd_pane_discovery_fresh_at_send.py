@@ -436,6 +436,106 @@ def test_retry_counter_resets_on_successful_send(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# PR #10 codex-review follow-up: K-counter is consecutive pane stops only
+# --------------------------------------------------------------------------- #
+
+
+def test_pane_retry_counter_resets_after_readiness_hold(monkeypatch):
+    """pane_dead -> readiness_hold -> pane_dead must leave K at 1, not 2."""
+    head = _make_head(payload_ref='reply:rep-readiness-reset', evt_id='evt-readiness-reset')
+    reply = _make_reply(reply_id='rep-readiness-reset', body='readiness reset')
+    backend = _MockTmuxBackend(pane_alive_map={'%1': False})
+    dispatcher, kernel = _make_dispatcher(head=head, reply=reply)
+
+    monkeypatch.setattr(preparation_service, '_lookup_cmd_pane_id', lambda d, l: '%1')
+    monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend)
+    _patch_claude_foreground(monkeypatch)
+    monkeypatch.setenv('CCB_CMD_REPLY_MAX_RETRIES', '3')
+
+    # Tick 1: pane-related stop, K=1.
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert getattr(dispatcher, '_cmd_pane_retry_counts', {}).get(head.inbound_event_id) == 1
+
+    # Tick 2: live pane but readiness gate holds, so the pane K-counter resets.
+    backend.pane_alive_map['%1'] = True
+    monkeypatch.setattr(backend, 'get_pane_content', lambda pane_id, lines=120: 'still generating\n')
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert head.inbound_event_id not in getattr(dispatcher, '_cmd_pane_retry_counts', {})
+    assert kernel.calls == []
+    assert backend.injected == []
+
+    # Tick 3: another pane stop starts a new consecutive run at K=1.
+    backend.pane_alive_map['%1'] = False
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert kernel.calls == []
+    assert getattr(dispatcher, '_cmd_pane_retry_counts', {}).get(head.inbound_event_id) == 1
+
+
+def test_pane_retry_counter_still_abandons_after_three_consecutive_pane_stops(
+    monkeypatch, tmp_path
+):
+    """The follow-up reset must not weaken the existing K=3 pane-stop abandon."""
+    head = _make_head(payload_ref='reply:rep-consecutive', evt_id='evt-consecutive')
+    reply = _make_reply(reply_id='rep-consecutive', body='consecutive pane stops')
+    backend = _MockTmuxBackend(pane_alive_map={'%dead': False})
+    dispatcher, kernel = _make_dispatcher(head=head, reply=reply, project_root=tmp_path)
+
+    monkeypatch.setattr(preparation_service, '_lookup_cmd_pane_id', lambda d, l: '%dead')
+    monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend)
+    _patch_claude_foreground(monkeypatch)
+    monkeypatch.setenv('CCB_CMD_REPLY_MAX_RETRIES', '3')
+
+    preparation_service._deliver_cmd_replies(dispatcher)
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert kernel.calls == []
+
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert kernel.calls == [('abandon', 'evt-consecutive')]
+
+
+def test_pane_retry_counter_restarts_after_safety_gate_hold(monkeypatch):
+    """pane_dead -> safety holds -> pane_dead -> pane_dead is K=2, not abandon."""
+    head = _make_head(payload_ref='reply:rep-safety-reset', evt_id='evt-safety-reset')
+    reply = _make_reply(reply_id='rep-safety-reset', body='safety reset')
+    backend = _MockTmuxBackend(pane_alive_map={'%1': False})
+    dispatcher, kernel = _make_dispatcher(head=head, reply=reply)
+
+    monkeypatch.setattr(preparation_service, '_lookup_cmd_pane_id', lambda d, l: '%1')
+    monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend)
+    monkeypatch.setenv('CCB_CMD_REPLY_MAX_RETRIES', '3')
+
+    # Tick 1: pane-related stop, K=1.
+    monkeypatch.setattr(preparation_service, '_cmd_pane_foreground_command', lambda b, p: 'claude')
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert getattr(dispatcher, '_cmd_pane_retry_counts', {}).get(head.inbound_event_id) == 1
+
+    # Ticks 2-6: live pane, but unsafe foreground command holds the head.
+    backend.pane_alive_map['%1'] = True
+    monkeypatch.setattr(preparation_service, '_cmd_pane_foreground_command', lambda b, p: 'vim')
+    for _ in range(5):
+        preparation_service._deliver_cmd_replies(dispatcher)
+        assert kernel.calls == []
+        assert head.inbound_event_id not in getattr(dispatcher, '_cmd_pane_retry_counts', {})
+    assert backend.injected == []
+
+    # Ticks 7-8: two pane stops after the safety hold restart K at 1 then 2.
+    backend.pane_alive_map['%1'] = False
+    monkeypatch.setattr(preparation_service, '_cmd_pane_foreground_command', lambda b, p: 'claude')
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert kernel.calls == []
+    assert getattr(dispatcher, '_cmd_pane_retry_counts', {}).get(head.inbound_event_id) == 1
+
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert kernel.calls == []
+    assert getattr(dispatcher, '_cmd_pane_retry_counts', {}).get(head.inbound_event_id) == 2
+
+    # Tick 9: the third consecutive pane stop after reset, fourth pane stop
+    # overall, exhausts K.
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert kernel.calls == [('abandon', 'evt-safety-reset')]
+
+
+# --------------------------------------------------------------------------- #
 # 4) Daemon-alive pane replacement
 # --------------------------------------------------------------------------- #
 
