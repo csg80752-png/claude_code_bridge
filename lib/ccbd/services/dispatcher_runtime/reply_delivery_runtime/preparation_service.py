@@ -39,9 +39,24 @@ from .repair import repair_reply_delivery_heads
 
 _logger = logging.getLogger(__name__)
 
-_CMD_PANE_CACHE_TTL = 30.0
+# v8.4 PR 7 (Shape A 2026-05-05): the cross-sweep TTL cache for cmd pane id
+# was removed because it survived daemon-alive pane replacement (e.g., the
+# supervisor overwriting bootstrap_cmd_pane), masking the new live pane for
+# up to TTL seconds and queueing stale-pane sends that fail with "target
+# pane has exited". The constant is preserved as a tombstone reference in
+# case external diagnostics still grep it; production code no longer
+# consults a cross-sweep cache.
+_CMD_PANE_CACHE_TTL_DEPRECATED = 0.0
 _PROBE_LINES = 20
 DEFAULT_CMD_SAFE_CONSUMERS = frozenset({'claude'})
+
+# v8.4 PR 7 (Shape B 2026-05-05): K consecutive sweep stops on the same
+# inbound event before phase-2 abandon. Bounds runaway retries when the
+# cmd pane is permanently dead (e.g., user closed terminal entirely). Env
+# var override is read at call time so live tests / canaries can rotate
+# the threshold without restart.
+_CMD_PANE_RETRY_DEFAULT = 3
+_CMD_PANE_RETRY_ENV = 'CCB_CMD_REPLY_MAX_RETRIES'
 
 # v8.4 PR #2 (diag round) — non-behavioral. Spec: docs/v8.4-plan.md lines
 # 128-136. One-shot per ccbd lifetime, gated on pending_cmd_replies > 0:
@@ -186,6 +201,7 @@ def _deliver_cmd_replies_impl(dispatcher):
     injected_cache = _get_injected_cache(dispatcher)
     project_root = _resolve_project_root(dispatcher)
     delivery_mode_result = _get_cmd_delivery_mode_result(dispatcher, project_root)
+    _prune_pane_retry_counts(dispatcher, pending)
 
     # Lazy pane/backend discovery: suppressed replies (heartbeats / cancelled
     # empty) auto-ack via `_try_ack` and never touch the pane, so we only
@@ -194,36 +210,106 @@ def _deliver_cmd_replies_impl(dispatcher):
     # known-bad env so subsequent inject events skip without re-probing.
     pane_state: list = [None, None, False]
 
+    def _resolve_live_pane() -> tuple[str | None, object | None]:
+        """Single fresh pane resolution + liveness check. Returns
+        (pane_id, backend) on success or (None, None) on any failure.
+        Used both by `_ensure_pane_init` (initial resolution) and by the
+        send-fail retry path (Shape B)."""
+        candidate_pane_id = _discover_cmd_pane_id(dispatcher)
+        if not candidate_pane_id:
+            return None, None
+        candidate_backend = _get_tmux_backend(dispatcher)
+        if candidate_backend is None:
+            return None, None
+        try:
+            alive = candidate_backend.is_alive(candidate_pane_id)
+        except Exception:
+            _logger.debug(
+                'cmd pane %s liveness check raised', candidate_pane_id, exc_info=True,
+            )
+            return None, None
+        if not alive:
+            return None, None
+        return candidate_pane_id, candidate_backend
+
     def _ensure_pane_init() -> bool:
+        # Shape B (retry once): if the first fresh resolution fails, try
+        # exactly once more. Daemon-alive pane replacement (supervisor
+        # rotates the cmd window mid-tick) lands a brand-new pane id in
+        # tmux metadata; one retry typically picks it up without dropping
+        # the sweep. After the retry, give up for this tick — repeated
+        # failures advance the per-event K counter (handled below).
         if pane_state[2]:
             return False
         if pane_state[0] is not None and pane_state[1] is not None:
             return True
-        candidate_pane_id = _discover_cmd_pane_id(dispatcher)
-        if not candidate_pane_id:
-            _logger.debug('cmd pane not discoverable; leaving inject events queued for next tick')
+        pane_id, backend = _resolve_live_pane()
+        if pane_id is None:
+            pane_id, backend = _resolve_live_pane()
+        if pane_id is None:
+            _logger.debug(
+                'cmd pane unavailable after fresh resolve + retry; deferring sweep',
+            )
             pane_state[2] = True
             return False
-        candidate_backend = _get_tmux_backend(dispatcher)
-        if candidate_backend is None:
-            _logger.debug('cmd tmux backend unavailable; leaving inject events queued for next tick')
-            pane_state[2] = True
-            return False
-        try:
-            alive = candidate_backend.is_alive(candidate_pane_id)
-        except Exception:
-            _invalidate_cmd_pane_cache(dispatcher)
-            _logger.debug('cmd pane liveness check raised; leaving inject events queued', exc_info=True)
-            pane_state[2] = True
-            return False
-        if not alive:
-            _invalidate_cmd_pane_cache(dispatcher)
-            _logger.debug('cmd pane %s not alive; leaving inject events queued for next tick', candidate_pane_id)
-            pane_state[2] = True
-            return False
-        pane_state[0] = candidate_pane_id
-        pane_state[1] = candidate_backend
+        pane_state[0] = pane_id
+        pane_state[1] = backend
         return True
+
+    max_retries = _max_cmd_pane_retries()
+
+    def _record_sweep_stop_and_maybe_abandon(
+        head,
+        reply,
+        *,
+        body_char_count: int,
+        foreground_command: str,
+        pane_alive: bool,
+    ) -> None:
+        """Bump the K-counter for this inbound event after a pane-related
+        sweep stop. If the count reaches `max_retries`, abandon the event
+        with a phase-2 `retry_exhausted` failure so it cannot block the
+        cmd queue indefinitely. The caller still `break`s after this; the
+        next tick re-enters with the abandoned event filtered out by
+        `pending_events`.
+        """
+        new_count = _bump_pane_retry_count(dispatcher, head.inbound_event_id)
+        if new_count < max_retries:
+            return
+        try:
+            kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
+        except Exception:
+            _logger.debug(
+                'cmd event abandon (retry exhausted) failed', exc_info=True,
+            )
+            return
+        record_phase2_failure(
+            project_root,
+            reply_id=getattr(reply, 'reply_id', '') or '',
+            stage='abandon',
+            reason='retry_exhausted',
+            body_char_count=body_char_count,
+            failed_at=dispatcher._clock(),
+            foreground_command=foreground_command,
+            pane_alive=pane_alive,
+            cached=False,
+        )
+        _logger.warning(
+            'cmd reply %s abandoned after %d consecutive sweep stops; pane unrecoverable',
+            getattr(reply, 'reply_id', '?'),
+            new_count,
+        )
+        _clear_pane_retry_count(dispatcher, head.inbound_event_id)
+
+    def _pane_dead_after_gate_hold(backend, pane_id: str) -> bool:
+        try:
+            return not bool(backend.is_alive(pane_id))
+        except Exception:
+            _logger.debug(
+                'cmd pane %s liveness recheck after gate hold raised',
+                pane_id, exc_info=True,
+            )
+            return True
 
     for head in pending:
         # Only act on fresh events. DELIVERING means an older flow did claim
@@ -231,6 +317,7 @@ def _deliver_cmd_replies_impl(dispatcher):
         # handler) rather than re-acting. CONSUMED/ABANDONED/SUPERSEDED are
         # already filtered out by pending_events.
         if head.status not in (InboundEventStatus.CREATED, InboundEventStatus.QUEUED):
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             continue
 
         reply_id = reply_id_from_payload(head.payload_ref)
@@ -239,6 +326,7 @@ def _deliver_cmd_replies_impl(dispatcher):
             # point re-scanning the same event forever. Leaving it QUEUED
             # would only stall this slot in the cmd mailbox. Permanent
             # failure — abandon and move on to the next pending event.
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             try:
                 kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
             except Exception:
@@ -246,6 +334,7 @@ def _deliver_cmd_replies_impl(dispatcher):
             continue
 
         if reply_id in injected_cache:
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             injected_cache.move_to_end(reply_id)
             continue
 
@@ -254,16 +343,27 @@ def _deliver_cmd_replies_impl(dispatcher):
             # Rare race with a concurrent reply writer. Stop the sweep here
             # so a later reply that is fully written cannot overtake this
             # one in the cmd pane; retry this event next tick.
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             break
 
         if _should_suppress_cmd_reply(reply):
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             _try_ack(kernel, head, timestamp=dispatcher._clock())
             continue
 
         if not _ensure_pane_init():
-            # Pane unavailable. pane_state[2] is now True so any retry is
-            # pointless until next tick; stop the sweep so later events
-            # don't get spuriously skipped past this still-undelivered head.
+            # Pane unavailable after Shape B retry. Bump the K-counter for
+            # this head so a permanently dead pane cannot wedge the queue
+            # forever; if we have hit max retries, the abandon is recorded
+            # before we break. Either way the sweep stops here to preserve
+            # ordering for the next tick.
+            _record_sweep_stop_and_maybe_abandon(
+                head,
+                reply,
+                body_char_count=len(getattr(reply, 'reply', '') or ''),
+                foreground_command='',
+                pane_alive=False,
+            )
             break
         cmd_pane_id = pane_state[0]
         backend = pane_state[1]
@@ -275,6 +375,15 @@ def _deliver_cmd_replies_impl(dispatcher):
             project_root=project_root,
         )
         if not ready:
+            if _pane_dead_after_gate_hold(backend, cmd_pane_id):
+                _record_sweep_stop_and_maybe_abandon(
+                    head,
+                    reply,
+                    body_char_count=body_char_count,
+                    foreground_command=foreground_command,
+                    pane_alive=False,
+                )
+                break
             _hold_cmd_delivery(
                 dispatcher,
                 reply_id,
@@ -285,6 +394,7 @@ def _deliver_cmd_replies_impl(dispatcher):
                 held_reason=held_reason,
                 delivery_mode_result=delivery_mode_result,
             )
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             # Stop the sweep on a pre-plan hold of an undelivered reply.
             # Continuing past a held r1 could let r2's gate probe succeed
             # and inject r2 into the pane before r1, breaking cmd mailbox
@@ -324,6 +434,7 @@ def _deliver_cmd_replies_impl(dispatcher):
             # above keeps them visible for telemetry / triage
             # (codex review [P2] 2026-05-03 KST; v8.3.3 R3 fix).
             abandoned = False
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             try:
                 kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
                 abandoned = True
@@ -355,6 +466,15 @@ def _deliver_cmd_replies_impl(dispatcher):
             project_root=project_root,
         )
         if not ready:
+            if _pane_dead_after_gate_hold(backend, cmd_pane_id):
+                _record_sweep_stop_and_maybe_abandon(
+                    head,
+                    reply,
+                    body_char_count=body_char_count,
+                    foreground_command=foreground_command,
+                    pane_alive=False,
+                )
+                break
             _hold_cmd_delivery(
                 dispatcher,
                 reply_id,
@@ -365,16 +485,57 @@ def _deliver_cmd_replies_impl(dispatcher):
                 held_reason=held_reason,
                 delivery_mode_result=delivery_mode_result,
             )
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             # Stop the sweep on a post-plan hold for the same ordering
             # reason as the pre-plan hold above.
             break
 
+        send_succeeded = False
         try:
             backend.send_text_to_pane(cmd_pane_id, plan.body)
+            send_succeeded = True
         except Exception:
-            _logger.warning(
-                'cmd reply %s pane injection failed; leaving event queued for next tick',
+            _logger.debug(
+                'cmd reply %s initial pane injection failed; attempting fresh-resolve retry',
                 reply_id, exc_info=True,
+            )
+
+        if not send_succeeded:
+            # Shape B (2026-05-05) — invalidate within-sweep cache, fresh
+            # re-resolve, re-verify gate (foreground + readiness), retry
+            # the send exactly once. Daemon-alive pane replacement most
+            # often hits this path: the original pane id died mid-sweep
+            # and tmux now has a new __ccb_ctl pane id under the same
+            # role+slot+project_id triplet. One re-resolve picks it up.
+            pane_state[0] = None
+            pane_state[1] = None
+            retry_pane_id, retry_backend = _resolve_live_pane()
+            retry_ready = False
+            retry_foreground = foreground_command
+            if retry_pane_id is not None and retry_backend is not None:
+                retry_ready, retry_foreground, _retry_held_reason = _cmd_delivery_gate(
+                    retry_backend,
+                    retry_pane_id,
+                    project_root=project_root,
+                )
+            if retry_pane_id is not None and retry_backend is not None and retry_ready:
+                try:
+                    retry_backend.send_text_to_pane(retry_pane_id, plan.body)
+                    send_succeeded = True
+                    cmd_pane_id = retry_pane_id
+                    backend = retry_backend
+                    foreground_command = retry_foreground
+                    pane_state[0] = retry_pane_id
+                    pane_state[1] = retry_backend
+                except Exception:
+                    _logger.debug(
+                        'cmd reply %s retry pane injection failed', reply_id, exc_info=True,
+                    )
+
+        if not send_succeeded:
+            _logger.warning(
+                'cmd reply %s pane injection failed after retry; leaving event queued for next tick',
+                reply_id,
             )
             _invalidate_cmd_pane_cache(dispatcher)
             record_phase2_failure(
@@ -385,7 +546,7 @@ def _deliver_cmd_replies_impl(dispatcher):
                 body_char_count=body_char_count,
                 failed_at=dispatcher._clock(),
                 foreground_command=foreground_command,
-                pane_alive=True,
+                pane_alive=False,
                 cached=False,
             )
             if plan.header_only:
@@ -399,10 +560,22 @@ def _deliver_cmd_replies_impl(dispatcher):
                     delivery_mode=delivery_mode_result.mode.value,
                     header_only_compatible=delivery_mode_result.header_only_compatible,
                 )
-            # Pane invalidation: subsequent events would also hit a dead pane.
-            # Stop the sweep early so we re-discover next tick rather than
-            # hammering a known-bad pane.
+            # Bump K-counter and (if exhausted) abandon the event with a
+            # phase-2 failure record so a permanently dead pane cannot
+            # wedge the cmd queue forever. Either way break the sweep —
+            # subsequent events would hit the same dead pane.
+            _record_sweep_stop_and_maybe_abandon(
+                head,
+                reply,
+                body_char_count=body_char_count,
+                foreground_command=foreground_command,
+                pane_alive=False,
+            )
             break
+
+        # Send succeeded (initial or retry). Clear any stale K-counter
+        # accumulated by prior sweep stops on this same inbound event.
+        _clear_pane_retry_count(dispatcher, head.inbound_event_id)
 
         delivered_at = dispatcher._clock()
         if plan.header_only:
@@ -780,36 +953,90 @@ def _parse_cache_timestamp(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-# Fix #3: TTL-based cache instead of permanent.
+# v8.4 PR 7 (Shape A 2026-05-05) — fresh-at-send invariant.
+#
+# Pre-fix: this resolver held a 30-second TTL cache of the cmd pane id on
+# the dispatcher. The cache survived pane replacement (supervisor or user
+# closing+reopening claude in the cmd window), so dispatcher would inject
+# into a pane id that no longer existed and tmux would respond with
+# "target pane has exited". The live diag in PR #8 confirmed this
+# (`cached_pane_id=None, fresh_pane_id='%3', is_alive_fresh=True,
+# pending_cmd_replies=326` — fresh lookup found a live pane while the
+# delivery path was still sending to a dead one).
+#
+# Post-fix: every call resolves fresh from tmux metadata via
+# `_lookup_cmd_pane_id`. The only sanctioned cache window is the local
+# `pane_state` list inside `_deliver_cmd_replies_impl`, which is reset
+# every sweep tick. `_invalidate_cmd_pane_cache` survives as a no-op for
+# diagnostic compatibility (the diag emitter at line 815+ inspects
+# `_cmd_pane_cache` to compare cached vs. fresh; tests still inject a
+# value into that attribute to exercise the comparison path).
 def _discover_cmd_pane_id(dispatcher) -> str | None:
-    cache = getattr(dispatcher, '_cmd_pane_cache', None)
-    now = time.monotonic()
-
-    if cache is not None:
-        cached_id, cached_at = cache
-        if (now - cached_at) < _CMD_PANE_CACHE_TTL:
-            return cached_id if cached_id else None
-
     layout = getattr(dispatcher, '_layout', None)
     if layout is None:
         return None
-
-    pane_id = _lookup_cmd_pane_id(dispatcher, layout)
-
-    if pane_id is not None:
-        try:
-            dispatcher._cmd_pane_cache = (pane_id, now)
-        except AttributeError:
-            pass
-
-    return pane_id
+    return _lookup_cmd_pane_id(dispatcher, layout)
 
 
 def _invalidate_cmd_pane_cache(dispatcher):
+    """Legacy hook. Pre-Shape-A this cleared the cross-sweep TTL cache;
+    post-Shape-A there is no cross-sweep cache to clear, so this is a
+    no-op. Retained because diag tests inject a sentinel into
+    `_cmd_pane_cache` and want a known clear path. Within-sweep
+    invalidation is handled inline in `_deliver_cmd_replies_impl`.
+    """
     try:
         dispatcher._cmd_pane_cache = None
     except AttributeError:
         pass
+
+
+def _max_cmd_pane_retries() -> int:
+    raw = str(os.environ.get(_CMD_PANE_RETRY_ENV, '') or '').strip()
+    if not raw:
+        return _CMD_PANE_RETRY_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        return _CMD_PANE_RETRY_DEFAULT
+    return max(1, value)
+
+
+def _get_pane_retry_counts(dispatcher) -> dict:
+    counts = getattr(dispatcher, '_cmd_pane_retry_counts', None)
+    if counts is None:
+        counts = {}
+        try:
+            dispatcher._cmd_pane_retry_counts = counts
+        except AttributeError:
+            pass
+    return counts
+
+
+def _bump_pane_retry_count(dispatcher, event_id: str) -> int:
+    counts = _get_pane_retry_counts(dispatcher)
+    new = int(counts.get(event_id, 0)) + 1
+    counts[event_id] = new
+    return new
+
+
+def _clear_pane_retry_count(dispatcher, event_id: str) -> None:
+    counts = getattr(dispatcher, '_cmd_pane_retry_counts', None)
+    if counts is not None:
+        counts.pop(event_id, None)
+
+
+def _prune_pane_retry_counts(dispatcher, pending) -> None:
+    """Drop K-counter entries for events that are no longer pending. Keeps
+    the dict bounded across long-lived daemons even when events disappear
+    via ack/abandon paths that do not reach the delivery loop."""
+    counts = getattr(dispatcher, '_cmd_pane_retry_counts', None)
+    if not counts:
+        return
+    pending_ids = {getattr(e, 'inbound_event_id', None) for e in (pending or ())}
+    pending_ids.discard(None)
+    for stale in [k for k in counts if k not in pending_ids]:
+        counts.pop(stale, None)
 
 
 def _maybe_emit_cmd_pane_discovery_diag(dispatcher, *, pending_count: int) -> None:
