@@ -71,7 +71,7 @@ def test_codex_poll_state_exports_schema_version() -> None:
     serialized = to_runtime_state(poll)
 
     assert serialized["schema_version"] == CODEX_POLL_STATE_SCHEMA_VERSION
-    assert CODEX_POLL_STATE_SCHEMA_VERSION == 3
+    assert CODEX_POLL_STATE_SCHEMA_VERSION == 4
 
 
 def test_codex_poll_state_imports_v1_without_schema_version() -> None:
@@ -157,7 +157,7 @@ def test_codex_poll_state_v2_to_v3_migration_drops_dead_task_id_fields() -> None
     poll = from_runtime_state(_fixture("captured-v8.3-runtime-state.json"))
     serialized = to_runtime_state(poll)
 
-    assert poll.schema_version == 3
+    assert poll.schema_version == CODEX_POLL_STATE_SCHEMA_VERSION
     assert poll.current_turn_id == "turn-from-v2-task-field"
     assert poll.requires_turn_id is True
     assert poll.turn_id_probe_cache_key == "codex:/usr/bin/codex:v2:123"

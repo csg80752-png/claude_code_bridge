@@ -45,8 +45,17 @@ def _migrate_v2_to_v3(payload: dict[str, object]) -> dict[str, object]:
     return migrated
 
 
+def _migrate_v3_to_v4(payload: dict[str, object]) -> dict[str, object]:
+    migrated = dict(payload)
+    migrated["schema_version"] = 4
+    migrated.setdefault("consecutive_wedge_ticks", 0)
+    migrated.setdefault("replay_in_progress", False)
+    return migrated
+
+
 _MIGRATIONS[(1, 2)] = _migrate_v1_to_v2
 _MIGRATIONS[(2, 3)] = _migrate_v2_to_v3
+_MIGRATIONS[(3, 4)] = _migrate_v3_to_v4
 
 
 def to_runtime_state(poll: CodexPollState) -> dict[str, object]:
@@ -117,6 +126,7 @@ def _poll_state_from_payload(payload: dict[str, object]) -> CodexPollState:
     values["schema_version"] = int(values.get("schema_version") or CODEX_POLL_STATE_SCHEMA_VERSION)
     values["request_anchor"] = str(values.get("request_anchor") or "")
     values["next_seq"] = int(values.get("next_seq", 1) or 1)
+    values["consecutive_wedge_ticks"] = int(values.get("consecutive_wedge_ticks", 0) or 0)
     for name in (
         "anchor_seen",
         "current_turn_started",
@@ -124,6 +134,7 @@ def _poll_state_from_payload(payload: dict[str, object]) -> CodexPollState:
         "bound_turn_contaminated",
         "reached_terminal",
         "requires_turn_id",
+        "replay_in_progress",
     ):
         values[name] = bool(values.get(name, False))
     for name in (
