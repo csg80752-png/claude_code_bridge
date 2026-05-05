@@ -3,6 +3,7 @@ from __future__ import annotations
 from provider_execution.active import prepare_active_poll
 from provider_execution.base import ProviderPollResult, ProviderSubmission
 
+from .binding_diag import maybe_emit_binding_diag
 from .event_reading import read_entries
 from .start import state_session_path
 from .state_machine import (
@@ -22,8 +23,10 @@ def poll_submission(submission: ProviderSubmission, *, now: str) -> ProviderPoll
         return prepared
 
     state = submission.runtime_state.get("state") or {}
+    pre_poll_state = dict(state)
     poll = build_poll_state(submission)
     state = poll_entry_batches(submission, poll, prepared.reader, state, now=now)
+    maybe_emit_binding_diag(submission, poll, state, pre_poll_state=pre_poll_state)
     return finalize_poll_result(submission, poll, state=state)
 
 
