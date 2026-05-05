@@ -81,8 +81,11 @@ def maybe_run_recovery(
     update_wedge_counter(poll)
 
     if not is_wedge_condition(poll):
+        if "consecutive_wedge_ticks" in state:
+            _record_wedge_ticks(state, poll)
         return RecoveryOutcome(action="noop", reason="not_wedged")
 
+    _record_wedge_ticks(state, poll)
     threshold = _resolve_threshold()
     if poll.consecutive_wedge_ticks < threshold:
         return RecoveryOutcome(
@@ -99,6 +102,7 @@ def maybe_run_recovery(
         result = replay_anchor_bound(log_path, request_anchor=poll.request_anchor)
         if result.success:
             _apply_replay_success(submission, poll, result=result, now=now)
+            _record_wedge_ticks(state, poll)
             return RecoveryOutcome(
                 action="replayed",
                 reason=REPLAY_OK,
@@ -120,6 +124,7 @@ def maybe_run_recovery(
         if record is not None:
             outcome.quarantine_jsonl = record[0]
             outcome.quarantine_manifest = record[1]
+        _record_wedge_ticks(state, poll)
         return outcome
     finally:
         poll.replay_in_progress = False
@@ -293,6 +298,10 @@ def _resolve_tail_entries_for_quarantine() -> int:
     except ValueError:
         return 50
     return max(1, value)
+
+
+def _record_wedge_ticks(state: dict[str, object], poll: CodexPollState) -> None:
+    state["consecutive_wedge_ticks"] = poll.consecutive_wedge_ticks
 
 
 def _log_path_from_state(state: dict[str, object], *, poll: CodexPollState) -> Path | None:

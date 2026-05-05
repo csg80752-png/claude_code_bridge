@@ -246,11 +246,15 @@ def _evict_size_cap(root: Path, *, now: float) -> None:
     if total <= cap:
         return
     candidates.sort(key=lambda item: item[0])
+    removed: set[Path] = set()
     for _mtime, size, path in candidates:
         if total <= cap:
             return
+        if path in removed:
+            continue
         if path.name.endswith(".jsonl") or path.name.endswith(".manifest.json"):
             _safe_unlink(path)
+            removed.add(path)
             total -= size
             sibling = _sibling_for(path)
             if sibling is not None and sibling.exists():
@@ -259,6 +263,7 @@ def _evict_size_cap(root: Path, *, now: float) -> None:
                 except OSError:
                     pass
                 _safe_unlink(sibling)
+                removed.add(sibling)
 
 
 def _sibling_for(path: Path) -> Path | None:

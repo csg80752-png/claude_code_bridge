@@ -23,7 +23,7 @@ def poll_submission(submission: ProviderSubmission, *, now: str) -> ProviderPoll
     if prepared is None or isinstance(prepared, ProviderPollResult):
         return prepared
 
-    state = submission.runtime_state.get("state") or {}
+    state = dict(submission.runtime_state.get("state") or {})
     pre_poll_state = dict(state)
     poll = build_poll_state(submission)
     state = poll_entry_batches(submission, poll, prepared.reader, state, now=now)

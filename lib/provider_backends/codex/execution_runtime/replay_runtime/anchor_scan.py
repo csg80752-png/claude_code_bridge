@@ -98,7 +98,7 @@ def replay_anchor_bound(jsonl_path: Path | None, *, request_anchor: str) -> Repl
                 entry_turn_id = _entry_turn_id(entry, normalized)
 
                 if anchor_offset < 0:
-                    if role == "user" and expected_marker in text:
+                    if role == "user" and _has_expected_anchor(text, expected_marker, foreign_prefix):
                         anchor_offset = line_offset
                         anchor_turn_id = entry_turn_id
                         if anchor_turn_id:
@@ -188,14 +188,32 @@ def _entry_turn_id(entry: dict[str, Any], normalized: dict[str, Any] | None) -> 
 
 
 def _has_foreign_anchor(text: str, expected_marker: str, foreign_prefix: str) -> bool:
+    expected = _anchor_id_from_marker(expected_marker, foreign_prefix)
     for line in str(text or "").splitlines():
         stripped = line.strip()
-        if not stripped.startswith(foreign_prefix):
+        found = _anchor_id_from_marker(stripped, foreign_prefix)
+        if not found:
             continue
-        if stripped.startswith(expected_marker):
+        if found == expected:
             continue
         return True
     return False
+
+
+def _has_expected_anchor(text: str, expected_marker: str, foreign_prefix: str) -> bool:
+    expected = _anchor_id_from_marker(expected_marker, foreign_prefix)
+    if not expected:
+        return False
+    for line in str(text or "").splitlines():
+        if _anchor_id_from_marker(line.strip(), foreign_prefix) == expected:
+            return True
+    return False
+
+
+def _anchor_id_from_marker(line: str, foreign_prefix: str) -> str:
+    if not line.startswith(foreign_prefix):
+        return ""
+    return line[len(foreign_prefix):].strip()
 
 
 __all__ = [
