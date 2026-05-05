@@ -301,6 +301,16 @@ def _deliver_cmd_replies_impl(dispatcher):
         )
         _clear_pane_retry_count(dispatcher, head.inbound_event_id)
 
+    def _pane_dead_after_gate_hold(backend, pane_id: str) -> bool:
+        try:
+            return not bool(backend.is_alive(pane_id))
+        except Exception:
+            _logger.debug(
+                'cmd pane %s liveness recheck after gate hold raised',
+                pane_id, exc_info=True,
+            )
+            return True
+
     for head in pending:
         # Only act on fresh events. DELIVERING means an older flow did claim
         # the event — leave it for the legacy stale-repair path (or the ack
@@ -365,6 +375,15 @@ def _deliver_cmd_replies_impl(dispatcher):
             project_root=project_root,
         )
         if not ready:
+            if _pane_dead_after_gate_hold(backend, cmd_pane_id):
+                _record_sweep_stop_and_maybe_abandon(
+                    head,
+                    reply,
+                    body_char_count=body_char_count,
+                    foreground_command=foreground_command,
+                    pane_alive=False,
+                )
+                break
             _hold_cmd_delivery(
                 dispatcher,
                 reply_id,
@@ -447,6 +466,15 @@ def _deliver_cmd_replies_impl(dispatcher):
             project_root=project_root,
         )
         if not ready:
+            if _pane_dead_after_gate_hold(backend, cmd_pane_id):
+                _record_sweep_stop_and_maybe_abandon(
+                    head,
+                    reply,
+                    body_char_count=body_char_count,
+                    foreground_command=foreground_command,
+                    pane_alive=False,
+                )
+                break
             _hold_cmd_delivery(
                 dispatcher,
                 reply_id,

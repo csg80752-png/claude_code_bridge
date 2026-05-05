@@ -493,6 +493,47 @@ def test_pane_retry_counter_still_abandons_after_three_consecutive_pane_stops(
     assert kernel.calls == [('abandon', 'evt-consecutive')]
 
 
+def test_pane_retry_counter_preserved_when_gate_capture_fails_due_to_dead_pane(
+    monkeypatch,
+):
+    """Option X: gate-hold branches re-check liveness. If a pane dies after
+    the initial probe but before foreground capture completes, the empty
+    capture is treated as a pane-related stop, so K is bumped rather than
+    cleared and the event abandons at K=3.
+    """
+    head = _make_head(payload_ref='reply:rep-capture-dead', evt_id='evt-capture-dead')
+    reply = _make_reply(reply_id='rep-capture-dead', body='capture dead')
+    backend = _MockTmuxBackend(pane_alive_map={'%1': True})
+    dispatcher, kernel = _make_dispatcher(head=head, reply=reply)
+
+    monkeypatch.setattr(preparation_service, '_lookup_cmd_pane_id', lambda d, l: '%1')
+    monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend)
+    monkeypatch.setattr(preparation_service, '_cmd_pane_foreground_command', lambda b, p: '')
+    monkeypatch.setattr(preparation_service, '_cmd_pane_diag_emitted', True)
+    monkeypatch.setenv('CCB_CMD_REPLY_MAX_RETRIES', '3')
+
+    alive_results = iter([
+        False, False,  # Tick 1: resolve + retry both see pane_dead -> K=1.
+        True, False,   # Tick 2: initial probe succeeds; gate-hold recheck sees dead -> K=2.
+        True, False,   # Tick 3: same race; gate-hold recheck sees dead -> K=3 abandon.
+    ])
+    monkeypatch.setattr(backend, 'is_alive', lambda pane_id: next(alive_results))
+
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert getattr(dispatcher, '_cmd_pane_retry_counts', {}).get(head.inbound_event_id) == 1
+    assert kernel.calls == []
+
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert getattr(dispatcher, '_cmd_pane_retry_counts', {}).get(head.inbound_event_id) == 2
+    assert kernel.calls == []
+    assert backend.injected == []
+
+    preparation_service._deliver_cmd_replies(dispatcher)
+    assert kernel.calls == [('abandon', 'evt-capture-dead')]
+    assert head.inbound_event_id not in getattr(dispatcher, '_cmd_pane_retry_counts', {})
+    assert backend.injected == []
+
+
 def test_pane_retry_counter_restarts_after_safety_gate_hold(monkeypatch):
     """pane_dead -> safety holds -> pane_dead -> pane_dead is K=2, not abandon."""
     head = _make_head(payload_ref='reply:rep-safety-reset', evt_id='evt-safety-reset')
