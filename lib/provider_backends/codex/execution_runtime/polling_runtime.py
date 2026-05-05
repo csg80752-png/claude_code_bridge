@@ -5,6 +5,7 @@ from provider_execution.base import ProviderPollResult, ProviderSubmission
 
 from .binding_diag import maybe_emit_binding_diag
 from .event_reading import read_entries
+from .replay_runtime import maybe_run_recovery
 from .start import state_session_path
 from .state_machine import (
     apply_session_rotation,
@@ -22,11 +23,12 @@ def poll_submission(submission: ProviderSubmission, *, now: str) -> ProviderPoll
     if prepared is None or isinstance(prepared, ProviderPollResult):
         return prepared
 
-    state = submission.runtime_state.get("state") or {}
+    state = dict(submission.runtime_state.get("state") or {})
     pre_poll_state = dict(state)
     poll = build_poll_state(submission)
     state = poll_entry_batches(submission, poll, prepared.reader, state, now=now)
     maybe_emit_binding_diag(submission, poll, state, pre_poll_state=pre_poll_state)
+    maybe_run_recovery(submission, poll, state=state, now=now)
     return finalize_poll_result(submission, poll, state=state)
 
 

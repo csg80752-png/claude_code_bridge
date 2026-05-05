@@ -7,7 +7,7 @@ from completion.models import CompletionItem, CompletionItemKind
 from provider_execution.base import ProviderSubmission
 from provider_execution.common import build_item
 
-CODEX_POLL_STATE_SCHEMA_VERSION = 3
+CODEX_POLL_STATE_SCHEMA_VERSION = 4
 
 
 @dataclass
@@ -31,6 +31,8 @@ class CodexPollState:
     reached_terminal: bool = False
     requires_turn_id: bool = False
     turn_id_probe_cache_key: str | None = None
+    consecutive_wedge_ticks: int = 0
+    replay_in_progress: bool = False
 
 
 def build_poll_state(submission: ProviderSubmission) -> CodexPollState:
@@ -73,6 +75,8 @@ def apply_session_rotation(
     poll.last_final_answer = ""
     poll.last_assistant_message = ""
     poll.last_assistant_signature = ""
+    poll.consecutive_wedge_ticks = 0
+    poll.replay_in_progress = False
 
 
 __all__ = [
