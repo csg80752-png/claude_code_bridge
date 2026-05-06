@@ -5,6 +5,7 @@ from pathlib import Path
 from provider_profiles import load_resolved_provider_profile
 from provider_backends.codex.launcher_runtime.codex_namespace_isolation import (
     _POLICY_FILENAME,
+    _POLICY_VERSION,
     explicit_codex_home_overrides,
     isolated_home_for_runtime,
     sync_codex_home_from_source,
@@ -56,6 +57,7 @@ def _codex_policy() -> ProviderHomeSyncPolicy:
     return ProviderHomeSyncPolicy(
         provider="codex",
         sentinel_name=_POLICY_FILENAME,
+        sentinel_content=_POLICY_VERSION + "\n",
         source_home=system_codex_home,
         runtime_home=isolated_home_for_runtime,
         profile_home=_profile_codex_home,

@@ -46,6 +46,7 @@ def _policy(tmp_path: Path, *, profile_home: Path | None = None) -> ProviderHome
     return ProviderHomeSyncPolicy(
         provider="fake",
         sentinel_name=".managed",
+        sentinel_content="managed-migration\n",
         source_home=lambda: source,
         runtime_home=runtime_home,
         profile_home=lambda runtime_dir: profile_home,
@@ -80,6 +81,19 @@ def test_provider_home_sync_syncs_only_matching_managed_provider_homes(tmp_path:
     assert summary.agents[0].synced == ("config",)
     assert fake_home.joinpath("config").read_text(encoding="utf-8") == "fresh\n"
     assert not other_home.exists()
+
+
+def test_provider_home_sync_migrates_legacy_ccb_runtime_home_marker(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    fake_home = context.paths.agent_provider_runtime_dir("agent1", "fake") / "fake-home"
+    _write(fake_home / "config", "old\n")
+    config = SimpleNamespace(agents={"agent1": SimpleNamespace(provider="fake")})
+
+    summary = sync_project_provider_homes(context, _policy(tmp_path), config=config)
+
+    assert tuple(result.agent_name for result in summary.agents) == ("agent1",)
+    assert fake_home.joinpath(".managed").read_text(encoding="utf-8") == "managed-migration\n"
+    assert fake_home.joinpath("config").read_text(encoding="utf-8") == "fresh\n"
 
 
 def test_provider_home_sync_skips_missing_home_without_creating_it(tmp_path: Path) -> None:

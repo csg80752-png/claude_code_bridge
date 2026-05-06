@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
 import shutil
 
 from provider_backends.claude.launcher import claude_home_for_runtime
-from provider_backends.claude.launcher_runtime.service import _POLICY_FILENAME
+from provider_backends.claude.launcher_runtime.service import _POLICY_FILENAME, _POLICY_VERSION
 from cli.services.provider_home_sync import (
     ProviderHomeSyncAgentResult,
     ProviderHomeSyncPolicy,
@@ -17,6 +18,7 @@ from cli.services.provider_home_sync import (
 
 
 _SAFE_ENTRIES = ("settings.json", "CLAUDE.md", "commands", "agents", "skills")
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,7 @@ def _claude_policy() -> ProviderHomeSyncPolicy:
     return ProviderHomeSyncPolicy(
         provider="claude",
         sentinel_name=_POLICY_FILENAME,
+        sentinel_content=_POLICY_VERSION + "\n",
         source_home=system_claude_config_home,
         runtime_home=claude_home_for_runtime,
         profile_home=lambda runtime_dir: None,
@@ -121,6 +124,8 @@ def _copy_physical_tree(source: Path, target: Path) -> None:
             resolved = child.resolve(strict=False)
             if resolved.is_file():
                 shutil.copy2(resolved, child_target)
+            else:
+                _LOG.warning("Claude home sync skipped broken symlink: %s", child)
             continue
         if child.is_dir():
             _copy_physical_tree(child, child_target)

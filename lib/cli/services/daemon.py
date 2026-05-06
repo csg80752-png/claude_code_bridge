@@ -83,6 +83,7 @@ def ping_local_state(context: CliContext) -> LocalPingSummary:
     return LocalPingSummary(
         project_id=context.project.project_id,
         mount_state=lease.mount_state.value if lease is not None else 'unmounted',
+        pid=lease.ccbd_pid if lease else None,
         health=inspection.health.value,
         generation=lease.generation if lease else None,
         socket_path=lease.socket_path if lease else None,

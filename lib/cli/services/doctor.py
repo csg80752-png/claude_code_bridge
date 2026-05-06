@@ -26,12 +26,13 @@ def doctor_summary(context) -> dict:
     )
     enabled_provider_home_sync = tuple(getattr(config, 'provider_home_sync', ()) or ())
     agents = enrich_provider_home_sync_status(context, config=config, agents=agents)
+    installation = installation_summary()
     return {
         'project': str(context.project.project_root),
         'project_id': context.project.project_id,
         'provider_home_sync_enabled': enabled_provider_home_sync,
-        'installation': installation_summary(),
+        'installation': installation,
         'requirements': requirements_summary(),
-        'ccbd': ccbd_summary(local=local, stores=stores, errors=errors),
+        'ccbd': ccbd_summary(local=local, stores=stores, errors=errors, installation=installation),
         'agents': agents,
     }

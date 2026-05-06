@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from ccbd.lifecycle_report_store import CcbdShutdownReportStore, CcbdStartupReportStore
 from ccbd.models import CcbdShutdownReport, CcbdStartupReport
@@ -228,6 +229,70 @@ def test_doctor_summary_includes_installation_and_requirement_fields(tmp_path: P
     assert payload['installation']['install_mode'] == 'release'
     assert payload['installation']['channel'] == 'stable'
     assert payload['requirements']['tmux_available'] is True
+
+
+def test_doctor_summary_reports_daemon_install_path_drift(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-doctor-daemon-drift'
+    install_current = tmp_path / 'install-current'
+    install_old = tmp_path / 'install-old'
+    daemon_main = install_old / 'lib' / 'ccbd' / 'main.py'
+    daemon_main.parent.mkdir(parents=True)
+    daemon_main.write_text('x\n', encoding='utf-8')
+    proc_dir = tmp_path / 'proc'
+    (proc_dir / '4321').mkdir(parents=True)
+    (proc_dir / '4321' / 'cmdline').write_bytes(
+        b'python3\0' + str(daemon_main).encode() + b'\0--project\0/tmp/repo\0'
+    )
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    context = CliContextBuilder().build(ParsedDoctorCommand(project=None), cwd=project_root, bootstrap_if_missing=False)
+
+    monkeypatch.setattr(
+        'cli.services.doctor.installation_summary',
+        lambda: {
+            'path': str(install_current),
+            'version': '5.2.8',
+            'commit': 'abc1234',
+            'date': '2026-04-09',
+            'channel': 'stable',
+            'platform': 'linux',
+            'arch': 'x86_64',
+            'build_time': '2026-04-09T10:11:12Z',
+            'installed_at': '2026-04-09T10:15:00Z',
+            'source_kind': 'release',
+            'install_mode': 'release',
+        },
+    )
+    monkeypatch.setattr(
+        'cli.services.doctor.ping_local_state',
+        lambda context: SimpleNamespace(
+            project_id=context.project.project_id,
+            mount_state='mounted',
+            pid=4321,
+            health='healthy',
+            generation=1,
+            socket_path=str(context.paths.ccbd_socket_path),
+            last_heartbeat_at='2026-03-18T00:00:00Z',
+            pid_alive=True,
+            socket_connectable=True,
+            heartbeat_fresh=True,
+            takeover_allowed=False,
+            reason='healthy',
+        ),
+    )
+    monkeypatch.setattr(
+        'cli.services.doctor_runtime.ccbd.Path',
+        lambda value: Path(str(value).replace('/proc', str(proc_dir.parent / 'proc'), 1))
+        if str(value).startswith('/proc/')
+        else Path(value),
+    )
+
+    payload = doctor_summary(context)
+
+    assert payload['ccbd']['pid'] == 4321
+    assert payload['ccbd']['daemon_install_path'] == str(install_old.resolve())
+    assert payload['ccbd']['daemon_install_matches_current'] is False
     assert payload['requirements']['provider_commands'][0]['provider'] == 'codex'
 
 

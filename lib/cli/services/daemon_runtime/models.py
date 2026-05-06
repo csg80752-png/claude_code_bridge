@@ -20,6 +20,7 @@ class DaemonHandle:
 class LocalPingSummary:
     project_id: str
     mount_state: str
+    pid: int | None
     health: str
     generation: int | None
     socket_path: str | None

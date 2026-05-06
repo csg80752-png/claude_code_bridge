@@ -83,7 +83,7 @@ def test_claude_home_sync_refreshes_safe_entries_without_runtime_state(tmp_path:
         assert not (target_claude_dir / unsafe_name).exists(), unsafe_name
 
 
-def test_claude_home_sync_skips_unmanaged_home(tmp_path: Path) -> None:
+def test_claude_home_sync_migrates_legacy_runtime_home_marker(tmp_path: Path) -> None:
     source = _source_claude_dir(tmp_path)
     context = _context(tmp_path)
     runtime_dir = context.paths.agent_provider_runtime_dir("agent1", "claude")
@@ -93,8 +93,9 @@ def test_claude_home_sync_skips_unmanaged_home(tmp_path: Path) -> None:
 
     summary = sync_project_claude_homes(context, config=config, source_home=source)
 
-    assert summary.agents == ()
-    assert summary.skipped[0].reason == "unmanaged-home"
+    assert tuple(result.agent_name for result in summary.agents) == ("agent1",)
+    assert (claude_home / ".provider-home-policy").read_text(encoding="utf-8") == "claude:r1\n"
+    assert (claude_home / ".claude" / "CLAUDE.md").is_file()
 
 
 def test_claude_home_sync_skips_source_symlinked_safe_entry(tmp_path: Path) -> None:
@@ -151,6 +152,22 @@ def test_claude_home_sync_skips_nested_symlink_directories(tmp_path: Path) -> No
     assert "skills" in summary.agents[0].synced
     assert not (target_claude_dir / "skills" / "external-dir").exists()
     assert (target_claude_dir / "skills" / "qa" / "SKILL.md").is_file()
+
+
+def test_claude_home_sync_warns_for_broken_nested_symlink(caplog, tmp_path: Path) -> None:
+    source = _source_claude_dir(tmp_path)
+    (source / "skills" / "broken").mkdir()
+    (source / "skills" / "broken" / "SKILL.md").symlink_to(tmp_path / "missing-skill.md")
+    context = _context(tmp_path)
+    runtime_dir = context.paths.agent_provider_runtime_dir("agent1", "claude")
+    claude_namespace_env(runtime_dir)
+    config = SimpleNamespace(agents={"agent1": SimpleNamespace(provider="claude")})
+
+    with caplog.at_level(logging.WARNING):
+        summary = sync_project_claude_homes(context, config=config, source_home=source)
+
+    assert "skills" in summary.agents[0].synced
+    assert "Claude home sync skipped broken symlink:" in caplog.text
 
 
 def test_claude_home_sync_preserves_existing_directory_when_copy_fails(
