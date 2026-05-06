@@ -1348,6 +1348,34 @@ def test_claude_launcher_exports_isolated_home_and_ignores_user_home_history(mon
     assert f'CLAUDE_PROJECTS_ROOT={shlex.quote(str(isolated_home / ".claude" / "projects"))}' in start_cmd
     assert str(user_home / '.claude' / 'projects') not in start_cmd
     assert '--continue' not in shlex.split(start_cmd)
+    assert (isolated_home / '.provider-home-policy').read_text(encoding='utf-8') == 'claude:r1\n'
+
+
+def test_claude_namespace_env_rejects_symlinked_policy_sentinel(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / 'runtime'
+    isolated_home = runtime_dir / 'claude-home'
+    external_sentinel = tmp_path / 'external-sentinel'
+    external_sentinel.write_text('keep\n', encoding='utf-8')
+    isolated_home.mkdir(parents=True)
+    (isolated_home / '.provider-home-policy').symlink_to(external_sentinel)
+
+    with pytest.raises(ValueError, match='provider home policy sentinel must not be a symlink'):
+        claude_launcher.claude_namespace_env(runtime_dir)
+
+    assert external_sentinel.read_text(encoding='utf-8') == 'keep\n'
+
+
+def test_claude_namespace_env_rejects_symlinked_home(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / 'runtime'
+    external_home = tmp_path / 'external-home'
+    _write_claude_history(external_home, tmp_path / 'workspace', '123e4567-e89b-12d3-a456-426614174aaa')
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / 'claude-home').symlink_to(external_home, target_is_directory=True)
+
+    with pytest.raises(ValueError, match='claude home must not be a symlink'):
+        claude_launcher.claude_namespace_env(runtime_dir)
+
+    assert not (external_home / '.provider-home-policy').exists()
 
 
 def test_claude_launcher_restore_preflight_uses_isolated_home(monkeypatch, tmp_path: Path) -> None:
