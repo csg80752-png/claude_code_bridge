@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shlex
 
 from provider_core.caller_env import caller_context_env, export_env_clause, join_env_prefix
 from provider_core.contracts import ProviderRuntimeLauncher
+
+
+_CLAUDE_HOME_DIR = 'claude-home'
+_POLICY_FILENAME = '.provider-home-policy'
+_POLICY_VERSION = 'claude:r1'
 
 
 def build_runtime_launcher(
@@ -118,11 +124,14 @@ def build_session_payload(
 
 
 def claude_namespace_env(runtime_dir: Path) -> dict[str, str]:
-    isolated_home = Path(runtime_dir) / 'claude-home'
+    isolated_home = claude_home_for_runtime(runtime_dir)
+    if isolated_home.is_symlink():
+        raise ValueError('claude home must not be a symlink')
     projects_root = isolated_home / '.claude' / 'projects'
     session_env_root = isolated_home / '.claude' / 'session-env'
     projects_root.mkdir(parents=True, exist_ok=True)
     session_env_root.mkdir(parents=True, exist_ok=True)
+    write_claude_home_policy_sentinel(isolated_home)
     return {
         'HOME': str(isolated_home),
         'CLAUDE_PROJECTS_ROOT': str(projects_root),
@@ -130,4 +139,25 @@ def claude_namespace_env(runtime_dir: Path) -> dict[str, str]:
     }
 
 
-__all__ = ['build_runtime_launcher', 'build_session_payload', 'build_start_cmd', 'resolve_run_cwd']
+def claude_home_for_runtime(runtime_dir: Path) -> Path:
+    return Path(runtime_dir) / _CLAUDE_HOME_DIR
+
+
+def write_claude_home_policy_sentinel(claude_home: Path) -> None:
+    sentinel = Path(claude_home) / _POLICY_FILENAME
+    if sentinel.is_symlink():
+        raise ValueError('provider home policy sentinel must not be a symlink')
+    fd = os.open(sentinel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+        handle.write(_POLICY_VERSION + '\n')
+
+
+__all__ = [
+    'build_runtime_launcher',
+    'build_session_payload',
+    'build_start_cmd',
+    'claude_home_for_runtime',
+    'claude_namespace_env',
+    'resolve_run_cwd',
+    'write_claude_home_policy_sentinel',
+]

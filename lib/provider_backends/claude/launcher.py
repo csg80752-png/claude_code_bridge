@@ -17,7 +17,9 @@ from .launcher_runtime import (
     build_runtime_launcher as _build_runtime_launcher_impl,
     build_session_payload as _build_session_payload_impl,
     build_start_cmd as _build_start_cmd_impl,
+    claude_home_for_runtime,
     claude_history_state as _claude_history_state_impl,
+    claude_namespace_env,
     claude_user_base_url as _claude_user_base_url_impl,
     local_tcp_listener_available as _local_tcp_listener_available_impl,
     project_session_restore_target as _project_session_restore_target_impl,
@@ -25,6 +27,7 @@ from .launcher_runtime import (
     resolve_run_cwd as _resolve_run_cwd_impl,
     should_drop_claude_base_url as _should_drop_claude_base_url_impl,
     write_claude_settings_overlay as _write_claude_settings_overlay_impl,
+    write_claude_home_policy_sentinel,
 )
 from .session import load_project_session
 
@@ -198,6 +201,9 @@ __all__ = [
     'build_claude_env_prefix',
     'build_runtime_launcher',
     'build_start_cmd',
+    'claude_home_for_runtime',
+    'claude_namespace_env',
     'resolve_run_cwd',
+    'write_claude_home_policy_sentinel',
     'write_claude_settings_overlay',
 ]
