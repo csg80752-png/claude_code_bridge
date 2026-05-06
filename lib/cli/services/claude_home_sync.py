@@ -119,6 +119,8 @@ def _claude_policy() -> ProviderHomeSyncPolicy:
 
 def _refresh_physical_entry(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
+    if _physical_entry_matches(source, target):
+        return
     if source.is_file():
         staging_file = _staging_path(target)
         _remove_path(staging_file)
@@ -162,6 +164,60 @@ def _copy_physical_tree(source: Path, target: Path) -> None:
             _copy_physical_tree(child, child_target)
         elif child.is_file():
             shutil.copy2(child, child_target)
+
+
+def _physical_entry_matches(source: Path, target: Path) -> bool:
+    if source.is_file():
+        return (
+            target.is_file()
+            and not target.is_symlink()
+            and _file_signature(source) == _file_signature(target)
+        )
+    if source.is_dir():
+        return (
+            target.is_dir()
+            and not target.is_symlink()
+            and _tree_snapshot(source, source_tree=True)
+            == _tree_snapshot(target, source_tree=False)
+        )
+    return False
+
+
+def _tree_snapshot(root: Path, *, source_tree: bool) -> tuple[tuple[str, str, int, int], ...]:
+    snapshot: list[tuple[str, str, int, int]] = []
+    _collect_tree_snapshot(root, root, snapshot, source_tree=source_tree)
+    return tuple(snapshot)
+
+
+def _collect_tree_snapshot(
+    root: Path,
+    current: Path,
+    snapshot: list[tuple[str, str, int, int]],
+    *,
+    source_tree: bool,
+) -> None:
+    for child in sorted(current.iterdir(), key=lambda path: path.name):
+        rel_path = child.relative_to(root).as_posix()
+        if child.is_symlink():
+            if not source_tree:
+                snapshot.append((rel_path, "symlink", 0, 0))
+                continue
+            resolved = child.resolve(strict=False)
+            if resolved.is_file():
+                size, mtime_ns = _file_signature(resolved)
+                snapshot.append((rel_path, "file", size, mtime_ns))
+            continue
+        if child.is_dir():
+            snapshot.append((rel_path, "dir", 0, 0))
+            _collect_tree_snapshot(root, child, snapshot, source_tree=source_tree)
+        elif child.is_file():
+            size, mtime_ns = _file_signature(child)
+            snapshot.append((rel_path, "file", size, mtime_ns))
+
+
+def _file_signature(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns
 
 
 def _staging_path(target: Path) -> Path:
