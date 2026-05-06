@@ -17,7 +17,7 @@ from ccbd.services.project_namespace_state import ProjectNamespaceEvent, Project
 from ccbd.socket_client import CcbdClient, CcbdClientError
 from completion.models import CompletionConfidence, CompletionDecision, CompletionStatus
 from message_bureau import AttemptStore, MessageStore
-from mailbox_kernel import InboundEventStatus, InboundEventStore, InboundEventType
+from mailbox_kernel import InboundEventRecord, InboundEventStatus, InboundEventStore, InboundEventType
 from project.ids import compute_project_id
 from project.resolver import ProjectContext
 
@@ -803,6 +803,88 @@ def test_ccbd_cmd_target_survives_restart_before_cmd_pane_delivery(
     assert sent == [('%cmd', f'CCB_REQ_ID: {job_id}\n\nsurvive restart')]
 
     restarted_client.shutdown()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
+def test_ccbd_cmd_target_skips_old_queued_replies_for_fresh_request(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'repo-cmd-target-behind-replies'
+    ctx = _prepare_project(
+        project_root,
+        'cmd; codex:codex\n',
+    )
+    sent: list[tuple[str, str]] = []
+
+    class FakeBackend:
+        def is_alive(self, pane_id: str) -> bool:
+            return pane_id == '%cmd'
+
+        def send_text_to_pane(self, pane_id: str, text: str, **kwargs) -> None:
+            sent.append((pane_id, text))
+
+    monkeypatch.setattr(
+        'ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service._discover_cmd_pane_id',
+        lambda dispatcher: '%cmd',
+    )
+    monkeypatch.setattr(
+        'ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service._get_tmux_backend',
+        lambda dispatcher: FakeBackend(),
+    )
+    monkeypatch.setattr(
+        'ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service._cmd_delivery_gate',
+        lambda backend, pane_id, project_root: (True, 'claude', ''),
+    )
+
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        _runtime(
+            'codex',
+            project_id=ctx.project_id,
+            workspace_path=str(app.paths.workspace_path('codex')),
+            pid=777,
+        )
+    )
+    app.dispatcher._message_bureau_control._mailbox_kernel._inbound_store.append(
+        InboundEventRecord(
+            inbound_event_id='iev-stale-reply',
+            agent_name='cmd',
+            event_type=InboundEventType.TASK_REPLY,
+            message_id='msg-stale-reply',
+            attempt_id='att-stale-reply',
+            payload_ref='reply:rep-stale-reply',
+            priority=10,
+            status=InboundEventStatus.QUEUED,
+            created_at='2026-03-18T00:00:00Z',
+        )
+    )
+
+    thread = threading.Thread(target=app.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+    thread.start()
+    _wait_for(app.paths.ccbd_socket_path)
+
+    client = CcbdClient(app.paths.ccbd_socket_path)
+    submit = client.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='cmd',
+            from_actor='codex',
+            body='fresh behind stale replies',
+            task_id='task-cmd-target-behind-replies',
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+
+    job_id = submit['job_id']
+    completed = _wait_for_job_status(client, job_id, 'completed')
+    assert completed['target_kind'] == 'cmd'
+    assert sent == [('%cmd', f'CCB_REQ_ID: {job_id}\n\nfresh behind stale replies')]
+
+    client.shutdown()
     thread.join(timeout=2)
     assert not thread.is_alive()
 

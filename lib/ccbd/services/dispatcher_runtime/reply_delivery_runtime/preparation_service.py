@@ -150,29 +150,36 @@ def _deliver_cmd_requests(dispatcher) -> None:
     kernel = getattr(control, '_mailbox_kernel', None) if control is not None else None
     if kernel is None:
         return
-    head = kernel.head_pending_event('cmd')
-    if head is None or head.event_type is not InboundEventType.TASK_REQUEST:
-        return
-    if head.status not in (InboundEventStatus.CREATED, InboundEventStatus.QUEUED):
-        return
-    job_id = job_id_from_payload_ref(head.payload_ref)
-    if not job_id:
-        try:
-            kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
-        except Exception:
-            _logger.debug('cmd request abandon (malformed payload) failed', exc_info=True)
+    pending = _pending_cmd_request_events(kernel)
+    if not pending:
         return
 
     from ..records import get_job
 
-    job = get_job(dispatcher, job_id)
-    if job is None:
-        try:
-            kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
-        except Exception:
-            _logger.debug('cmd request abandon (missing job) failed', exc_info=True)
+    for head in pending:
+        if head.status not in (InboundEventStatus.CREATED, InboundEventStatus.QUEUED):
+            continue
+        job_id = job_id_from_payload_ref(head.payload_ref)
+        if not job_id:
+            try:
+                kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
+            except Exception:
+                _logger.debug('cmd request abandon (malformed payload) failed', exc_info=True)
+            continue
+
+        job = get_job(dispatcher, job_id)
+        if job is None:
+            try:
+                kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
+            except Exception:
+                _logger.debug('cmd request abandon (missing job) failed', exc_info=True)
+            continue
+
+        _deliver_cmd_request(dispatcher, kernel, head, job)
         return
 
+
+def _deliver_cmd_request(dispatcher, kernel, head, job) -> None:
     pane_id = _discover_cmd_pane_id(dispatcher)
     if not pane_id:
         return
@@ -1265,6 +1272,22 @@ def _pending_cmd_reply_events(kernel) -> tuple:
     if head is None:
         return ()
     if getattr(head, 'event_type', None) is not InboundEventType.TASK_REPLY:
+        return ()
+    return (head,)
+
+
+def _pending_cmd_request_events(kernel) -> tuple:
+    pending_events = getattr(kernel, 'pending_events', None)
+    if callable(pending_events):
+        return tuple(pending_events('cmd', event_type=InboundEventType.TASK_REQUEST) or ())
+
+    head_pending_event = getattr(kernel, 'head_pending_event', None)
+    if not callable(head_pending_event):
+        return ()
+    head = head_pending_event('cmd')
+    if head is None:
+        return ()
+    if getattr(head, 'event_type', None) is not InboundEventType.TASK_REQUEST:
         return ()
     return (head,)
 
