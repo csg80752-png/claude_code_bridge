@@ -7,6 +7,7 @@ from .queries_runtime import (
     get_pane_content,
     is_pane_alive,
     list_panes_by_user_options,
+    pane_current_command,
     pane_exists,
 )
 
@@ -18,5 +19,6 @@ __all__ = [
     "get_pane_content",
     "is_pane_alive",
     "list_panes_by_user_options",
+    "pane_current_command",
     "pane_exists",
 ]

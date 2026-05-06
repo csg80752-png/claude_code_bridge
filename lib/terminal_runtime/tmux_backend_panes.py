@@ -58,6 +58,9 @@ class TmuxBackendPaneQueryMixin:
             user_options=user_options,
         )
 
+    def pane_current_command(self, pane_id: str) -> str | None:
+        return self._services.pane_service.pane_current_command(pane_id)
+
     def get_pane_content(self, pane_id: str, lines: int = 20) -> Optional[str]:
         return self._services.pane_service.get_pane_content(pane_id, lines=lines)
 

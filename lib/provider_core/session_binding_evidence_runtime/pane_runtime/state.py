@@ -33,7 +33,22 @@ def _tmux_pane_state(
     ownership = inspect_tmux_pane_ownership_fn(session, backend, pane_id)
     if not ownership.is_owned:
         return 'foreign'
-    return 'alive' if backend_pane_alive_fn(backend, pane_id) else 'dead'
+    if not backend_pane_alive_fn(backend, pane_id):
+        return 'dead'
+    if _tmux_pane_is_shell(backend, pane_id):
+        return 'shell'
+    return 'alive'
+
+
+def _tmux_pane_is_shell(backend, pane_id: str) -> bool:
+    command_reader = getattr(backend, 'pane_current_command', None)
+    if not callable(command_reader):
+        return False
+    try:
+        current_command = str(command_reader(pane_id) or '').strip().lower()
+    except Exception:
+        return False
+    return current_command in {'sh', 'bash', 'zsh', 'fish', 'dash'}
 
 
 def _generic_pane_state(backend, pane_id: str, *, backend_pane_alive_fn: Callable[[object, str], bool]) -> str:

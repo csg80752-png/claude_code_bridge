@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from agents.models import AgentState
 from ccbd.api_models import JobRecord, JobStatus, TargetKind
+from completion.models import CompletionConfidence, CompletionDecision, CompletionStatus
 from provider_core.registry import TEST_DOUBLE_PROVIDER_NAMES
 
 from ..context import build_job_runtime_context
@@ -53,7 +54,13 @@ def start_running_job(
         dispatcher._message_bureau.mark_attempt_started(running, started_at=started_at)
     submission = None
     if dispatcher._execution_service is not None and should_start_execution(dispatcher, running, runtime_context):
-        submission = dispatcher._execution_service.start(running, runtime_context=runtime_context)
+        try:
+            submission = dispatcher._execution_service.start(running, runtime_context=runtime_context)
+        except Exception as exc:
+            return dispatcher.complete(
+                running.job_id,
+                provider_start_failed_decision(running, exc, finished_at=dispatcher._clock()),
+            )
     if is_reply_delivery_job(running) and dispatcher._execution_service is not None:
         return complete_reply_delivery_after_start(
             dispatcher,
@@ -62,6 +69,28 @@ def start_running_job(
             submission=submission,
         )
     return running
+
+
+def provider_start_failed_decision(current: JobRecord, exc: Exception, *, finished_at: str) -> CompletionDecision:
+    return CompletionDecision(
+        terminal=True,
+        status=CompletionStatus.FAILED,
+        reason='provider_start_failed',
+        confidence=CompletionConfidence.DEGRADED,
+        reply='',
+        anchor_seen=False,
+        reply_started=False,
+        reply_stable=False,
+        provider_turn_ref=None,
+        source_cursor=None,
+        finished_at=finished_at,
+        diagnostics={
+            'error_type': type(exc).__name__,
+            'error_message': str(exc),
+            'provider': current.provider,
+            'job_id': current.job_id,
+        },
+    )
 
 
 def should_start_execution(dispatcher, current: JobRecord, runtime_context) -> bool:
@@ -81,4 +110,4 @@ def should_start_execution(dispatcher, current: JobRecord, runtime_context) -> b
     return ':' in runtime_ref
 
 
-__all__ = ['should_start_execution', 'start_running_job', 'write_running_snapshot']
+__all__ = ['provider_start_failed_decision', 'should_start_execution', 'start_running_job', 'write_running_snapshot']

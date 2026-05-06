@@ -180,6 +180,12 @@ class FailingRestoreExecutionService(RecordingExecutionService):
         )
 
 
+class FailingStartExecutionService(RecordingExecutionService):
+    def start(self, job, *, runtime_context=None) -> None:
+        self.calls.append((job, runtime_context))
+        raise RuntimeError('tmux pane disappeared')
+
+
 @pytest.mark.parametrize('provider', ['codex', 'claude', 'gemini'])
 def test_runtime_service_refresh_provider_binding_recovers_tmux_binding(provider: str, tmp_path: Path) -> None:
     project_root = tmp_path / f'repo-refresh-{provider}'
@@ -564,6 +570,41 @@ def test_dispatcher_passes_runtime_context_to_execution_service(tmp_path: Path) 
     assert runtime_context.runtime_ref == 'codex-runtime'
     assert runtime_context.session_ref == 'codex-session'
     assert runtime_context.runtime_pid == 101
+
+
+def test_dispatcher_marks_job_failed_when_provider_start_raises(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-provider-start-raises'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex')
+    registry = AgentRegistry(layout, config)
+    registry.upsert(_runtime('codex', project_id=ctx.project_id, layout=layout, pid=101))
+    dispatcher = JobDispatcher(
+        layout,
+        config,
+        registry,
+        execution_service=FailingStartExecutionService(),
+        clock=lambda: '2026-03-18T00:00:00Z',
+    )
+
+    receipt = dispatcher.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='codex',
+            from_actor='user',
+            body='hello',
+            task_id=None,
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+    completed = dispatcher.tick()
+
+    assert completed[0].job_id == receipt.jobs[0].job_id
+    assert completed[0].status is JobStatus.FAILED
+    assert completed[0].terminal_decision['reason'] == 'provider_start_failed'
+    assert 'tmux pane disappeared' in completed[0].terminal_decision['diagnostics']['error_message']
 
 
 def test_dispatcher_uses_latest_attached_binding_refs(tmp_path: Path) -> None:

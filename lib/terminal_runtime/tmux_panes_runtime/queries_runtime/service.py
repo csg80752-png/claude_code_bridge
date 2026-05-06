@@ -57,6 +57,19 @@ def describe_pane(service, pane_id: str, *, user_options: tuple[str, ...] = ()) 
     return describe_pane_output(getattr(cp, "stdout", "") or "", normalized_options)
 
 
+def pane_current_command(service, pane_id: str) -> str | None:
+    if not service.looks_like_pane_id_fn(pane_id):
+        return None
+    cp = run_tmux_capture(
+        service,
+        ["display-message", "-p", "-t", pane_id, "#{pane_current_command}"],
+        timeout=0.5,
+    )
+    if cp is None or getattr(cp, "returncode", 1) != 0:
+        return None
+    return (getattr(cp, "stdout", "") or "").strip() or None
+
+
 def get_pane_content(service, pane_id: str, *, lines: int = 20) -> str | None:
     if not pane_id:
         return None
@@ -139,5 +152,6 @@ __all__ = [
     'get_pane_content',
     'is_pane_alive',
     'list_panes_by_user_options',
+    'pane_current_command',
     'pane_exists',
 ]
