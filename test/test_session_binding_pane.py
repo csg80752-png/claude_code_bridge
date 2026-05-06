@@ -35,3 +35,29 @@ def test_inspect_session_pane_reports_foreign_tmux_pane(monkeypatch) -> None:
 
     assert payload['pane_state'] == 'foreign'
     assert payload['active_pane_id'] is None
+
+
+def test_inspect_session_pane_reports_shell_tmux_pane(monkeypatch) -> None:
+    class Backend:
+        def pane_exists(self, pane_id):
+            return True
+
+        def is_tmux_pane_alive(self, pane_id):
+            return True
+
+        def pane_current_command(self, pane_id):
+            return 'bash'
+
+    session = SimpleNamespace(terminal='tmux', pane_id='%2', pane_title_marker='agent3')
+
+    monkeypatch.setattr('provider_core.session_binding_evidence_runtime.pane.session_backend', lambda session: Backend())
+    monkeypatch.setattr('provider_core.session_binding_evidence_runtime.pane.session_pane_title_marker', lambda session: 'agent3')
+    monkeypatch.setattr(
+        'provider_core.session_binding_evidence_runtime.pane.inspect_tmux_pane_ownership',
+        lambda session, backend, pane_id: SimpleNamespace(is_owned=True),
+    )
+
+    payload = inspect_session_pane(session)
+
+    assert payload['pane_state'] == 'shell'
+    assert payload['active_pane_id'] is None
