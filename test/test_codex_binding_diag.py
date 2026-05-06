@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from completion.models import CompletionSourceKind
 from provider_backends.codex.execution_runtime.binding_diag import (
     _predicate_blocker,
     maybe_emit_binding_diag,
@@ -83,6 +84,23 @@ def test_emits_warning_on_wedge(tmp_path, caplog):
     assert "normalized_role='assistant'" in msg
     assert "raw_payload_type='agent_message'" in msg
     assert "text_preview='answer'" in msg
+
+
+def test_skips_protocol_event_stream_submissions_even_if_session_log_state_looks_wedged(tmp_path, caplog):
+    log_path = tmp_path / "session.jsonl"
+    _write_session_jsonl(
+        log_path,
+        _user_entry("CCB_REQ_ID: job_protocol\n\nprompt", turn_id=""),
+        _assistant_entry("answer", turn_id="abc"),
+    )
+    submission = SimpleNamespace(job_id="job_protocol", source_kind=CompletionSourceKind.PROTOCOL_EVENT_STREAM)
+    poll = _make_wedged_poll()
+    state = {"log_path": log_path, "offset": log_path.stat().st_size}
+
+    with caplog.at_level(logging.WARNING):
+        maybe_emit_binding_diag(submission, poll, state, pre_poll_state={"log_path": log_path, "offset": 0})
+
+    assert not any("v8.4-diag binding-wedge" in record.getMessage() for record in caplog.records)
 
 
 def test_one_shot_per_job_id(tmp_path, caplog):

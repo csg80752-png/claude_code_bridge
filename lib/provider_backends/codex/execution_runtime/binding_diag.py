@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 
+from completion.models import CompletionSourceKind
 from provider_backends.codex.comm_runtime.log_entries import extract_entry
 
 from .state_machine_runtime.models import CodexPollState
@@ -42,6 +43,8 @@ def maybe_emit_binding_diag(
     *,
     pre_poll_state: dict[str, object] | None = None,
 ) -> None:
+    if _is_protocol_event_stream_submission(submission):
+        return
     if not _is_wedge_condition(poll):
         return
 
@@ -100,6 +103,13 @@ def _is_wedge_condition(poll: CodexPollState) -> bool:
     if poll.reply_buffer:
         return False
     return True
+
+
+def _is_protocol_event_stream_submission(submission) -> bool:
+    source_kind = getattr(submission, "source_kind", None)
+    if source_kind == CompletionSourceKind.PROTOCOL_EVENT_STREAM:
+        return True
+    return str(source_kind or "") == CompletionSourceKind.PROTOCOL_EVENT_STREAM.value
 
 
 def _predicate_blocker(poll: CodexPollState) -> str:

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from provider_execution.active import prepare_active_poll
+from provider_execution.active import prepare_active_poll, prepare_active_poll_without_liveness
 from provider_execution.base import ProviderPollResult, ProviderSubmission
 
 from .binding_diag import maybe_emit_binding_diag
 from .event_reading import read_entries
-from .replay_runtime import maybe_run_recovery
+from .replay_runtime import is_wedge_condition, maybe_run_recovery
 from .start import state_session_path
 from .state_machine import (
     apply_session_rotation,
@@ -20,9 +20,19 @@ from .state_machine import (
 
 def poll_submission(submission: ProviderSubmission, *, now: str) -> ProviderPollResult | None:
     prepared = prepare_active_poll(submission, now=now)
-    if prepared is None or isinstance(prepared, ProviderPollResult):
+    if prepared is None:
         return prepared
+    if isinstance(prepared, ProviderPollResult):
+        if not _should_try_dead_pane_recovery(submission, prepared):
+            return prepared
+        prepared_without_liveness = prepare_active_poll_without_liveness(submission, now=now)
+        if prepared_without_liveness is None or isinstance(prepared_without_liveness, ProviderPollResult):
+            return prepared
+        return _poll_prepared_submission(submission, prepared_without_liveness, now=now)
+    return _poll_prepared_submission(submission, prepared, now=now)
 
+
+def _poll_prepared_submission(submission, prepared, *, now: str) -> ProviderPollResult | None:
     state = dict(submission.runtime_state.get("state") or {})
     pre_poll_state = dict(state)
     poll = build_poll_state(submission)
@@ -30,6 +40,17 @@ def poll_submission(submission: ProviderSubmission, *, now: str) -> ProviderPoll
     maybe_emit_binding_diag(submission, poll, state, pre_poll_state=pre_poll_state)
     maybe_run_recovery(submission, poll, state=state, now=now)
     return finalize_poll_result(submission, poll, state=state)
+
+
+def _should_try_dead_pane_recovery(submission: ProviderSubmission, result: ProviderPollResult) -> bool:
+    decision = result.decision
+    if decision is None or decision.reason != "pane_dead":
+        return False
+    try:
+        poll = build_poll_state(submission)
+    except Exception:
+        return False
+    return is_wedge_condition(poll)
 
 
 def poll_entry_batches(submission, poll, reader, state, *, now: str):

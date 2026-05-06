@@ -17,7 +17,7 @@ def handle_user_entry(
     now: str,
 ) -> None:
     if poll.anchor_seen:
-        if _has_foreign_anchor(text, poll.request_anchor):
+        if _has_foreign_anchor_without_expected(text, poll.request_anchor):
             poll.bound_turn_contaminated = True
         return
     if poll.request_anchor and f"{REQ_ID_PREFIX} {poll.request_anchor}" in text and not poll.anchor_seen:
@@ -51,6 +51,25 @@ def _has_foreign_anchor(text: str, request_anchor: str) -> bool:
         if found and found != expected:
             return True
     return False
+
+
+def _has_foreign_anchor_without_expected(text: str, request_anchor: str) -> bool:
+    prefix = f"{REQ_ID_PREFIX} "
+    expected = str(request_anchor or "").strip()
+    found_foreign = False
+    found_expected = False
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(prefix):
+            continue
+        found = stripped[len(prefix):].strip()
+        if not found:
+            continue
+        if found == expected:
+            found_expected = True
+        else:
+            found_foreign = True
+    return found_foreign and not found_expected
 
 
 __all__ = ["handle_user_entry"]
