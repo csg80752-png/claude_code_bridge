@@ -134,41 +134,20 @@ permission = "manual"
     assert agent1['provider_home_sync_enabled'] is True
     assert agent1['provider_home_sync_managed'] is True
     assert agent1['provider_home_sync_reason'] == 'managed'
-    assert agent1['provider_home_sync_capabilities'] == (
-        {
-            'name': 'home_sync',
-            'status': 'enabled',
-            'mode': 'managed',
-            'detail': 'syncs selected Claude config entries into the managed isolated home',
-        },
-        {
-            'name': 'credential_lifecycle',
-            'status': 'observed',
-            'mode': 'observed',
-            'detail': 'does not copy Claude OAuth credentials',
-        },
-        {
-            'name': 'ownership_model',
-            'status': 'enabled',
-            'mode': 'managed',
-            'detail': 'ccbd owns synced config entries under the isolated home',
-        },
-        {
-            'name': 'mcp_registration',
-            'status': 'not-managed',
-            'mode': 'observed',
-            'detail': 'MCP registration follows synced Claude settings',
-        },
-        {
-            'name': 'instruction_provenance',
-            'status': 'enabled',
-            'mode': 'managed',
-            'detail': 'CLAUDE.md remains Claude-specific instruction context',
-        },
-    )
+    capability_names = {capability['name'] for capability in agent1['provider_home_sync_capabilities']}
+    assert capability_names == {'home_sync', 'credential_lifecycle', 'mcp_registration', 'instruction_provenance'}
+    assert 'ownership_model' not in capability_names
+    for capability in agent1['provider_home_sync_capabilities']:
+        assert set(capability) == {'schema_version', 'name', 'status', 'ownership', 'detail'}
+        assert capability['schema_version'] == 1
+        assert capability['ownership'] in {'managed', 'observed', 'env-only', 'external'}
+        assert 'mode' not in capability
     assert agent2['provider_home_sync_enabled'] is False
     assert agent2['provider_home_sync_reason'] == 'not-enabled'
-    assert agent2['provider_home_sync_capabilities'] == ()
+    disabled_capabilities = agent2['provider_home_sync_capabilities']
+    assert disabled_capabilities
+    assert all(set(capability) == {'schema_version', 'name', 'status', 'ownership', 'detail'} for capability in disabled_capabilities)
+    assert all(capability['status'] == 'disabled' for capability in disabled_capabilities)
 
 
 def test_doctor_summary_reports_codex_profile_home_sync_skip(tmp_path: Path) -> None:

@@ -1,22 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from cli.services.claude_home_sync import _claude_policy
-from cli.services.codex_home_sync import _codex_policy
 from cli.services.provider_home_sync import is_syncable_managed_home
-from provider_backends.claude.launcher import claude_home_for_runtime
-from provider_backends.claude.launcher_runtime.service import (
-    _POLICY_FILENAME as _CLAUDE_POLICY_FILENAME,
-    _POLICY_VERSION as _CLAUDE_POLICY_VERSION,
-)
-from provider_backends.codex.launcher_runtime.codex_namespace_isolation import (
-    _POLICY_FILENAME as _CODEX_POLICY_FILENAME,
-    _POLICY_VERSION as _CODEX_POLICY_VERSION,
-    explicit_codex_home_overrides,
-    isolated_home_for_runtime,
-)
-from provider_profiles import load_resolved_provider_profile
+from cli.services.provider_home_sync_registry import provider_home_sync_policy
 
 
 def enrich_provider_home_sync_status(context, *, config, agents: list[dict]) -> list[dict]:
@@ -38,20 +23,23 @@ def enrich_provider_home_sync_status(context, *, config, agents: list[dict]) -> 
 def _provider_home_sync_status(context, *, spec, enabled: set[str]) -> dict[str, object]:
     provider = str(getattr(spec, "provider", "") or "").strip().lower()
     sync_enabled = provider in enabled
-    home, sentinel, sentinel_content = _provider_home(context, spec=spec, provider=provider)
-    if provider not in {"codex", "claude"}:
+    policy = provider_home_sync_policy(provider)
+    runtime_dir = context.paths.agent_provider_runtime_dir(spec.name, provider) if spec is not None else None
+    home = policy.runtime_home(runtime_dir) if policy is not None and runtime_dir is not None else None
+    profile_home = policy.profile_home(runtime_dir) if policy is not None and runtime_dir is not None else None
+    if policy is None:
         reason = "unsupported"
     elif not sync_enabled:
         reason = "not-enabled"
-    elif provider == "codex" and _codex_profile_home(context, spec=spec) is not None:
-        home = _codex_profile_home(context, spec=spec)
+    elif profile_home is not None:
+        home = profile_home
         reason = "profile-home"
-    elif home is None or sentinel is None or sentinel_content is None:
+    elif home is None:
         reason = "unsupported"
     elif is_syncable_managed_home(
         home,
-        sentinel_name=sentinel,
-        sentinel_content=sentinel_content,
+        sentinel_name=policy.sentinel_name,
+        sentinel_content=policy.sentinel_content,
         ccb_dir=context.paths.ccb_dir,
     ):
         reason = "managed"
@@ -62,50 +50,19 @@ def _provider_home_sync_status(context, *, spec, enabled: set[str]) -> dict[str,
         "provider_home_sync_home": str(home) if home is not None else None,
         "provider_home_sync_managed": reason == "managed",
         "provider_home_sync_reason": reason,
-        "provider_home_sync_capabilities": _provider_home_sync_capabilities(provider, enabled=sync_enabled),
+        "provider_home_sync_capabilities": _provider_home_sync_capabilities(policy, enabled=sync_enabled),
     }
 
 
-def _provider_home(context, *, spec, provider: str) -> tuple[Path | None, str | None, str | None]:
-    if spec is None:
-        return None, None, None
-    runtime_dir = context.paths.agent_provider_runtime_dir(spec.name, provider)
-    if provider == "codex":
-        return isolated_home_for_runtime(runtime_dir), _CODEX_POLICY_FILENAME, _CODEX_POLICY_VERSION + "\n"
-    if provider == "claude":
-        return claude_home_for_runtime(runtime_dir), _CLAUDE_POLICY_FILENAME, _CLAUDE_POLICY_VERSION + "\n"
-    return None, None, None
-
-
-def _codex_profile_home(context, *, spec) -> Path | None:
-    if spec is None:
-        return None
-    runtime_dir = context.paths.agent_provider_runtime_dir(spec.name, "codex")
-    profile = load_resolved_provider_profile(runtime_dir)
-    if profile is None:
-        return None
-    if getattr(profile, "runtime_home", None):
-        return Path(str(profile.runtime_home)).expanduser()
-    env_home = explicit_codex_home_overrides(getattr(profile, "env", {})).get("CODEX_HOME")
-    if env_home:
-        return Path(env_home).expanduser()
-    return None
-
-
-def _provider_home_sync_capabilities(provider: str, *, enabled: bool) -> tuple[dict[str, str], ...]:
-    if not enabled:
-        return ()
-    if provider == "codex":
-        policy = _codex_policy()
-    elif provider == "claude":
-        policy = _claude_policy()
-    else:
+def _provider_home_sync_capabilities(policy, *, enabled: bool) -> tuple[dict[str, object], ...]:
+    if policy is None:
         return ()
     return tuple(
         {
+            "schema_version": capability.schema_version,
             "name": capability.name,
-            "status": capability.status,
-            "mode": capability.mode,
+            "status": capability.status if enabled else "disabled",
+            "ownership": capability.ownership,
             "detail": capability.detail,
         }
         for capability in policy.capabilities

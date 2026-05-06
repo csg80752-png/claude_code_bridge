@@ -49,6 +49,10 @@ def sync_project_claude_homes(
     )
 
 
+def claude_home_sync_policy() -> ProviderHomeSyncPolicy:
+    return _claude_policy()
+
+
 def system_claude_config_home() -> Path:
     return Path.home() / ".claude"
 
@@ -88,31 +92,25 @@ def _claude_policy() -> ProviderHomeSyncPolicy:
             ProviderHomeSyncCapability(
                 name="home_sync",
                 status="enabled",
-                mode="managed",
+                ownership="managed",
                 detail="syncs selected Claude config entries into the managed isolated home",
             ),
             ProviderHomeSyncCapability(
                 name="credential_lifecycle",
                 status="observed",
-                mode="observed",
+                ownership="observed",
                 detail="does not copy Claude OAuth credentials",
             ),
             ProviderHomeSyncCapability(
-                name="ownership_model",
-                status="enabled",
-                mode="managed",
-                detail="ccbd owns synced config entries under the isolated home",
-            ),
-            ProviderHomeSyncCapability(
                 name="mcp_registration",
-                status="not-managed",
-                mode="observed",
+                status="external",
+                ownership="external",
                 detail="MCP registration follows synced Claude settings",
             ),
             ProviderHomeSyncCapability(
                 name="instruction_provenance",
                 status="enabled",
-                mode="managed",
+                ownership="managed",
                 detail="CLAUDE.md remains Claude-specific instruction context",
             ),
         ),
@@ -189,6 +187,7 @@ __all__ = [
     "ClaudeHomeSyncResult",
     "ClaudeHomeSyncSkippedAgent",
     "ClaudeHomeSyncSummary",
+    "claude_home_sync_policy",
     "sync_claude_home_from_source",
     "sync_project_claude_homes",
     "system_claude_config_home",

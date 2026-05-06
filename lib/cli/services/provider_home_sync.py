@@ -16,8 +16,9 @@ class ProviderHomeSyncResultLike(Protocol):
 class ProviderHomeSyncCapability:
     name: str
     status: str
-    mode: str
+    ownership: str
     detail: str
+    schema_version: int = 1
 
 
 @dataclass(frozen=True)

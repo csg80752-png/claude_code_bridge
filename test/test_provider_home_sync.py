@@ -8,6 +8,7 @@ from cli.services.provider_home_sync import (
     ProviderHomeSyncPolicy,
     sync_project_provider_homes,
 )
+from cli.services.provider_home_sync_registry import provider_home_sync_policy
 
 
 def _write(path: Path, text: str = "x") -> None:
@@ -138,3 +139,14 @@ def test_provider_home_sync_skips_symlinked_runtime_ancestor(tmp_path: Path) -> 
     assert summary.agents == ()
     assert summary.skipped[0].reason == "unmanaged-home"
     assert external_home.joinpath("config").read_text(encoding="utf-8") == "external\n"
+
+
+def test_provider_home_sync_policy_registry_exposes_supported_public_policies() -> None:
+    claude_policy = provider_home_sync_policy("claude")
+    codex_policy = provider_home_sync_policy("codex")
+
+    assert claude_policy is not None
+    assert claude_policy.provider == "claude"
+    assert codex_policy is not None
+    assert codex_policy.provider == "codex"
+    assert provider_home_sync_policy("unknown") is None
