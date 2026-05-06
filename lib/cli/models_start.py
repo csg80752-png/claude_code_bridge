@@ -40,6 +40,13 @@ class ParsedConfigValidateCommand:
 
 
 @dataclass(frozen=True)
+class ParsedSyncCodexHomeCommand:
+    project: str | None
+    include_auth: bool = False
+    kind: str = 'sync-codex-home'
+
+
+@dataclass(frozen=True)
 class ParsedDoctorCommand:
     project: str | None
     bundle: bool = False
@@ -70,4 +77,5 @@ __all__ = [
     'ParsedPingCommand',
     'ParsedPsCommand',
     'ParsedStartCommand',
+    'ParsedSyncCodexHomeCommand',
 ]

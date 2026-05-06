@@ -25,6 +25,21 @@ def handle_ps(context, command, out, services) -> int:
     return 0
 
 
+def handle_sync_codex_home(context, command, out, services) -> int:
+    summary = services.sync_project_codex_homes(context, command)
+    lines = [
+        'command_status: synced',
+        f'source_home: {summary.source_home}',
+        f'codex_agents: {len(summary.agents)}',
+    ]
+    for result in summary.agents:
+        synced = ','.join(result.synced) if result.synced else '(none)'
+        auth_note = ' auth=skipped' if result.skipped_auth else ''
+        lines.append(f'agent: {result.agent_name} synced={synced}{auth_note} path={result.path}')
+    services.write_lines(out, lines)
+    return 0
+
+
 def handle_doctor(context, command, out, services) -> int:
     if command.bundle:
         summary = services.export_diagnostic_bundle(context, command)
@@ -62,4 +77,5 @@ __all__ = [
     'handle_logs',
     'handle_open',
     'handle_ps',
+    'handle_sync_codex_home',
 ]

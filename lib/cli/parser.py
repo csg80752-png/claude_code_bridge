@@ -27,6 +27,7 @@ from .parser_runtime import (
     parse_resubmit,
     parse_retry,
     parse_start,
+    parse_sync_codex_home,
     parse_trace,
     parse_wait,
     parse_watch,
@@ -54,6 +55,7 @@ _COMMAND_PARSERS = {
     'logs': parse_logs,
     'doctor': parse_doctor,
     'config': parse_config,
+    'sync-codex-home': parse_sync_codex_home,
     'fault': parse_fault,
 }
 

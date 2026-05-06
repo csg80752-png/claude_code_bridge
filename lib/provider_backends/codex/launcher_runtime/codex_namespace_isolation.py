@@ -11,6 +11,7 @@ _ISOLATED_HOME_DIR = "codex-home"
 _POLICY_FILENAME = ".isolation-policy-version"
 _POLICY_VERSION = "r1"
 _INHERIT_ALLOWLIST = ("config.toml", "auth.json", "skills", "commands")
+_SYNC_ALLOWLIST = ("config.toml", "skills", "commands", "rules")
 _CP_BIN = shutil.which("cp") or "/bin/cp"
 
 
@@ -18,6 +19,13 @@ _CP_BIN = shutil.which("cp") or "/bin/cp"
 class CodexSessionsRoot:
     path: Path
     is_isolated: bool
+
+
+@dataclass(frozen=True)
+class CodexHomeSyncResult:
+    path: Path
+    synced: tuple[str, ...]
+    skipped_auth: bool
 
 
 def prepare_codex_home_overrides(runtime_dir: Path, profile) -> dict[str, str]:
@@ -92,6 +100,39 @@ def prepare_codex_isolated_home(runtime_dir: Path, *, source_home: Path | None =
         config_path.write_text("# ccb isolated codex config\n", encoding="utf-8")
     _write_policy_sentinel(isolated_home)
     return isolated_home
+
+
+def sync_codex_home_from_source(
+    isolated_home: Path,
+    *,
+    source_home: Path | None = None,
+    include_auth: bool = False,
+) -> CodexHomeSyncResult:
+    source = Path(source_home) if source_home is not None else system_codex_home()
+    target_home = Path(isolated_home)
+    target_home.mkdir(parents=True, exist_ok=True)
+    (target_home / "sessions").mkdir(parents=True, exist_ok=True)
+
+    synced: list[str] = []
+    for name in _SYNC_ALLOWLIST:
+        src = source / name
+        if not src.exists():
+            continue
+        _refresh_inherited_entry(src, target_home / name)
+        synced.append(name)
+
+    auth_source = source / "auth.json"
+    skipped_auth = auth_source.exists() and not include_auth
+    if auth_source.exists() and include_auth:
+        _refresh_secret_file(auth_source, target_home / "auth.json")
+        synced.append("auth.json")
+
+    _write_policy_sentinel(target_home)
+    return CodexHomeSyncResult(
+        path=target_home,
+        synced=tuple(synced),
+        skipped_auth=skipped_auth,
+    )
 
 
 def resolve_codex_sessions_root(
@@ -197,6 +238,12 @@ def _refresh_inherited_entry(source: Path, target: Path) -> None:
             shutil.copytree(source, target, symlinks=True)
 
 
+def _refresh_secret_file(source: Path, target: Path) -> None:
+    _remove_path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
 def _run_cp(args: list[str]) -> None:
     subprocess.run([_CP_BIN, *args], check=True, capture_output=True, timeout=30)
 
@@ -223,6 +270,7 @@ def _path_is_under_ccbd_namespace(target: Path, runtime_dir: Path) -> bool:
 
 
 __all__ = [
+    "CodexHomeSyncResult",
     "CodexSessionsRoot",
     "codex_home_session_payload",
     "codex_runtime_dir_from_session_file",
@@ -232,4 +280,5 @@ __all__ = [
     "prepare_codex_home_overrides",
     "prepare_codex_isolated_home",
     "resolve_codex_sessions_root",
+    "sync_codex_home_from_source",
 ]
