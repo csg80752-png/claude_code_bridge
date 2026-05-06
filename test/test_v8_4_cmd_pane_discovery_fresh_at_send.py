@@ -78,6 +78,7 @@ class _MockTmuxBackend:
         self.send_raises = list(send_raises or [])
         self.fg_command = fg_command
         self.injected: list[tuple[str, str]] = []
+        self.injected_kwargs: list[dict] = []
         self.is_alive_calls: list[str] = []
 
     def is_alive(self, pane_id: str) -> bool:
@@ -92,6 +93,7 @@ class _MockTmuxBackend:
         if not self.pane_alive_map.get(pane_id, False):
             raise RuntimeError(f'target pane has exited (pane_id={pane_id})')
         self.injected.append((pane_id, text))
+        self.injected_kwargs.append(dict(kwargs))
 
     def get_pane_content(self, pane_id: str, lines: int = 120) -> str:
         return '> '
@@ -288,6 +290,7 @@ def test_send_target_pane_exited_retries_once_within_sweep_and_succeeds(monkeypa
     # Exactly one successful inject, on the fresh pane id.
     assert len(backend.injected) == 1
     assert backend.injected[0][0] == '%9', 'retry must land on fresh pane id'
+    assert backend.injected_kwargs[0].get('extra_enter') is True
     # No abandon — retry succeeded.
     assert kernel.calls == []
     # K-counter cleared.
