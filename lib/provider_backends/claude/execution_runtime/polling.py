@@ -41,6 +41,9 @@ def poll_submission(
         return prompt_dispatch
     if isinstance(prompt_dispatch, tuple):
         submission, prompt_dispatch_anchor_due = prompt_dispatch
+    reply_delivery_timeout = _reply_delivery_ready_timeout_if_blocked(submission, now=now)
+    if reply_delivery_timeout is not None:
+        return reply_delivery_timeout
     reply_delivery_terminal = _reply_delivery_terminal_if_dispatched(submission, now=now)
     if reply_delivery_terminal is not None:
         return reply_delivery_terminal
@@ -175,6 +178,46 @@ def _reply_delivery_terminal_if_dispatched(
         diagnostics={
             "reply_delivery": True,
             "delivery_status": "sent",
+            "provider": submission.provider,
+            "submission_mode": "active",
+        },
+    )
+    return ProviderPollResult(submission=submission, decision=decision)
+
+
+def _reply_delivery_ready_timeout_if_blocked(
+    submission: ProviderSubmission,
+    *,
+    now: str,
+) -> ProviderPollResult | None:
+    if not bool(submission.runtime_state.get("reply_delivery_complete_on_dispatch", False)):
+        return None
+    if bool(submission.runtime_state.get("prompt_sent", False)):
+        return None
+    if not bool(submission.runtime_state.get("reply_delivery_require_ready", False)):
+        return None
+    if not _ready_wait_timed_out(submission, now=now):
+        return None
+    provider_turn_ref = str(
+        submission.runtime_state.get("request_anchor")
+        or submission.runtime_state.get("pane_id")
+        or submission.job_id
+    ).strip()
+    decision = CompletionDecision(
+        terminal=True,
+        status=CompletionStatus.COMPLETED,
+        reason="reply_delivery_ready_timeout",
+        confidence=CompletionConfidence.DEGRADED,
+        reply="",
+        anchor_seen=False,
+        reply_started=False,
+        reply_stable=False,
+        provider_turn_ref=provider_turn_ref or submission.job_id,
+        source_cursor=None,
+        finished_at=now,
+        diagnostics={
+            "reply_delivery": True,
+            "delivery_status": "ready_timeout_dropped",
             "provider": submission.provider,
             "submission_mode": "active",
         },
