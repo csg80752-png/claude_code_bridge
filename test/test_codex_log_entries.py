@@ -101,6 +101,40 @@ def test_extract_entry_preserves_nested_turn_id() -> None:
     assert normalized['turn_id'] == 'turn-nested'
 
 
+def test_extract_entry_preserves_task_started_turn_metadata() -> None:
+    entry = {
+        'type': 'event_msg',
+        'payload': {
+            'type': 'task_started',
+            'turn_id': 'turn-started',
+        },
+    }
+
+    normalized = extract_entry(entry)
+
+    assert normalized is not None
+    assert normalized['role'] == 'meta'
+    assert normalized['payload_type'] == 'task_started'
+    assert normalized['turn_id'] == 'turn-started'
+
+
+def test_extract_entry_preserves_turn_context_metadata() -> None:
+    entry = {
+        'type': 'turn_context',
+        'payload': {
+            'turn_id': 'turn-context',
+        },
+    }
+
+    normalized = extract_entry(entry)
+
+    assert normalized is not None
+    assert normalized['role'] == 'meta'
+    assert normalized['entry_type'] == 'turn_context'
+    assert normalized['payload_type'] == 'turn_context'
+    assert normalized['turn_id'] == 'turn-context'
+
+
 def test_extract_entry_prefers_top_level_turn_id_for_mixed_records() -> None:
     entry = {
         'type': 'event_msg',

@@ -28,6 +28,11 @@ def bind_anchor_refs(poll: CodexPollState) -> None:
 
 def assistant_entry_matches_bound_turn(poll: CodexPollState, entry: dict[str, object]) -> bool:
     entry_turn_id = normalized_value(entry.get("turn_id"))
+    if poll.requires_turn_id and not entry_turn_id:
+        if turnless_entry_is_inside_bound_turn(poll):
+            return False
+        poll.bound_turn_contaminated = True
+        return False
     if not entry_turn_matches_required_identity(poll, entry_turn_id):
         return False
     if entry_turn_id and poll.bound_turn_id and entry_turn_id != poll.bound_turn_id:
@@ -100,6 +105,14 @@ def entry_turn_matches_required_identity(poll: CodexPollState, entry_turn_id: st
         poll.bound_turn_contaminated = True
         return False
     return True
+
+
+def turnless_entry_is_inside_bound_turn(poll: CodexPollState) -> bool:
+    if not poll.bound_turn_id:
+        return False
+    if poll.current_turn_id != poll.bound_turn_id:
+        return False
+    return bool(poll.current_turn_started and poll.bound_turn_started and not poll.bound_turn_contaminated)
 
 
 def normalized_value(value: object) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,37 @@ def test_mailbox_store_roundtrip(tmp_path: Path) -> None:
     assert loaded.mailbox_state is MailboxState.BLOCKED
     assert loaded.queue_depth == 3
     assert [record.agent_name for record in store.list_all()] == ['agent1']
+
+
+def test_mailbox_store_tolerates_legacy_active_state(tmp_path: Path) -> None:
+    layout = PathLayout(tmp_path / 'repo')
+    store = MailboxStore(layout)
+    path = layout.agent_mailbox_path('agent1')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                'schema_version': 1,
+                'record_type': 'mailbox_record',
+                'mailbox_id': 'mbx-agent1',
+                'agent_name': 'agent1',
+                'active_inbound_event_id': None,
+                'queue_depth': 0,
+                'pending_reply_count': 0,
+                'last_inbound_started_at': None,
+                'last_inbound_finished_at': None,
+                'mailbox_state': 'active',
+                'lease_version': 0,
+                'updated_at': '2026-05-05T00:00:00Z',
+            }
+        ),
+        encoding='utf-8',
+    )
+
+    loaded = store.load('agent1')
+
+    assert loaded is not None
+    assert loaded.mailbox_state is MailboxState.IDLE
 
 
 def test_inbound_event_store_supports_queue_history_reads(tmp_path: Path) -> None:

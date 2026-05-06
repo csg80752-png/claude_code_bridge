@@ -73,6 +73,8 @@ def replay_anchor_bound(jsonl_path: Path | None, *, request_anchor: str) -> Repl
             anchor_offset = -1
             anchor_turn_id = ""
             bound_turn_id = ""
+            current_turn_id = ""
+            current_turn_started = False
             assistant_entries: list[dict[str, Any]] = []
             terminal_entry: dict[str, Any] | None = None
             seen_assistant_for_other_turn = False
@@ -96,11 +98,20 @@ def replay_anchor_bound(jsonl_path: Path | None, *, request_anchor: str) -> Repl
                 role = str(role).strip().lower()
                 text = str((normalized or {}).get("text") or "")
                 entry_turn_id = _entry_turn_id(entry, normalized)
+                current_turn_id, current_turn_started = _observe_turn_context(
+                    entry,
+                    entry_turn_id=entry_turn_id,
+                    current_turn_id=current_turn_id,
+                    current_turn_started=current_turn_started,
+                )
 
                 if anchor_offset < 0:
                     if role == "user" and _has_expected_anchor(text, expected_marker, foreign_prefix):
                         anchor_offset = line_offset
-                        anchor_turn_id = entry_turn_id
+                        anchor_turn_id = entry_turn_id or _bound_context_turn_id(
+                            current_turn_id=current_turn_id,
+                            current_turn_started=current_turn_started,
+                        )
                         if anchor_turn_id:
                             bound_turn_id = anchor_turn_id
                         continue
@@ -111,21 +122,33 @@ def replay_anchor_bound(jsonl_path: Path | None, *, request_anchor: str) -> Repl
                     continue
 
                 if role == "user":
-                    if _has_foreign_anchor(text, expected_marker, foreign_prefix):
+                    if _has_foreign_anchor_without_expected(text, expected_marker, foreign_prefix):
                         result.status = REPLAY_FAIL_FOREIGN_ANCHOR
                         result.anchor_offset = anchor_offset
                         result.turn_id = bound_turn_id
                         return result
                     continue
 
+                if not bound_turn_id:
+                    bound_turn_id = _bound_context_turn_id(
+                        current_turn_id=current_turn_id,
+                        current_turn_started=current_turn_started,
+                    )
+
                 if not bound_turn_id and entry_turn_id:
                     bound_turn_id = entry_turn_id
 
                 if role == "assistant":
                     if not entry_turn_id:
-                        # Cannot prove the assistant entry belongs to our
-                        # turn. Per the plan: "requires_turn_id=True" is
-                        # the contamination predicate; treat as unrelated.
+                        if _turnless_entry_is_inside_bound_turn(
+                            bound_turn_id=bound_turn_id,
+                            current_turn_id=current_turn_id,
+                            current_turn_started=current_turn_started,
+                        ):
+                            assistant_entries.append(
+                                _assistant_replay_entry(normalized, text=text, turn_id=bound_turn_id)
+                            )
+                            continue
                         seen_assistant_for_other_turn = True
                         continue
                     if bound_turn_id and entry_turn_id != bound_turn_id:
@@ -187,6 +210,59 @@ def _entry_turn_id(entry: dict[str, Any], normalized: dict[str, Any] | None) -> 
     return ""
 
 
+def _observe_turn_context(
+    entry: dict[str, Any],
+    *,
+    entry_turn_id: str,
+    current_turn_id: str,
+    current_turn_started: bool,
+) -> tuple[str, bool]:
+    entry_type, payload_type = _entry_type_pair(entry)
+    if payload_type == "task_started":
+        if entry_turn_id:
+            return entry_turn_id, True
+        return current_turn_id, current_turn_started
+    if entry_type == "turn_context" or payload_type == "turn_context":
+        if not entry_turn_id:
+            return current_turn_id, current_turn_started
+        if entry_turn_id != current_turn_id:
+            return entry_turn_id, False
+        return entry_turn_id, current_turn_started
+    return current_turn_id, current_turn_started
+
+
+def _entry_type_pair(entry: dict[str, Any]) -> tuple[str, str]:
+    entry_type = str(entry.get("type") or entry.get("entry_type") or "").strip()
+    payload = entry.get("payload")
+    payload_type = ""
+    if isinstance(payload, dict):
+        payload_type = str(payload.get("type") or ("turn_context" if entry_type == "turn_context" else "")).strip()
+    if not payload_type:
+        payload_type = str(entry.get("payload_type") or "").strip()
+    return entry_type, payload_type
+
+
+def _bound_context_turn_id(*, current_turn_id: str, current_turn_started: bool) -> str:
+    if current_turn_started and current_turn_id:
+        return current_turn_id
+    return ""
+
+
+def _turnless_entry_is_inside_bound_turn(
+    *,
+    bound_turn_id: str,
+    current_turn_id: str,
+    current_turn_started: bool,
+) -> bool:
+    return bool(bound_turn_id and current_turn_started and current_turn_id == bound_turn_id)
+
+
+def _assistant_replay_entry(normalized: dict[str, Any] | None, *, text: str, turn_id: str) -> dict[str, Any]:
+    entry = dict(normalized or {"role": "assistant", "text": text})
+    entry["turn_id"] = turn_id
+    return entry
+
+
 def _has_foreign_anchor(text: str, expected_marker: str, foreign_prefix: str) -> bool:
     expected = _anchor_id_from_marker(expected_marker, foreign_prefix)
     for line in str(text or "").splitlines():
@@ -208,6 +284,21 @@ def _has_expected_anchor(text: str, expected_marker: str, foreign_prefix: str) -
         if _anchor_id_from_marker(line.strip(), foreign_prefix) == expected:
             return True
     return False
+
+
+def _has_foreign_anchor_without_expected(text: str, expected_marker: str, foreign_prefix: str) -> bool:
+    expected = _anchor_id_from_marker(expected_marker, foreign_prefix)
+    found_foreign = False
+    found_expected = False
+    for line in str(text or "").splitlines():
+        found = _anchor_id_from_marker(line.strip(), foreign_prefix)
+        if not found:
+            continue
+        if found == expected:
+            found_expected = True
+        else:
+            found_foreign = True
+    return found_foreign and not found_expected
 
 
 def _anchor_id_from_marker(line: str, foreign_prefix: str) -> str:

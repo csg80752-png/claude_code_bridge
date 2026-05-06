@@ -114,6 +114,43 @@ def _terminal_entry(*, turn_id: str, last: str, ts: str = "2026-05-05T11:19:02.0
     }
 
 
+def _task_started_entry(*, turn_id: str, ts: str = "2026-05-05T11:18:59.000Z") -> dict:
+    return {
+        "type": "event_msg",
+        "timestamp": ts,
+        "payload": {"type": "task_started", "turn_id": turn_id},
+    }
+
+
+def _turn_context_entry(*, turn_id: str, ts: str = "2026-05-05T11:18:59.100Z") -> dict:
+    return {
+        "type": "turn_context",
+        "timestamp": ts,
+        "payload": {"turn_id": turn_id},
+    }
+
+
+def _response_item_user_entry(job_id: str, *, message: str | None = None) -> dict:
+    body = message if message is not None else f"CCB_REQ_ID: {job_id}\n\n[CCB_HEARTBEAT_TEST]"
+    return {
+        "type": "response_item",
+        "timestamp": "2026-05-05T11:19:00.000Z",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": body}],
+        },
+    }
+
+
+def _turnless_assistant_entry(text: str, *, ts: str = "2026-05-05T11:19:01.000Z") -> dict:
+    return {
+        "type": "event_msg",
+        "timestamp": ts,
+        "payload": {"type": "agent_message", "role": "assistant", "message": text},
+    }
+
+
 def _write_jsonl(path: Path, entries: list[dict]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for entry in entries:
@@ -165,6 +202,57 @@ def test_case01_successful_anchor_bound_replay(tmp_path):
     boundary = next(item for item in poll.items if item.kind is CompletionItemKind.TURN_BOUNDARY)
     assert boundary.payload["replay"] == "anchor_bound"
     assert boundary.payload["last_agent_message"] == "PONG_DIAG"
+
+
+def test_replay_accepts_current_codex_unkeyed_messages_inside_turn_context(tmp_path):
+    """Current Codex logs key the turn on task_started/turn_context and the
+    terminal event, while user and assistant message entries may be unkeyed."""
+    log_path = tmp_path / "session.jsonl"
+    _write_jsonl(
+        log_path,
+        [
+            _task_started_entry(turn_id="turn-live"),
+            _turn_context_entry(turn_id="turn-live"),
+            _response_item_user_entry("job_test"),
+            _user_anchor_entry("job_test"),
+            _turnless_assistant_entry("PONG_LIVE"),
+            _terminal_entry(turn_id="turn-live", last="PONG_LIVE"),
+        ],
+    )
+
+    result = replay_anchor_bound(log_path, request_anchor="job_test")
+
+    assert result.status == REPLAY_OK
+    assert result.turn_id == "turn-live"
+    assert [entry["text"] for entry in result.assistant_entries] == ["PONG_LIVE"]
+    assert result.terminal_entry is not None
+
+
+def test_replay_ignores_duplicate_anchor_payload_with_embedded_req_id(tmp_path):
+    """A single Codex user turn is logged as both response_item and event_msg.
+    If that payload contains another literal CCB_REQ_ID in the prompt body, it
+    is not a separate provider turn and must not be treated as a foreign anchor.
+    """
+    log_path = tmp_path / "session.jsonl"
+    body = "CCB_REQ_ID: job_test\n\nCCB_REQ_ID: statusline_fresh_agent2_after_model_restart\n\nhello"
+    _write_jsonl(
+        log_path,
+        [
+            _task_started_entry(turn_id="turn-live"),
+            _turn_context_entry(turn_id="turn-live"),
+            _response_item_user_entry("job_test", message=body),
+            _user_anchor_entry("job_test", message=body),
+            _turnless_assistant_entry("PONG_LIVE"),
+            _terminal_entry(turn_id="turn-live", last="PONG_LIVE"),
+        ],
+    )
+
+    result = replay_anchor_bound(log_path, request_anchor="job_test")
+
+    assert result.status == REPLAY_OK
+    assert result.turn_id == "turn-live"
+    assert [entry["text"] for entry in result.assistant_entries] == ["PONG_LIVE"]
+    assert result.terminal_entry is not None
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,11 @@ class _NoNewEntriesReader:
         return [], state
 
 
+class _DeadBackend:
+    def is_alive(self, _pane_id: str) -> bool:
+        return False
+
+
 def _submission(*, runtime_state: dict[str, object] | None = None) -> ProviderSubmission:
     return ProviderSubmission(
         job_id="job_exact",
@@ -113,6 +118,49 @@ def test_deferred_wedge_ticks_persist_until_third_empty_poll_replays(tmp_path, m
         CompletionItemKind.ASSISTANT_CHUNK,
         CompletionItemKind.TURN_BOUNDARY,
     ]
+
+
+def test_dead_pane_does_not_preempt_replay_eligible_wedge(tmp_path, monkeypatch) -> None:
+    log_path = tmp_path / "session.jsonl"
+    _write_jsonl(
+        log_path,
+        [
+            _user("job_exact", turn_id="turn-exact"),
+            _assistant("RECOVERED", turn_id="turn-exact"),
+            _terminal("RECOVERED", turn_id="turn-exact"),
+        ],
+    )
+    state = {"log_path": str(log_path), "offset": log_path.stat().st_size}
+    submission = _submission(
+        runtime_state={
+            "mode": "active",
+            "reader": _NoNewEntriesReader(),
+            "backend": _DeadBackend(),
+            "pane_id": "%dead",
+            "state": state,
+            "request_anchor": "job_exact",
+            "anchor_seen": True,
+            "requires_turn_id": True,
+            "bound_turn_contaminated": True,
+            "reply_buffer": "",
+            "consecutive_wedge_ticks": 2,
+        }
+    )
+
+    monkeypatch.setattr(
+        "provider_backends.codex.execution_runtime.polling_runtime.apply_session_rotation",
+        lambda submission, poll, new_session_path, now: None,
+    )
+
+    result = poll_submission(submission, now="2026-05-05T00:00:03Z")
+
+    assert result is not None
+    assert [item.kind for item in result.items] == [
+        CompletionItemKind.ASSISTANT_CHUNK,
+        CompletionItemKind.TURN_BOUNDARY,
+    ]
+    assert result.submission.reply == "RECOVERED"
+    assert result.submission.runtime_state["bound_turn_contaminated"] is False
 
 
 def test_anchor_scan_matches_exact_req_id_and_treats_prefixed_id_as_foreign(tmp_path) -> None:

@@ -76,3 +76,15 @@ def test_runtime_target_helpers_use_available_backend_methods() -> None:
     assert sent == [('%7', 'hello')]
     assert is_runtime_target_alive(backend, '%7') is True
     assert is_runtime_target_alive(backend, '%8') is False
+
+
+def test_runtime_target_helper_tolerates_legacy_send_text_without_extra_enter() -> None:
+    sent: list[tuple[str, str]] = []
+
+    class Backend:
+        def send_text(self, pane_id: str, text: str) -> None:
+            sent.append((pane_id, text))
+
+    send_prompt_to_runtime_target(Backend(), '%7', 'hello', extra_enter=True)
+
+    assert sent == [('%7', 'hello')]

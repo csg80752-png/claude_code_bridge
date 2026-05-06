@@ -27,10 +27,11 @@ def extract_event(entry: dict) -> tuple[str, str] | None:
 def base_entry(entry: dict) -> tuple[dict[str, Any], dict[str, Any]]:
     entry_type = str(entry.get("type") or "").strip()
     payload = normalized_payload(entry.get("payload"))
+    payload_type = str(payload.get("type") or ("turn_context" if entry_type == "turn_context" else "")).strip()
     return (
         {
             "entry_type": entry_type,
-            "payload_type": str(payload.get("type") or "").strip(),
+            "payload_type": payload_type,
             "timestamp": entry.get("timestamp"),
             "phase": payload.get("phase"),
             "turn_id": entry.get("turn_id") or payload.get("turn_id"),
@@ -51,6 +52,10 @@ def normalized_payload(payload: object) -> dict[str, Any]:
 def direct_entry(base: dict[str, Any], entry: dict, *, payload: dict[str, Any]) -> dict[str, Any] | None:
     entry_type = str(base["entry_type"])
     payload_type = str(base["payload_type"])
+    if payload_type == "task_started":
+        return meta_entry(base)
+    if entry_type == "turn_context" or payload_type == "turn_context":
+        return meta_entry(base)
     if entry_type == "response_item" and payload_type == "message":
         return response_message_entry(base, entry, role=payload_role(payload))
     if entry_type != "event_msg":
@@ -118,6 +123,10 @@ def entry_with_text(base: dict[str, Any], *, role: str, text: str) -> dict[str, 
 
 def system_entry(base: dict[str, Any], *, text: str, reason: object) -> dict[str, Any]:
     return {**base, "role": "system", "text": text, "reason": reason}
+
+
+def meta_entry(base: dict[str, Any]) -> dict[str, Any]:
+    return {**base, "role": "meta", "text": ""}
 
 
 __all__ = ["extract_entry", "extract_event"]
