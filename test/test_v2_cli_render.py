@@ -402,6 +402,9 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
             'state': 'mounted',
             'health': 'healthy',
             'generation': 1,
+            'pid': 123,
+            'daemon_install_path': '/tmp/install',
+            'daemon_install_matches_current': True,
             'last_heartbeat_at': '2026-03-18T00:00:00Z',
             'pid_alive': True,
             'socket_connectable': True,
@@ -485,6 +488,9 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
     assert 'provider_home_sync_enabled: claude' in doctor_lines
     assert 'requirement_provider: name=codex executable=codex available=True path=/usr/bin/codex' in doctor_lines
     assert 'ccbd_state: mounted' in doctor_lines
+    assert 'ccbd_pid: 123' in doctor_lines
+    assert 'ccbd_daemon_install_path: /tmp/install' in doctor_lines
+    assert 'ccbd_daemon_install_matches_current: True' in doctor_lines
     assert 'ccbd_namespace_tmux_session_name: ccb-repo' in doctor_lines
     assert 'agent: name=codex health=healthy provider=codex completion=protocol_turn' in doctor_lines
     assert (
