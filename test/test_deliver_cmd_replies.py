@@ -15,6 +15,7 @@ deterministically.
 
 from __future__ import annotations
 
+import collections
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
@@ -826,6 +827,77 @@ def test_lru_cache_eviction_keeps_user_visible_delivery_at_least_once(_stub_pane
 
     preparation_service._deliver_cmd_replies(dispatcher)
     assert len(_stub_pane_and_backend.injected) == 2
+    assert kernel.calls == []
+
+
+def test_durable_cache_hit_for_evicted_old_reply_does_not_block_fresh_reply(
+    monkeypatch, tmp_path
+):
+    """An old unacked cmd reply may fall out of the small in-memory LRU while
+    remaining in the durable delivered-cache file. The sweep must treat the
+    durable hit as already surfaced and continue to newer replies; otherwise
+    a failed re-inject of the old reply can permanently hide fresh replies."""
+
+    old_head = _make_head(payload_ref='reply:rep-old-surfaced')
+    old_head.inbound_event_id = 'evt-old-surfaced'
+    fresh_head = _make_head(payload_ref='reply:rep-fresh-visible')
+    fresh_head.inbound_event_id = 'evt-fresh-visible'
+    old_reply = _make_reply(reply_id='rep-old-surfaced', body='old delivered body')
+    fresh_reply = _make_reply(reply_id='rep-fresh-visible', body='fresh visible body')
+
+    class _MultiKernel(_RecordingKernel):
+        def __init__(self):
+            super().__init__(old_head)
+            self.events = [old_head, fresh_head]
+
+        def pending_events(self, agent_name: str, *, event_type=None):
+            return tuple(
+                event for event in self.events
+                if event.status is InboundEventStatus.QUEUED
+                and (event_type is None or event.event_type is event_type)
+            )
+
+        def head_pending_event(self, agent_name: str):
+            pending = self.pending_events(agent_name)
+            return pending[0] if pending else None
+
+    class _SelectiveBackend(_RecordingBackend):
+        def send_text_to_pane(self, pane_id: str, text: str, **kwargs):
+            if 'old delivered body' in text:
+                raise RuntimeError('old pane replay failed')
+            super().send_text_to_pane(pane_id, text, **kwargs)
+
+    _write_cache_records(
+        tmp_path,
+        [_cache_record('rep-old-surfaced', '2026-04-23T23:59:00Z')],
+    )
+    kernel = _MultiKernel()
+    reply_store = SimpleNamespace(
+        get_latest=lambda rid: {
+            old_reply.reply_id: old_reply,
+            fresh_reply.reply_id: fresh_reply,
+        }.get(rid)
+    )
+    backend = _SelectiveBackend()
+    dispatcher = SimpleNamespace(
+        _message_bureau_control=SimpleNamespace(
+            _mailbox_kernel=kernel,
+            _reply_store=reply_store,
+            _attempt_store=SimpleNamespace(get_latest=lambda aid: SimpleNamespace(job_id='job-1')),
+        ),
+        _layout=SimpleNamespace(project_root=tmp_path),
+        _clock=lambda: '2026-04-24T00:00:00Z',
+        _cmd_injected_replies=collections.OrderedDict(),
+        get_job=lambda jid: SimpleNamespace(job_id='job-1', request=SimpleNamespace(task_id='task-1')),
+    )
+    monkeypatch.setattr(preparation_service, '_discover_cmd_pane_id', lambda d: '%1')
+    monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend)
+    _patch_claude_foreground(monkeypatch)
+
+    preparation_service._deliver_cmd_replies(dispatcher)
+
+    assert len(backend.injected) == 1
+    assert 'fresh visible body' in backend.injected[0][1]
     assert kernel.calls == []
 
 

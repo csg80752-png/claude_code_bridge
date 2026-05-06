@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import os
 import subprocess
 import sys
@@ -34,29 +35,47 @@ def spawn_ccbd_process(
         stderr=stderr_log,
         start_new_session=True,
     )
-    _wait_for_ccbd_ready(process=process, socket_path=socket_path, timeout_s=timeout_s)
+    _wait_for_ccbd_ready(
+        process=process,
+        socket_path=socket_path,
+        lease_path=ccbd_dir / 'lease.json',
+        timeout_s=timeout_s,
+    )
 
 
-def _wait_for_ccbd_ready(*, process: subprocess.Popen[bytes], socket_path: Path, timeout_s: float) -> None:
+def _wait_for_ccbd_ready(
+    *,
+    process: subprocess.Popen[bytes],
+    socket_path: Path,
+    lease_path: Path,
+    timeout_s: float,
+) -> None:
     deadline = time.time() + max(0.0, float(timeout_s))
     last_error: str | None = None
     while time.time() < deadline:
         if socket_path.exists():
             try:
                 CcbdClient(socket_path, timeout_s=0.2).ping('ccbd')
-                return
+                if _lease_belongs_to_process(lease_path=lease_path, process_pid=process.pid):
+                    return
+                last_error = f'ccbd socket is served by another process, expected pid {process.pid}'
             except CcbdClientError as exc:
                 last_error = str(exc)
         if process.poll() is not None:
-            if socket_path.exists():
-                try:
-                    CcbdClient(socket_path, timeout_s=0.2).ping('ccbd')
-                    return
-                except CcbdClientError as exc:
-                    last_error = str(exc)
             raise CcbdProcessError(f'ccbd exited before ready with code {process.returncode}')
         time.sleep(0.05)
     raise CcbdProcessError(last_error or 'timed out waiting for ccbd to become ready')
+
+
+def _lease_belongs_to_process(*, lease_path: Path, process_pid: int) -> bool:
+    try:
+        record = json.loads(lease_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return False
+    try:
+        return int(record.get('ccbd_pid') or 0) == int(process_pid)
+    except (TypeError, ValueError):
+        return False
 
 
 def _ccbd_env(*, keeper_pid: int | None) -> dict[str, str]:

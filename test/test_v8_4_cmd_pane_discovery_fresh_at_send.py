@@ -667,6 +667,47 @@ def test_send_to_replaced_pane_uses_within_sweep_retry(monkeypatch):
     assert kernel.calls == []
 
 
+def test_lookup_prefers_workspace_cmd_metadata_over_ctl_window_shell(monkeypatch, tmp_path):
+    """v8.5: the operator's Claude pane is the cmd pane and is tagged
+    cmd/cmd in the managed workspace window. Discovery must choose that
+    metadata pane over the inert __ccb_ctl shell supervisor pane."""
+
+    project_id = "project-1"
+    namespace = SimpleNamespace(tmux_socket_path="/tmp/ccb.sock")
+
+    class _Controller:
+        def __init__(self, layout, resolved_project_id):
+            assert resolved_project_id == project_id
+            self._backend_factory = object()
+
+        def load(self):
+            return namespace
+
+    class _Backend:
+        def _tmux_run(self, args, *, capture, check):
+            assert args[:3] == ["list-panes", "-a", "-F"]
+            return SimpleNamespace(
+                stdout=(
+                    "%2\tcmd\tcmd\tproject-1\tccb\tclaude\n"
+                    "%1\t\t\tproject-1\t__ccb_ctl\tsh\n"
+                    "%3\tagent\tagent3\tproject-1\tccb\tclaude\n"
+                )
+            )
+
+    monkeypatch.setattr(
+        "ccbd.services.project_namespace.ProjectNamespaceController",
+        _Controller,
+    )
+    monkeypatch.setattr(
+        "ccbd.services.project_namespace_runtime.backend.build_backend",
+        lambda _factory, *, socket_path: _Backend(),
+    )
+    dispatcher = SimpleNamespace(_runtime_service=SimpleNamespace(_project_id=project_id))
+    layout = SimpleNamespace(project_root=tmp_path)
+
+    assert preparation_service._lookup_cmd_pane_id(dispatcher, layout) == "%2"
+
+
 # --------------------------------------------------------------------------- #
 # 5) Cache no-duplicate (existing protection preserved)
 # --------------------------------------------------------------------------- #
