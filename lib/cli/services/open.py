@@ -20,8 +20,15 @@ _UNMOUNTED_ERRORS = frozenset(
         'project ccbd is not mounted; run `ccb [agents...]` first',
     }
 )
+_TRANSIENT_CONNECT_ERROR_FRAGMENTS = (
+    'socket_unreachable',
+    'timed out',
+    'Resource temporarily unavailable',
+)
 _OPEN_RECOVERY_WAIT_S = 2.0
 _OPEN_RECOVERY_POLL_S = 0.05
+_OPEN_ATTACH_WAIT_S = 5.0
+_OPEN_ATTACH_POLL_S = 0.1
 
 
 @dataclass(frozen=True)
@@ -39,33 +46,20 @@ def open_project(context: CliContext, command: ParsedOpenCommand) -> OpenSummary
     client = handle.client
     if client is None:
         raise RuntimeError('project ccbd is mounted without a client connection')
-    payload = client.ping('ccbd')
-    tmux_socket_path = str(payload.get('namespace_tmux_socket_path') or '').strip()
-    tmux_session_name = str(payload.get('namespace_tmux_session_name') or '').strip()
-    workspace_window_name = str(payload.get('namespace_workspace_window_name') or '').strip()
-    ui_attachable = bool(payload.get('namespace_ui_attachable'))
-    if not tmux_socket_path or not tmux_session_name or not ui_attachable:
-        raise RuntimeError('project namespace is not attachable; run `ccb` first')
+    payload = _wait_for_attachable_namespace(client)
+    tmux_socket_path, tmux_session_name, workspace_window_name = _attach_payload_fields(payload)
     env = dict(os.environ)
     env.pop('TMUX', None)
     env.pop('TMUX_PANE', None)
-    if not _tmux_has_session(tmux_socket_path, tmux_session_name, env=env):
+    if not _wait_for_tmux_session(tmux_socket_path, tmux_session_name, env=env):
         raise RuntimeError('project namespace session is missing; run `ccb` first')
-    if workspace_window_name and not _tmux_select_window(
+    if workspace_window_name and not _wait_for_tmux_window(
         tmux_socket_path,
         f'{tmux_session_name}:{workspace_window_name}',
         env=env,
     ):
         raise RuntimeError('project namespace workspace window is missing; run `ccb` first')
-    attach = subprocess.run(
-        ['tmux', '-S', tmux_socket_path, 'attach-session', '-t', tmux_session_name],
-        check=False,
-        env=env,
-    )
-    if attach.returncode != 0:
-        if not _tmux_has_session(tmux_socket_path, tmux_session_name, env=env):
-            raise RuntimeError('project namespace session exited before attach completed; run `ccb` first')
-        raise RuntimeError('failed to attach project namespace session')
+    _attach_tmux_session(tmux_socket_path, tmux_session_name, env=env)
     return OpenSummary(
         project_id=context.project.project_id,
         tmux_socket_path=tmux_socket_path,
@@ -87,9 +81,72 @@ def _connect_attachable_daemon(context: CliContext):
                 retryable = True
             elif observed_config_drift and message in _UNMOUNTED_ERRORS:
                 retryable = True
+            elif _is_transient_open_connect_error(message):
+                retryable = True
             if not retryable or time.time() >= deadline:
                 raise
             time.sleep(_OPEN_RECOVERY_POLL_S)
+
+
+def _is_transient_open_connect_error(message: str) -> bool:
+    return any(fragment in message for fragment in _TRANSIENT_CONNECT_ERROR_FRAGMENTS)
+
+
+def _wait_for_attachable_namespace(client) -> dict:
+    deadline = time.time() + _OPEN_ATTACH_WAIT_S
+    while True:
+        payload = client.ping('ccbd')
+        tmux_socket_path, tmux_session_name, _workspace_window_name = _attach_payload_fields(payload)
+        if tmux_socket_path and tmux_session_name and bool(payload.get('namespace_ui_attachable')):
+            return payload
+        if time.time() >= deadline:
+            raise RuntimeError('project namespace is not attachable; run `ccb` first')
+        time.sleep(_OPEN_ATTACH_POLL_S)
+
+
+def _attach_payload_fields(payload: dict) -> tuple[str, str, str]:
+    return (
+        str(payload.get('namespace_tmux_socket_path') or '').strip(),
+        str(payload.get('namespace_tmux_session_name') or '').strip(),
+        str(payload.get('namespace_workspace_window_name') or '').strip(),
+    )
+
+
+def _wait_for_tmux_session(tmux_socket_path: str, tmux_session_name: str, *, env: dict[str, str]) -> bool:
+    deadline = time.time() + _OPEN_ATTACH_WAIT_S
+    while True:
+        if _tmux_has_session(tmux_socket_path, tmux_session_name, env=env):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(_OPEN_ATTACH_POLL_S)
+
+
+def _wait_for_tmux_window(tmux_socket_path: str, target: str, *, env: dict[str, str]) -> bool:
+    deadline = time.time() + _OPEN_ATTACH_WAIT_S
+    while True:
+        if _tmux_select_window(tmux_socket_path, target, env=env):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(_OPEN_ATTACH_POLL_S)
+
+
+def _attach_tmux_session(tmux_socket_path: str, tmux_session_name: str, *, env: dict[str, str]) -> None:
+    deadline = time.time() + _OPEN_ATTACH_WAIT_S
+    while True:
+        attach = subprocess.run(
+            ['tmux', '-S', tmux_socket_path, 'attach-session', '-t', tmux_session_name],
+            check=False,
+            env=env,
+        )
+        if attach.returncode == 0:
+            return
+        if not _tmux_has_session(tmux_socket_path, tmux_session_name, env=env):
+            raise RuntimeError('project namespace session exited before attach completed; run `ccb` first')
+        if time.time() >= deadline:
+            raise RuntimeError('failed to attach project namespace session')
+        time.sleep(_OPEN_ATTACH_POLL_S)
 
 
 def _tmux_has_session(tmux_socket_path: str, tmux_session_name: str, *, env: dict[str, str]) -> bool:
