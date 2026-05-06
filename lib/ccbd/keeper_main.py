@@ -10,6 +10,7 @@ if str(_LIB_ROOT) not in sys.path:
     sys.path.insert(0, str(_LIB_ROOT))
 
 from ccbd.keeper import ProjectKeeper
+from ccbd.logging_runtime import configure_ccbd_logging
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -18,6 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     app = ProjectKeeper(args.project)
+    configure_ccbd_logging(app.paths.ccbd_dir / 'keeper.runtime.log')
     try:
         return app.run_forever()
     except KeyboardInterrupt:

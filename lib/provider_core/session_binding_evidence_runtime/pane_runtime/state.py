@@ -35,20 +35,25 @@ def _tmux_pane_state(
         return 'foreign'
     if not backend_pane_alive_fn(backend, pane_id):
         return 'dead'
-    if _tmux_pane_is_shell(backend, pane_id):
+    shell_state = _tmux_pane_shell_state(backend, pane_id)
+    if shell_state == 'unknown':
+        return 'unknown'
+    if shell_state == 'shell':
         return 'shell'
     return 'alive'
 
 
-def _tmux_pane_is_shell(backend, pane_id: str) -> bool:
+def _tmux_pane_shell_state(backend, pane_id: str) -> str:
     command_reader = getattr(backend, 'pane_current_command', None)
     if not callable(command_reader):
-        return False
+        return 'not_shell'
     try:
         current_command = str(command_reader(pane_id) or '').strip().lower()
     except Exception:
-        return False
-    return current_command in {'sh', 'bash', 'zsh', 'fish', 'dash'}
+        return 'unknown'
+    if not current_command:
+        return 'unknown'
+    return 'shell' if current_command in {'sh', 'bash', 'zsh', 'fish', 'dash'} else 'not_shell'
 
 
 def _generic_pane_state(backend, pane_id: str, *, backend_pane_alive_fn: Callable[[object, str], bool]) -> str:

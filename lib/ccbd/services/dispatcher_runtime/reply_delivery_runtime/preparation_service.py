@@ -145,6 +145,11 @@ def _deliver_cmd_replies(dispatcher):
     return _deliver_cmd_replies_impl(dispatcher)
 
 
+def _send_to_cmd_pane(backend, pane_id: str, body: str) -> None:
+    # Claude Code's bracketed paste path needs an explicit submit Enter.
+    backend.send_text_to_pane(pane_id, body, extra_enter=True)
+
+
 def _deliver_cmd_requests(dispatcher) -> None:
     control = getattr(dispatcher, '_message_bureau_control', None)
     kernel = getattr(control, '_mailbox_kernel', None) if control is not None else None
@@ -203,7 +208,7 @@ def _deliver_cmd_request(dispatcher, kernel, head, job) -> None:
 
     body = f'CCB_REQ_ID: {job.job_id}\n\n{job.request.body}'
     try:
-        backend.send_text_to_pane(pane_id, body, extra_enter=True)
+        _send_to_cmd_pane(backend, pane_id, body)
     except Exception:
         _logger.debug('cmd request pane injection failed', exc_info=True)
         return
@@ -595,7 +600,7 @@ def _deliver_cmd_replies_impl(dispatcher):
 
         send_succeeded = False
         try:
-            backend.send_text_to_pane(cmd_pane_id, plan.body, extra_enter=True)
+            _send_to_cmd_pane(backend, cmd_pane_id, plan.body)
             send_succeeded = True
         except Exception:
             _logger.debug(
@@ -623,7 +628,7 @@ def _deliver_cmd_replies_impl(dispatcher):
                 )
             if retry_pane_id is not None and retry_backend is not None and retry_ready:
                 try:
-                    retry_backend.send_text_to_pane(retry_pane_id, plan.body, extra_enter=True)
+                    _send_to_cmd_pane(retry_backend, retry_pane_id, plan.body)
                     send_succeeded = True
                     cmd_pane_id = retry_pane_id
                     backend = retry_backend

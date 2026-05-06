@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import logging
 
 from agents.models import AgentState
 from ccbd.api_models import JobRecord, JobStatus, TargetKind
@@ -13,6 +14,9 @@ from ..reply_delivery import is_reply_delivery_job
 from ..runtime_state import sync_runtime
 from ..reply_delivery_runtime.start_completion import complete_reply_delivery_after_start
 from .models import QueuedTargetSlot
+
+
+_logger = logging.getLogger(__name__)
 
 
 def write_running_snapshot(dispatcher, running: JobRecord, *, started_at: str) -> None:
@@ -57,6 +61,7 @@ def start_running_job(
         try:
             submission = dispatcher._execution_service.start(running, runtime_context=runtime_context)
         except Exception as exc:
+            _logger.exception('provider start failed for job %s', running.job_id)
             return dispatcher.complete(
                 running.job_id,
                 provider_start_failed_decision(running, exc, finished_at=dispatcher._clock()),

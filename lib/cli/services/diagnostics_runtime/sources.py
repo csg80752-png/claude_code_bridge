@@ -31,6 +31,7 @@ def project_root_sources(context) -> tuple[tuple[str, Path], ...]:
         ('ccbd-log', context.paths.ccbd_dir / 'ccbd.runtime.log'),
         ('ccbd-log', context.paths.ccbd_dir / 'keeper.stdout.log'),
         ('ccbd-log', context.paths.ccbd_dir / 'keeper.stderr.log'),
+        ('ccbd-log', context.paths.ccbd_dir / 'keeper.runtime.log'),
     ]
 
     items.extend(iter_dir_files('ccbd-execution', context.paths.ccbd_executions_dir, suffixes={'.json'}))
