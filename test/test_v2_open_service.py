@@ -288,6 +288,171 @@ def test_open_project_waits_for_namespace_to_become_attachable(tmp_path: Path, m
     assert calls[-1] == ['tmux', '-S', str(context.paths.ccbd_tmux_socket_path), 'attach-session', '-t', context.paths.ccbd_tmux_session_name]
 
 
+def test_open_project_retries_transient_ping_errors_while_waiting_for_attachable_namespace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / 'repo-open-ping-wait'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedOpenCommand(project=None)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def ping(self, target: str) -> dict[str, object]:
+            assert target == 'ccbd'
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError('[Errno 11] Resource temporarily unavailable')
+            if self.calls == 2:
+                raise RuntimeError('timed out')
+            return {
+                'namespace_tmux_socket_path': str(context.paths.ccbd_tmux_socket_path),
+                'namespace_tmux_session_name': context.paths.ccbd_tmux_session_name,
+                'namespace_workspace_window_name': context.paths.ccbd_tmux_workspace_window_name,
+                'namespace_ui_attachable': True,
+            }
+
+    client = _FakeClient()
+    calls: list[list[str]] = []
+
+    def _run(args, **kwargs):
+        del kwargs
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    monkeypatch.setattr('cli.services.open.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr(
+        'cli.services.open.connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=client),
+    )
+    monkeypatch.setattr('cli.services.open.subprocess.run', _run)
+    monkeypatch.setattr('cli.services.open.time.sleep', lambda seconds: None)
+
+    summary = open_project(context, command)
+
+    assert summary.tmux_session_name == context.paths.ccbd_tmux_session_name
+    assert client.calls == 3
+    assert calls[-1] == ['tmux', '-S', str(context.paths.ccbd_tmux_socket_path), 'attach-session', '-t', context.paths.ccbd_tmux_session_name]
+
+
+def test_open_project_propagates_non_transient_ping_error(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-open-ping-fatal'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedOpenCommand(project=None)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+
+    class _FakeClient:
+        def ping(self, target: str) -> dict[str, object]:
+            assert target == 'ccbd'
+            raise RuntimeError('invalid ping payload')
+
+    subprocess_calls: list[list[str]] = []
+
+    def _run(args, **kwargs):
+        del kwargs
+        subprocess_calls.append(list(args))
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    monkeypatch.setattr('cli.services.open.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr(
+        'cli.services.open.connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=_FakeClient()),
+    )
+    monkeypatch.setattr('cli.services.open.subprocess.run', _run)
+
+    with pytest.raises(RuntimeError, match='invalid ping payload'):
+        open_project(context, command)
+
+    assert subprocess_calls == []
+
+
+def test_open_project_reports_last_transient_ping_error_on_attachable_timeout(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-open-ping-timeout'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedOpenCommand(project=None)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+
+    class _FakeClient:
+        def ping(self, target: str) -> dict[str, object]:
+            assert target == 'ccbd'
+            raise RuntimeError('[Errno 11] Resource temporarily unavailable')
+
+    current_time = 0.0
+
+    def _time() -> float:
+        return current_time
+
+    def _sleep(seconds: float) -> None:
+        nonlocal current_time
+        current_time += seconds
+
+    monkeypatch.setattr('cli.services.open.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr(
+        'cli.services.open.connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=_FakeClient()),
+    )
+    monkeypatch.setattr('cli.services.open.time.time', _time)
+    monkeypatch.setattr('cli.services.open.time.sleep', _sleep)
+
+    with pytest.raises(RuntimeError, match='last transient daemon error: .*Resource temporarily unavailable'):
+        open_project(context, command)
+
+
+def test_open_project_clears_transient_ping_error_after_successful_not_attachable_ping(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / 'repo-open-ping-cleared'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedOpenCommand(project=None)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def ping(self, target: str) -> dict[str, object]:
+            assert target == 'ccbd'
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError('[Errno 11] Resource temporarily unavailable')
+            return {
+                'namespace_tmux_socket_path': str(context.paths.ccbd_tmux_socket_path),
+                'namespace_tmux_session_name': context.paths.ccbd_tmux_session_name,
+                'namespace_workspace_window_name': context.paths.ccbd_tmux_workspace_window_name,
+                'namespace_ui_attachable': False,
+            }
+
+    current_time = 0.0
+
+    def _time() -> float:
+        return current_time
+
+    def _sleep(seconds: float) -> None:
+        nonlocal current_time
+        current_time += seconds
+
+    monkeypatch.setattr('cli.services.open.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr(
+        'cli.services.open.connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=_FakeClient()),
+    )
+    monkeypatch.setattr('cli.services.open.time.time', _time)
+    monkeypatch.setattr('cli.services.open.time.sleep', _sleep)
+
+    with pytest.raises(RuntimeError, match='^project namespace is not attachable; run `ccb` first$'):
+        open_project(context, command)
+
+
 def test_open_project_retries_transient_missing_tmux_session_before_attach(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / 'repo-open-session-wait'
     (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
@@ -423,3 +588,49 @@ def test_open_project_retries_transient_attach_failure_when_session_survives(tmp
 
     assert summary.tmux_session_name == context.paths.ccbd_tmux_session_name
     assert attach_calls == 2
+
+
+def test_open_project_attaches_with_inherited_stdio(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-open-attach-stdio'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedOpenCommand(project=None)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+
+    class _FakeClient:
+        def ping(self, target: str) -> dict[str, object]:
+            assert target == 'ccbd'
+            return {
+                'namespace_tmux_socket_path': str(context.paths.ccbd_tmux_socket_path),
+                'namespace_tmux_session_name': context.paths.ccbd_tmux_session_name,
+                'namespace_workspace_window_name': context.paths.ccbd_tmux_workspace_window_name,
+                'namespace_ui_attachable': True,
+            }
+
+    attach_kwargs: list[dict[str, object]] = []
+
+    def _run(args, **kwargs):
+        call = list(args)
+        if call[3] == 'attach-session':
+            attach_kwargs.append(dict(kwargs))
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    monkeypatch.setattr('cli.services.open.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr(
+        'cli.services.open.connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=_FakeClient()),
+    )
+    monkeypatch.setattr('cli.services.open.subprocess.run', _run)
+    monkeypatch.setattr('cli.services.open.time.sleep', lambda seconds: None)
+
+    summary = open_project(context, command)
+
+    assert summary.tmux_session_name == context.paths.ccbd_tmux_session_name
+    assert len(attach_kwargs) == 1
+    assert attach_kwargs[0]['check'] is False
+    assert 'env' in attach_kwargs[0]
+    assert 'capture_output' not in attach_kwargs[0]
+    assert 'stdout' not in attach_kwargs[0]
+    assert 'stderr' not in attach_kwargs[0]
+    assert 'text' not in attach_kwargs[0]
