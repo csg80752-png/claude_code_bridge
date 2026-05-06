@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ccbd.api_models import JobRecord
+from completion.models import CompletionConfidence, CompletionDecision, CompletionItemKind, CompletionStatus
 
 from provider_execution.base import ProviderRuntimeContext
 
@@ -51,9 +52,10 @@ def recover_pending_items(service, job_id: str, persisted) -> tuple[list, object
 
 
 def terminal_pending_result(job: JobRecord, persisted, pending_items: list) -> ExecutionRestoreResult | None:
-    if persisted.pending_decision is None or pending_items:
+    decision = persisted.pending_decision or terminal_decision_from_applied_state(persisted)
+    if decision is None or pending_items:
         return None
-    return terminal_pending_restore(job, persisted)
+    return terminal_pending_restore(job, persisted, decision=decision)
 
 
 def resume_or_result(adapter, service, job: JobRecord, persisted, pending_items: list, restored_context):
@@ -140,14 +142,82 @@ def abandon_restore(
     )
 
 
-def terminal_pending_restore(job: JobRecord, persisted) -> ExecutionRestoreResult:
+def terminal_pending_restore(job: JobRecord, persisted, *, decision) -> ExecutionRestoreResult:
     return result(
         job,
         status='terminal_pending',
-        reason='terminal_decision_recovered',
+        reason='terminal_decision_recovered' if persisted.pending_decision is not None else 'terminal_state_recovered',
         resume_capable=persisted.resume_capable,
-        decision=persisted.pending_decision,
+        decision=decision,
     )
+
+
+def terminal_decision_from_applied_state(persisted) -> CompletionDecision | None:
+    submission = persisted.submission
+    runtime_state = dict(getattr(submission, 'runtime_state', {}) or {})
+    if not bool(runtime_state.get('reached_terminal')):
+        return None
+    reply = str(getattr(submission, 'reply', '') or '').strip()
+    if not reply:
+        return None
+    terminal_evidence = _terminal_evidence_from_items(getattr(persisted, 'pending_items', ()) or ())
+    status = terminal_evidence[0] if terminal_evidence is not None else CompletionStatus.COMPLETED
+    reason = terminal_evidence[1] if terminal_evidence is not None else 'terminal_state_recovered'
+    return CompletionDecision(
+        terminal=True,
+        status=status,
+        reason=reason,
+        confidence=CompletionConfidence.OBSERVED,
+        reply=reply,
+        anchor_seen=bool(runtime_state.get('anchor_seen')),
+        reply_started=bool(runtime_state.get('reply_started')) or bool(reply),
+        reply_stable=bool(runtime_state.get('reply_stable')) or bool(runtime_state.get('reached_terminal')),
+        provider_turn_ref=_provider_turn_ref(runtime_state),
+        source_cursor=None,
+        finished_at=str(getattr(persisted, 'persisted_at', '') or ''),
+        diagnostics={
+            'restore_kind': 'applied_terminal_state',
+            'pending_items_count': len(getattr(persisted, 'pending_items', ()) or ()),
+            'applied_event_seqs_count': len(getattr(persisted, 'applied_event_seqs', ()) or ()),
+        },
+    )
+
+
+def _terminal_evidence_from_items(items) -> tuple[CompletionStatus, str] | None:
+    for item in reversed(tuple(items)):
+        kind = getattr(item, 'kind', None)
+        payload = dict(getattr(item, 'payload', {}) or {})
+        if kind is CompletionItemKind.TURN_ABORTED:
+            return _status_from_payload(payload, default=CompletionStatus.FAILED), _reason_from_payload(payload, 'turn_aborted')
+        if kind is CompletionItemKind.CANCEL_INFO:
+            return CompletionStatus.CANCELLED, _reason_from_payload(payload, 'cancelled')
+        if kind is CompletionItemKind.ERROR or kind is CompletionItemKind.PANE_DEAD:
+            return CompletionStatus.FAILED, _reason_from_payload(payload, 'error')
+        if kind is CompletionItemKind.TURN_BOUNDARY or kind is CompletionItemKind.RESULT:
+            return _status_from_payload(payload, default=CompletionStatus.COMPLETED), _reason_from_payload(payload, 'task_complete')
+    return None
+
+
+def _status_from_payload(payload: dict[str, object], *, default: CompletionStatus) -> CompletionStatus:
+    raw = str(payload.get('status') or '').strip().lower()
+    if raw:
+        try:
+            return CompletionStatus(raw)
+        except ValueError:
+            pass
+    return default
+
+
+def _reason_from_payload(payload: dict[str, object], default: str) -> str:
+    return str(payload.get('reason') or default).strip() or default
+
+
+def _provider_turn_ref(runtime_state: dict[str, object]) -> str | None:
+    for key in ('bound_turn_id', 'provider_turn_ref', 'turn_id'):
+        value = str(runtime_state.get(key) or '').strip()
+        if value:
+            return value
+    return None
 
 
 def resume_submission(adapter, service, job: JobRecord, persisted, restored_context):
@@ -190,4 +260,5 @@ __all__ = [
     'persist_restored_submission',
     'restored_result',
     'terminal_pending_result',
+    'terminal_decision_from_applied_state',
 ]

@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Mapping
 
-from .kill_runtime.daemons import terminate_provider_daemon as _terminate_provider_daemon_impl
+from .kill_runtime.daemons import (
+    kill_project_ccbd_daemons as _kill_project_ccbd_daemons_impl,
+    terminate_provider_daemon as _terminate_provider_daemon_impl,
+)
 from .kill_runtime.processes import kill_pid as _kill_pid_impl
 from .kill_runtime.sessions import terminate_provider_session as _terminate_provider_session_impl
 from .kill_runtime.zombies import (
@@ -28,6 +31,10 @@ def kill_pid(pid: int, *, force: bool = False) -> bool:
     return _kill_pid_impl(pid, force=force)
 
 
+def kill_project_ccbd_daemons(project_root: Path) -> int:
+    return _kill_project_ccbd_daemons_impl(project_root=project_root)
+
+
 def cmd_kill(
     args,
     *,
@@ -45,6 +52,7 @@ def cmd_kill(
     force = getattr(args, "force", False)
     if force:
         yes = getattr(args, "yes", False)
+        kill_project_ccbd_daemons(cwd)
         return kill_global_zombies(yes=yes, is_pid_alive=is_pid_alive)
 
     providers = parse_providers(list(args.providers or ["codex", "gemini", "opencode", "claude", "droid"]))
@@ -108,5 +116,6 @@ __all__ = [
     "cmd_kill",
     "find_all_zombie_sessions",
     "kill_global_zombies",
+    "kill_project_ccbd_daemons",
     "kill_pid",
 ]

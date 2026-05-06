@@ -46,15 +46,20 @@ def _decision(*, reply: str = "done") -> CompletionDecision:
     )
 
 
-def _item(seq: int = 1) -> CompletionItem:
+def _item(
+    seq: int = 1,
+    *,
+    kind: CompletionItemKind = CompletionItemKind.RESULT,
+    payload: dict[str, object] | None = None,
+) -> CompletionItem:
     return CompletionItem(
-        kind=CompletionItemKind.RESULT,
+        kind=kind,
         timestamp="2026-04-06T00:00:01Z",
         cursor=CompletionCursor(source_kind=CompletionSourceKind.PROTOCOL_EVENT_STREAM, event_seq=seq),
         provider="fake",
         agent_name="agent1",
         req_id="job_1",
-        payload={"text": "done"},
+        payload=payload if payload is not None else {"text": "done"},
     )
 
 
@@ -138,6 +143,109 @@ def test_restore_submission_returns_terminal_pending_without_resume() -> None:
     assert result.status == "terminal_pending"
     assert result.reason == "terminal_decision_recovered"
     assert result.decision is persisted.pending_decision
+
+
+def test_restore_submission_promotes_applied_terminal_state_without_pending_decision() -> None:
+    submission = _submission(provider="fake")
+    submission = ProviderSubmission(
+        **{
+            **submission.__dict__,
+            "reply": "already surfaced reply",
+            "runtime_state": {
+                "reached_terminal": True,
+                "anchor_seen": True,
+                "reply_started": True,
+                "reply_stable": True,
+                "bound_turn_id": "turn-1",
+            },
+        }
+    )
+    persisted = PersistedExecutionState(
+        submission=submission,
+        runtime_context=_runtime_context(),
+        resume_capable=False,
+        persisted_at="2026-04-06T00:00:02Z",
+        pending_decision=None,
+        pending_items=(_item(seq=1),),
+        applied_event_seqs=(1,),
+    )
+    state_store = SimpleNamespace(load=lambda job_id: persisted, remove=lambda job_id: None)
+    service = SimpleNamespace(
+        _active={},
+        _state_store=state_store,
+        _registry={"fake": SimpleNamespace()},
+        _pending_replays={},
+        _runtime_contexts={},
+        _clock=lambda: "2026-04-06T00:00:03Z",
+    )
+    job = SimpleNamespace(job_id="job_1", agent_name="agent1", provider="fake")
+
+    result = restore_submission(service, job)
+
+    assert result.status == "terminal_pending"
+    assert result.reason == "terminal_state_recovered"
+    assert result.decision is not None
+    assert result.decision.terminal is True
+    assert result.decision.status is CompletionStatus.COMPLETED
+    assert result.decision.reply == "already surfaced reply"
+    assert result.decision.provider_turn_ref == "turn-1"
+
+
+def test_restore_submission_preserves_applied_terminal_failure_status() -> None:
+    submission = _submission(provider="fake")
+    submission = ProviderSubmission(
+        **{
+            **submission.__dict__,
+            "reply": "operation failed",
+            "runtime_state": {
+                "reached_terminal": True,
+                "anchor_seen": True,
+                "reply_started": True,
+                "reply_stable": True,
+                "bound_turn_id": "turn-failed",
+            },
+        }
+    )
+    persisted = PersistedExecutionState(
+        submission=submission,
+        runtime_context=_runtime_context(),
+        resume_capable=False,
+        persisted_at="2026-04-06T00:00:02Z",
+        pending_decision=None,
+        pending_items=(
+            _item(
+                seq=1,
+                kind=CompletionItemKind.TURN_ABORTED,
+                payload={
+                    "reason": "turn_aborted",
+                    "status": "failed",
+                    "last_agent_message": "operation failed",
+                },
+            ),
+        ),
+        applied_event_seqs=(1,),
+    )
+    state_store = SimpleNamespace(load=lambda job_id: persisted, remove=lambda job_id: None)
+    service = SimpleNamespace(
+        _active={},
+        _state_store=state_store,
+        _registry={"fake": SimpleNamespace()},
+        _pending_replays={},
+        _runtime_contexts={},
+        _clock=lambda: "2026-04-06T00:00:03Z",
+    )
+    job = SimpleNamespace(job_id="job_1", agent_name="agent1", provider="fake")
+
+    result = restore_submission(service, job)
+
+    assert result.status == "terminal_pending"
+    assert result.reason == "terminal_state_recovered"
+    assert result.decision is not None
+    assert result.decision.terminal is True
+    assert result.decision.status is CompletionStatus.FAILED
+    assert result.decision.reason == "turn_aborted"
+    assert result.decision.reply == "operation failed"
+    assert result.decision.provider_turn_ref == "turn-failed"
 
 
 def test_restore_submission_abandons_when_adapter_missing() -> None:

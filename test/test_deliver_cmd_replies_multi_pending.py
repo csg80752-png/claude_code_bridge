@@ -166,14 +166,13 @@ def test_deliver_cmd_replies_sweeps_all_pending_in_one_tick(monkeypatch, tmp_pat
     # heartbeat_A was at head → _try_ack matched head → CONSUMED.
     assert inbound_store.get_latest('cmd', 'evt-hb-A').status == InboundEventStatus.CONSUMED
 
-    # Real replies stay QUEUED (codex 2026-04-22 contract: human acks head).
-    assert inbound_store.get_latest('cmd', 'evt-real-A').status == InboundEventStatus.QUEUED
-    assert inbound_store.get_latest('cmd', 'evt-real-B').status == InboundEventStatus.QUEUED
+    # Real replies were visible-injected and consumed, so mailbox metrics drain.
+    assert inbound_store.get_latest('cmd', 'evt-real-A').status == InboundEventStatus.CONSUMED
+    assert inbound_store.get_latest('cmd', 'evt-real-B').status == InboundEventStatus.CONSUMED
 
-    # heartbeat_B: _try_ack invoked but head advanced to real_A after hb_A
-    # consumed; head_match check rejects so hb_B stays QUEUED until real_A
-    # is human-acked and hb_B becomes head on a later tick.
-    assert inbound_store.get_latest('cmd', 'evt-hb-B').status == InboundEventStatus.QUEUED
+    # heartbeat_B is also consumed in the same sweep once the visible real
+    # replies ahead of it have drained.
+    assert inbound_store.get_latest('cmd', 'evt-hb-B').status == InboundEventStatus.CONSUMED
 
     # Cache contains both real replies, no heartbeats (suppressed before cache add).
     cache = cmd_replies._get_injected_cache(dispatcher)
@@ -200,8 +199,8 @@ def test_deliver_cmd_replies_sweep_is_idempotent_across_ticks(monkeypatch, tmp_p
     assert len(backend.sent) == 2
 
 
-def test_deliver_cmd_replies_chains_heartbeat_acks_across_ticks(monkeypatch, tmp_path):
-    """After human acks the head real reply, subsequent heartbeats auto-ack on next tick."""
+def test_deliver_cmd_replies_chains_heartbeat_acks_in_one_tick(monkeypatch, tmp_path):
+    """After visible real reply delivery drains, subsequent heartbeats auto-ack."""
     dispatcher, kernel, inbound_store, reply_store, backend = _setup(monkeypatch, tmp_path)
 
     # Order: real_A (head), heartbeat_B, heartbeat_C
@@ -212,28 +211,15 @@ def test_deliver_cmd_replies_chains_heartbeat_acks_across_ticks(monkeypatch, tmp
     reply_store.append(_heartbeat_reply('reply-hb-B'))
     reply_store.append(_heartbeat_reply('reply-hb-C'))
 
-    # Tick 1: real_A injected; heartbeats stay QUEUED (not at head).
+    # Tick 1: real_A injected and consumed; heartbeats then drain in the same sweep.
     cmd_replies._deliver_cmd_replies(dispatcher)
     assert len(backend.sent) == 1
-    assert inbound_store.get_latest('cmd', 'evt-real-A').status == InboundEventStatus.QUEUED
-    assert inbound_store.get_latest('cmd', 'evt-hb-B').status == InboundEventStatus.QUEUED
-    assert inbound_store.get_latest('cmd', 'evt-hb-C').status == InboundEventStatus.QUEUED
-
-    # Human acks head (real_A) — simulate the user's `ccb ack cmd evt-real-A`.
-    kernel.ack_reply('cmd', 'evt-real-A', finished_at='2026-05-04T00:00:03Z')
     assert inbound_store.get_latest('cmd', 'evt-real-A').status == InboundEventStatus.CONSUMED
-
-    # Tick 2: heartbeat_B becomes head → _try_ack consumes it. Then on the
-    # next iteration, heartbeat_C's `_try_ack` re-fetches `head_pending_event`
-    # which now points at hb_C (hb_B already CONSUMED), so the head_match
-    # check passes and hb_C is ack'd in the same tick. Sweep delivers the
-    # full heartbeat chain in one pass — a strict improvement over the
-    # pre-fix one-per-tick behavior.
-    cmd_replies._deliver_cmd_replies(dispatcher)
     assert inbound_store.get_latest('cmd', 'evt-hb-B').status == InboundEventStatus.CONSUMED
     assert inbound_store.get_latest('cmd', 'evt-hb-C').status == InboundEventStatus.CONSUMED
 
-    # No additional injects on tick 2 (heartbeats are suppressed).
+    # A later tick does not re-inject or re-ack drained items.
+    cmd_replies._deliver_cmd_replies(dispatcher)
     assert len(backend.sent) == 1
 
 
@@ -380,8 +366,9 @@ def test_deliver_cmd_replies_abandons_on_planning_exception(monkeypatch, tmp_pat
         f'r1 must be abandoned to terminal status to unblock queue, got {r1_status}'
     )
 
-    # r2 stays QUEUED for the human ack (codex 2026-04-22 contract).
-    assert inbound_store.get_latest('cmd', 'evt-r2').status == InboundEventStatus.QUEUED
+    # r2 was visible-injected and consumed, so the bad r1 does not leave
+    # subsequent delivered replies pinned in the queue.
+    assert inbound_store.get_latest('cmd', 'evt-r2').status == InboundEventStatus.CONSUMED
 
 
 def test_deliver_cmd_replies_planning_failure_with_held_predecessor(monkeypatch, tmp_path):

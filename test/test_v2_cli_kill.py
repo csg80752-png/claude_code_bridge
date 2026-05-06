@@ -11,12 +11,14 @@ from cli import kill
 
 def test_cmd_kill_force_mode_uses_global_zombie_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[bool, object]] = []
+    daemon_calls: list[Path] = []
 
     def fake_kill_global_zombies(*, yes: bool, is_pid_alive):
         calls.append((yes, is_pid_alive))
         return 7
 
     monkeypatch.setattr(kill, "kill_global_zombies", fake_kill_global_zombies)
+    monkeypatch.setattr(kill, "kill_project_ccbd_daemons", lambda project_root: daemon_calls.append(project_root) or 0)
 
     result = kill.cmd_kill(
         SimpleNamespace(force=True, yes=True, providers=[]),
@@ -34,6 +36,7 @@ def test_cmd_kill_force_mode_uses_global_zombie_cleanup(monkeypatch: pytest.Monk
 
     assert result == 7
     assert calls and calls[0][0] is True
+    assert daemon_calls == [Path("/tmp")]
 
 
 def test_cmd_kill_terminates_session_and_force_kills_daemon(
