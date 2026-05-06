@@ -7,6 +7,13 @@ from mailbox_runtime.targets import normalize_mailbox_owner_name
 from .model_enums import InboundEventStatus, InboundEventType, LeaseState, MailboxState, SCHEMA_VERSION
 
 
+def _mailbox_state_from_value(value: object) -> MailboxState:
+    try:
+        return MailboxState(str(value or MailboxState.IDLE.value))
+    except ValueError:
+        return MailboxState.IDLE
+
+
 def normalize_mailbox_record(record) -> None:
     if not record.mailbox_id:
         raise ValueError('mailbox_id cannot be empty')
@@ -49,7 +56,7 @@ def mailbox_from_record(record: dict[str, Any]) -> dict[str, Any]:
         'pending_reply_count': int(record.get('pending_reply_count', 0)),
         'last_inbound_started_at': record.get('last_inbound_started_at'),
         'last_inbound_finished_at': record.get('last_inbound_finished_at'),
-        'mailbox_state': MailboxState(str(record.get('mailbox_state', MailboxState.IDLE.value))),
+        'mailbox_state': _mailbox_state_from_value(record.get('mailbox_state', MailboxState.IDLE.value)),
         'lease_version': int(record.get('lease_version', 0)),
         'updated_at': str(record.get('updated_at') or ''),
     }
