@@ -28,6 +28,7 @@ def project_root_sources(context) -> tuple[tuple[str, Path], ...]:
         ('ccbd-events', context.paths.ccbd_tmux_cleanup_history_path),
         ('ccbd-log', context.paths.ccbd_dir / 'ccbd.stdout.log'),
         ('ccbd-log', context.paths.ccbd_dir / 'ccbd.stderr.log'),
+        ('ccbd-log', context.paths.ccbd_dir / 'ccbd.runtime.log'),
         ('ccbd-log', context.paths.ccbd_dir / 'keeper.stdout.log'),
         ('ccbd-log', context.paths.ccbd_dir / 'keeper.stderr.log'),
     ]
