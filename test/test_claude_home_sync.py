@@ -170,6 +170,71 @@ def test_claude_home_sync_warns_for_broken_nested_symlink(caplog, tmp_path: Path
     assert "Claude home sync skipped broken symlink:" in caplog.text
 
 
+def test_claude_home_sync_skips_unchanged_physical_tree(monkeypatch, tmp_path: Path) -> None:
+    source = _source_claude_dir(tmp_path)
+    target_home = tmp_path / "target-home"
+
+    sync_claude_home_from_source(target_home, source_home=source)
+
+    def fail_if_recopying(source_path, target_path):
+        if Path(source_path).name == "skills":
+            raise AssertionError("unchanged skills tree should not be recopied")
+        return original_copy_tree(source_path, target_path)
+
+    from cli.services import claude_home_sync as module
+
+    original_copy_tree = module._copy_physical_tree
+    monkeypatch.setattr(module, "_copy_physical_tree", fail_if_recopying)
+
+    result = sync_claude_home_from_source(target_home, source_home=source)
+
+    assert "skills" in result.synced
+    assert (target_home / ".claude" / "skills" / "qa" / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == "qa\n"
+
+
+def test_claude_home_sync_refreshes_changed_physical_tree(tmp_path: Path) -> None:
+    source = _source_claude_dir(tmp_path)
+    target_home = tmp_path / "target-home"
+
+    sync_claude_home_from_source(target_home, source_home=source)
+    _write(source / "skills" / "new" / "SKILL.md", "new skill\n")
+
+    sync_claude_home_from_source(target_home, source_home=source)
+
+    assert (target_home / ".claude" / "skills" / "new" / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == "new skill\n"
+
+
+def test_claude_home_sync_replaces_target_nested_symlinks(tmp_path: Path) -> None:
+    source = _source_claude_dir(tmp_path)
+    target_home = tmp_path / "target-home"
+    target_skill = target_home / ".claude" / "skills" / "qa" / "SKILL.md"
+    external = tmp_path / "external-target-skill.md"
+    _write(external, "qa\n")
+    target_skill.parent.mkdir(parents=True, exist_ok=True)
+    target_skill.symlink_to(external)
+
+    sync_claude_home_from_source(target_home, source_home=source)
+
+    assert target_skill.read_text(encoding="utf-8") == "qa\n"
+    assert not target_skill.is_symlink()
+
+
+def test_claude_home_sync_refreshes_new_empty_directory(tmp_path: Path) -> None:
+    source = _source_claude_dir(tmp_path)
+    target_home = tmp_path / "target-home"
+
+    sync_claude_home_from_source(target_home, source_home=source)
+    (source / "skills" / "empty-skill").mkdir()
+
+    sync_claude_home_from_source(target_home, source_home=source)
+
+    assert (target_home / ".claude" / "skills" / "empty-skill").is_dir()
+
+
 def test_claude_home_sync_preserves_existing_directory_when_copy_fails(
     monkeypatch, tmp_path: Path
 ) -> None:
