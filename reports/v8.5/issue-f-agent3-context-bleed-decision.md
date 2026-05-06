@@ -91,3 +91,10 @@ provider/session isolation requirement:
 - relay result grounding in durable job state
 - operator-visible attempt state for `stalled`, `runtime_dead`,
   `terminal_failed`, and `indeterminate`
+
+## Adjacent Follow-Up
+
+Keep Issue F separate from the `cmd` target-routing gap discovered during
+closure verification. Issue F is about stale Claude provider session context.
+The `cmd` target gap is that `ccb ask cmd ...` currently fails with
+`unknown agent: cmd` even though the operator pane is the intended cmd endpoint.
