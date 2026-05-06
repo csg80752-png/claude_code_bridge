@@ -466,6 +466,22 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
                 'provider_home_sync_home': '/tmp/repo/.ccb/agents/codex/provider-runtime/codex/codex-home',
                 'provider_home_sync_managed': True,
                 'provider_home_sync_reason': 'managed',
+                'provider_home_sync_capabilities': (
+                    {
+                        'schema_version': 1,
+                        'name': 'home_sync',
+                        'status': 'enabled',
+                        'ownership': 'managed',
+                        'detail': 'syncs Codex config into the managed isolated home',
+                    },
+                    {
+                        'schema_version': 1,
+                        'name': 'credential_lifecycle',
+                        'status': 'manual',
+                        'ownership': 'observed',
+                        'detail': 'auth files sync only when explicitly requested',
+                    },
+                ),
             }
         ],
     }
@@ -503,6 +519,8 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
         'provider_home_sync: enabled=True managed=True reason=managed '
         'home=/tmp/repo/.ccb/agents/codex/provider-runtime/codex/codex-home'
     ) in doctor_lines
+    assert 'provider_home_sync_capabilities: provider=codex count=2 names=home_sync,credential_lifecycle' in doctor_lines
+    assert not any(line.startswith('provider_home_sync_capability:') for line in doctor_lines)
 
 
 def test_render_start_and_kill_include_tmux_cleanup_summary() -> None:

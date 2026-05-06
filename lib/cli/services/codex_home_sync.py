@@ -13,6 +13,7 @@ from provider_backends.codex.launcher_runtime.codex_namespace_isolation import (
 )
 from cli.services.provider_home_sync import (
     ProviderHomeSyncAgentResult,
+    ProviderHomeSyncCapability,
     ProviderHomeSyncPolicy,
     ProviderHomeSyncSkippedAgent,
     ProviderHomeSyncSummary,
@@ -41,6 +42,10 @@ def sync_project_codex_homes(
     )
 
 
+def codex_home_sync_policy() -> ProviderHomeSyncPolicy:
+    return _codex_policy()
+
+
 def _profile_codex_home(runtime_dir: Path) -> Path | None:
     profile = load_resolved_provider_profile(runtime_dir)
     if profile is None:
@@ -63,6 +68,32 @@ def _codex_policy() -> ProviderHomeSyncPolicy:
         profile_home=_profile_codex_home,
         sync_options=lambda command: {"include_auth": bool(getattr(command, "include_auth", False))},
         sync_home=sync_codex_home_from_source,
+        capabilities=(
+            ProviderHomeSyncCapability(
+                name="home_sync",
+                status="enabled",
+                ownership="managed",
+                detail="syncs Codex config into the managed isolated home",
+            ),
+            ProviderHomeSyncCapability(
+                name="credential_lifecycle",
+                status="manual",
+                ownership="observed",
+                detail="auth files sync only when explicitly requested",
+            ),
+            ProviderHomeSyncCapability(
+                name="mcp_registration",
+                status="external",
+                ownership="external",
+                detail="MCP registration follows synced Codex config",
+            ),
+            ProviderHomeSyncCapability(
+                name="instruction_provenance",
+                status="external",
+                ownership="external",
+                detail="does not translate provider-specific instruction files",
+            ),
+        ),
     )
 
 
@@ -70,5 +101,6 @@ __all__ = [
     "CodexHomeSyncAgentResult",
     "CodexHomeSyncSkippedAgent",
     "CodexHomeSyncSummary",
+    "codex_home_sync_policy",
     "sync_project_codex_homes",
 ]

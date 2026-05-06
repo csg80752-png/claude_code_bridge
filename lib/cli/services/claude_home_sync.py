@@ -10,6 +10,7 @@ from provider_backends.claude.launcher import claude_home_for_runtime
 from provider_backends.claude.launcher_runtime.service import _POLICY_FILENAME, _POLICY_VERSION
 from cli.services.provider_home_sync import (
     ProviderHomeSyncAgentResult,
+    ProviderHomeSyncCapability,
     ProviderHomeSyncPolicy,
     ProviderHomeSyncSkippedAgent,
     ProviderHomeSyncSummary,
@@ -48,6 +49,10 @@ def sync_project_claude_homes(
     )
 
 
+def claude_home_sync_policy() -> ProviderHomeSyncPolicy:
+    return _claude_policy()
+
+
 def system_claude_config_home() -> Path:
     return Path.home() / ".claude"
 
@@ -83,6 +88,32 @@ def _claude_policy() -> ProviderHomeSyncPolicy:
         profile_home=lambda runtime_dir: None,
         sync_options=lambda command: {},
         sync_home=sync_claude_home_from_source,
+        capabilities=(
+            ProviderHomeSyncCapability(
+                name="home_sync",
+                status="enabled",
+                ownership="managed",
+                detail="syncs selected Claude config entries into the managed isolated home",
+            ),
+            ProviderHomeSyncCapability(
+                name="credential_lifecycle",
+                status="observed",
+                ownership="observed",
+                detail="does not copy Claude OAuth credentials",
+            ),
+            ProviderHomeSyncCapability(
+                name="mcp_registration",
+                status="external",
+                ownership="external",
+                detail="MCP registration follows synced Claude settings",
+            ),
+            ProviderHomeSyncCapability(
+                name="instruction_provenance",
+                status="enabled",
+                ownership="managed",
+                detail="CLAUDE.md remains Claude-specific instruction context",
+            ),
+        ),
     )
 
 
@@ -156,6 +187,7 @@ __all__ = [
     "ClaudeHomeSyncResult",
     "ClaudeHomeSyncSkippedAgent",
     "ClaudeHomeSyncSummary",
+    "claude_home_sync_policy",
     "sync_claude_home_from_source",
     "sync_project_claude_homes",
     "system_claude_config_home",
