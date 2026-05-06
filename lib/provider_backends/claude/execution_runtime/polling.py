@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from completion.models import CompletionConfidence, CompletionDecision, CompletionItemKind, CompletionStatus
+from completion.models import CompletionConfidence, CompletionDecision, CompletionStatus
 from ccbd.system import parse_utc_timestamp
 from provider_execution.active import ensure_active_pane_alive, prepare_active_poll_without_liveness
 from provider_execution.base import ProviderPollResult, ProviderSubmission
-from provider_execution.common import build_item, request_anchor_from_runtime_state
+from provider_execution.common import request_anchor_from_runtime_state
 
 from .event_reading import is_turn_boundary_event, read_events, terminal_api_error_payload
 from .hook_results import poll_exact_hook
@@ -31,7 +31,6 @@ def poll_submission(
     prepared = _prepare_submission_poll(submission, now=now)
     if prepared is None or isinstance(prepared, ProviderPollResult):
         return prepared
-    prompt_dispatch_anchor_due = False
     prompt_dispatch = _dispatch_deferred_prompt(
         submission,
         prepared=prepared,
@@ -40,7 +39,7 @@ def poll_submission(
     if isinstance(prompt_dispatch, ProviderPollResult):
         return prompt_dispatch
     if isinstance(prompt_dispatch, tuple):
-        submission, prompt_dispatch_anchor_due = prompt_dispatch
+        submission, _ = prompt_dispatch
     reply_delivery_timeout = _reply_delivery_ready_timeout_if_blocked(submission, now=now)
     if reply_delivery_timeout is not None:
         return reply_delivery_timeout
@@ -59,8 +58,6 @@ def poll_submission(
     if isinstance(state, ProviderPollResult):
         return state
     result = finalize_poll_result(submission, poll, state=state)
-    if prompt_dispatch_anchor_due and not result.items and result.decision is None:
-        return _result_with_prompt_dispatch_anchor(result, now=now)
     return result
 
 
@@ -96,36 +93,6 @@ def _dispatch_deferred_prompt(
         runtime_state=runtime_state,
     )
     return updated, not anchor_seen
-
-
-def _result_with_prompt_dispatch_anchor(
-    result: ProviderPollResult,
-    *,
-    now: str,
-) -> ProviderPollResult:
-    submission = result.submission
-    next_seq = int(submission.runtime_state.get("next_seq", 1))
-    request_anchor = request_anchor_from_runtime_state(submission.runtime_state, fallback=submission.job_id)
-    session_path = str(submission.runtime_state.get("session_path") or "").strip()
-    item = build_item(
-        submission,
-        kind=CompletionItemKind.ANCHOR_SEEN,
-        timestamp=now,
-        seq=next_seq,
-        payload={
-            "turn_id": request_anchor,
-            "session_path": session_path or None,
-        },
-    )
-    updated = replace(
-        submission,
-        runtime_state={
-            **submission.runtime_state,
-            "anchor_seen": True,
-            "next_seq": next_seq + 1,
-        },
-    )
-    return ProviderPollResult(submission=updated, items=(item,), decision=result.decision)
 
 
 def _prompt_delivery_due(

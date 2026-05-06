@@ -1238,8 +1238,7 @@ def test_execution_service_claude_persists_before_ready_wait_and_resumes_prompt_
 ───────────────────────────────────────────
   ? for shortcuts
 """
-    update = restarted.poll()[0]
-    assert [item.kind for item in update.items] == [CompletionItemKind.ANCHOR_SEEN]
+    assert restarted.poll() == ()
     assert len(sent) == 1
     assert sent[0][0] == '%2'
     assert fixed_req_id in sent[0][1]
