@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from ccbd.lifecycle_report_store import CcbdShutdownReportStore, CcbdStartupReportStore
@@ -10,6 +11,7 @@ from cli.models import ParsedDoctorCommand
 from cli.services.doctor import doctor_summary
 from cli.services.tmux_cleanup_history import TmuxCleanupEvent, TmuxCleanupHistoryStore
 from cli.services.tmux_project_cleanup import ProjectTmuxCleanupSummary
+from provider_profiles.models import ResolvedProviderProfile
 from project.resolver import bootstrap_project
 from storage.paths import PathLayout
 
@@ -92,6 +94,92 @@ def test_doctor_summary_includes_latest_tmux_cleanup_fields(tmp_path: Path) -> N
     assert payload['ccbd']['tmux_cleanup_last_at'] == '2026-03-31T01:20:00Z'
     assert payload['ccbd']['tmux_cleanup_total_orphaned'] == 1
     assert payload['ccbd']['tmux_cleanup_total_killed'] == 1
+
+
+def test_doctor_summary_includes_provider_home_sync_status(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-doctor-provider-home'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text(
+        """version = 2
+default_agents = ["agent1", "agent2"]
+provider_home_sync = ["claude"]
+
+[agents.agent1]
+provider = "claude"
+target = "."
+workspace_mode = "inplace"
+restore = "auto"
+permission = "manual"
+
+[agents.agent2]
+provider = "codex"
+target = "."
+workspace_mode = "inplace"
+restore = "auto"
+permission = "manual"
+""",
+        encoding='utf-8',
+    )
+    context = CliContextBuilder().build(ParsedDoctorCommand(project=None), cwd=project_root, bootstrap_if_missing=False)
+    claude_home = context.paths.agent_provider_runtime_dir('agent1', 'claude') / 'claude-home'
+    claude_home.mkdir(parents=True)
+    (claude_home / '.provider-home-policy').write_text('claude:r1\n', encoding='utf-8')
+
+    payload = doctor_summary(context)
+
+    assert payload['provider_home_sync_enabled'] == ('claude',)
+    agent1 = next(agent for agent in payload['agents'] if agent['agent_name'] == 'agent1')
+    agent2 = next(agent for agent in payload['agents'] if agent['agent_name'] == 'agent2')
+    assert agent1['provider_home_sync_enabled'] is True
+    assert agent1['provider_home_sync_managed'] is True
+    assert agent1['provider_home_sync_reason'] == 'managed'
+    assert agent2['provider_home_sync_enabled'] is False
+    assert agent2['provider_home_sync_reason'] == 'not-enabled'
+
+
+def test_doctor_summary_reports_codex_profile_home_sync_skip(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-doctor-provider-home-profile'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text(
+        """version = 2
+default_agents = ["agent1"]
+provider_home_sync = ["codex"]
+
+[agents.agent1]
+provider = "codex"
+target = "."
+workspace_mode = "inplace"
+restore = "auto"
+permission = "manual"
+""",
+        encoding='utf-8',
+    )
+    context = CliContextBuilder().build(ParsedDoctorCommand(project=None), cwd=project_root, bootstrap_if_missing=False)
+    profile_home = tmp_path / 'profile-home'
+    runtime_dir = context.paths.agent_provider_runtime_dir('agent1', 'codex')
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / 'provider-profile.json').write_text(
+        json.dumps(
+            ResolvedProviderProfile(
+                provider='codex',
+                agent_name='agent1',
+                mode='isolated',
+                profile_root=str(profile_home),
+                runtime_home=str(profile_home),
+                env={},
+            ).to_record(),
+            ensure_ascii=False,
+        ),
+        encoding='utf-8',
+    )
+
+    payload = doctor_summary(context)
+
+    agent = payload['agents'][0]
+    assert agent['provider_home_sync_enabled'] is True
+    assert agent['provider_home_sync_managed'] is False
+    assert agent['provider_home_sync_reason'] == 'profile-home'
+    assert agent['provider_home_sync_home'] == str(profile_home)
 
 
 def test_doctor_summary_includes_installation_and_requirement_fields(tmp_path: Path, monkeypatch) -> None:

@@ -6,6 +6,7 @@ from provider_execution.registry import build_default_execution_registry
 
 from .daemon import ping_local_state
 from .doctor_runtime import agent_summaries, ccbd_summary, doctor_stores, installation_summary, requirements_summary
+from .doctor_runtime.provider_home import enrich_provider_home_sync_status
 
 
 def doctor_summary(context) -> dict:
@@ -23,9 +24,12 @@ def doctor_summary(context) -> dict:
         execution_registry=execution_registry,
         errors=errors,
     )
+    enabled_provider_home_sync = tuple(getattr(config, 'provider_home_sync', ()) or ())
+    agents = enrich_provider_home_sync_status(context, config=config, agents=agents)
     return {
         'project': str(context.project.project_root),
         'project_id': context.project.project_id,
+        'provider_home_sync_enabled': enabled_provider_home_sync,
         'installation': installation_summary(),
         'requirements': requirements_summary(),
         'ccbd': ccbd_summary(local=local, stores=stores, errors=errors),

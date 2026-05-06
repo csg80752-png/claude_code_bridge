@@ -397,6 +397,7 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
                 },
             ),
         },
+        'provider_home_sync_enabled': ('claude',),
         'ccbd': {
             'state': 'mounted',
             'health': 'healthy',
@@ -458,6 +459,10 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
                 'execution_restore_mode': 'provider_resume',
                 'execution_restore_reason': None,
                 'execution_restore_detail': 'resume ok',
+                'provider_home_sync_enabled': True,
+                'provider_home_sync_home': '/tmp/repo/.ccb/agents/codex/provider-runtime/codex/codex-home',
+                'provider_home_sync_managed': True,
+                'provider_home_sync_reason': 'managed',
             }
         ],
     }
@@ -477,6 +482,7 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
     assert 'install_mode: release' in doctor_lines
     assert 'install_channel: stable' in doctor_lines
     assert 'requirement_tmux_available: True' in doctor_lines
+    assert 'provider_home_sync_enabled: claude' in doctor_lines
     assert 'requirement_provider: name=codex executable=codex available=True path=/usr/bin/codex' in doctor_lines
     assert 'ccbd_state: mounted' in doctor_lines
     assert 'ccbd_namespace_tmux_session_name: ccb-repo' in doctor_lines
@@ -487,6 +493,10 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
         'socket=sock-a socket_path=None pane=%1 active_pane=%1 pane_state=alive marker=CCB-codex'
     ) in doctor_lines
     assert 'restore: supported=True mode=provider_resume reason=None' in doctor_lines
+    assert (
+        'provider_home_sync: enabled=True managed=True reason=managed '
+        'home=/tmp/repo/.ccb/agents/codex/provider-runtime/codex/codex-home'
+    ) in doctor_lines
 
 
 def test_render_start_and_kill_include_tmux_cleanup_summary() -> None:

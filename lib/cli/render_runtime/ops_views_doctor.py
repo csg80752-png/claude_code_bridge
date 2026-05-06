@@ -24,6 +24,7 @@ def render_doctor(payload: Mapping[str, object]) -> tuple[str, ...]:
         f'requirement_python_version: {requirements.get("python_version")}',
         f'requirement_tmux_available: {requirements.get("tmux_available")}',
         f'requirement_tmux_path: {requirements.get("tmux_path")}',
+        f'provider_home_sync_enabled: {_join_enabled(payload.get("provider_home_sync_enabled"))}',
         f'ccbd_state: {ccbd["state"]}',
         f'ccbd_health: {ccbd["health"]}',
         f'ccbd_generation: {ccbd["generation"]}',
@@ -115,7 +116,18 @@ def render_doctor(payload: Mapping[str, object]) -> tuple[str, ...]:
             f'restore: supported={agent["execution_resume_supported"]} mode={agent["execution_restore_mode"]} reason={agent["execution_restore_reason"]}'
         )
         lines.append(f'restore_detail: {agent["execution_restore_detail"]}')
+        lines.append(
+            'provider_home_sync: '
+            f'enabled={agent.get("provider_home_sync_enabled")} '
+            f'managed={agent.get("provider_home_sync_managed")} '
+            f'reason={agent.get("provider_home_sync_reason")} '
+            f'home={agent.get("provider_home_sync_home")}'
+        )
     return tuple(lines)
+
+
+def _join_enabled(value) -> str:
+    return ','.join(str(item) for item in (value or ()))
 
 
 __all__ = ['render_doctor']
