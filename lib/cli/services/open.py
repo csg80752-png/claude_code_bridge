@@ -94,12 +94,24 @@ def _is_transient_open_connect_error(message: str) -> bool:
 
 def _wait_for_attachable_namespace(client) -> dict:
     deadline = time.time() + _OPEN_ATTACH_WAIT_S
+    last_transient_error: Exception | None = None
     while True:
-        payload = client.ping('ccbd')
-        tmux_socket_path, tmux_session_name, _workspace_window_name = _attach_payload_fields(payload)
-        if tmux_socket_path and tmux_session_name and bool(payload.get('namespace_ui_attachable')):
-            return payload
+        try:
+            payload = client.ping('ccbd')
+            last_transient_error = None
+            tmux_socket_path, tmux_session_name, _workspace_window_name = _attach_payload_fields(payload)
+            if tmux_socket_path and tmux_session_name and bool(payload.get('namespace_ui_attachable')):
+                return payload
+        except Exception as exc:
+            if not _is_transient_open_connect_error(str(exc)):
+                raise
+            last_transient_error = exc
         if time.time() >= deadline:
+            if last_transient_error is not None:
+                raise RuntimeError(
+                    f'project namespace is not attachable; run `ccb` first; '
+                    f'last transient daemon error: {last_transient_error}'
+                ) from last_transient_error
             raise RuntimeError('project namespace is not attachable; run `ccb` first')
         time.sleep(_OPEN_ATTACH_POLL_S)
 
