@@ -190,7 +190,7 @@ def _deliver_cmd_replies_impl(dispatcher):
     if kernel is None:
         return
 
-    pending = kernel.pending_events('cmd', event_type=InboundEventType.TASK_REPLY)
+    pending = _pending_cmd_reply_events(kernel)
     if not pending:
         return
 
@@ -334,6 +334,10 @@ def _deliver_cmd_replies_impl(dispatcher):
             continue
 
         if reply_id in injected_cache:
+            _clear_pane_retry_count(dispatcher, head.inbound_event_id)
+            injected_cache.move_to_end(reply_id)
+            continue
+        if _rehydrate_injected_cache_hit(dispatcher, injected_cache, reply_id):
             _clear_pane_retry_count(dispatcher, head.inbound_event_id)
             injected_cache.move_to_end(reply_id)
             continue
@@ -645,6 +649,20 @@ def _get_injected_cache(dispatcher):
             # calls may reload from disk and re-inject more often.
             return cache
     return cache
+
+
+def _rehydrate_injected_cache_hit(dispatcher, injected_cache, reply_id: str) -> bool:
+    reply_id = str(reply_id or '').strip()
+    if not reply_id:
+        return False
+    durable_cache = _load_injected_cache(dispatcher)
+    injected_at = durable_cache.get(reply_id)
+    if not injected_at:
+        return False
+    injected_cache[reply_id] = injected_at
+    while len(injected_cache) > _CMD_INJECTED_CACHE_MAX:
+        injected_cache.popitem(last=False)
+    return True
 
 
 def _load_injected_cache(dispatcher):
@@ -1138,13 +1156,29 @@ def _count_pending_cmd_replies(dispatcher) -> int:
     if kernel is None:
         return -1
     try:
-        pending = kernel.pending_events('cmd', event_type=InboundEventType.TASK_REPLY)
+        pending = _pending_cmd_reply_events(kernel)
     except Exception:
         return -1
     try:
         return len(pending or ())
     except TypeError:
         return -1
+
+
+def _pending_cmd_reply_events(kernel) -> tuple:
+    pending_events = getattr(kernel, 'pending_events', None)
+    if callable(pending_events):
+        return tuple(pending_events('cmd', event_type=InboundEventType.TASK_REPLY) or ())
+
+    head_pending_event = getattr(kernel, 'head_pending_event', None)
+    if not callable(head_pending_event):
+        return ()
+    head = head_pending_event('cmd')
+    if head is None:
+        return ()
+    if getattr(head, 'event_type', None) is not InboundEventType.TASK_REPLY:
+        return ()
+    return (head,)
 
 
 def reset_cmd_pane_diag_for_test() -> None:
@@ -1207,7 +1241,7 @@ def _lookup_cmd_pane_id(dispatcher, layout) -> str | None:
         try:
             cp = runner(
                 ['list-panes', '-a', '-F',
-                 '#{pane_id}\t#{@ccb_role}\t#{@ccb_slot}\t#{@ccb_project_id}'],
+                 '#{pane_id}\t#{@ccb_role}\t#{@ccb_slot}\t#{@ccb_project_id}\t#{window_name}\t#{pane_current_command}'],
                 capture=True,
                 check=True,
             )
@@ -1215,15 +1249,38 @@ def _lookup_cmd_pane_id(dispatcher, layout) -> str | None:
             return None
 
         stdout = getattr(cp, 'stdout', '') or ''
+        metadata_match: str | None = None
+        ctl_shell_match: str | None = None
         for line in stdout.splitlines():
-            parts = line.strip().split('\t')
+            parts = line.split('\t')
             if len(parts) < 4:
                 continue
-            pane_id, role, slot, pane_project = parts[0], parts[1], parts[2], parts[3]
-            if (role == 'cmd' and slot == 'cmd'
-                    and pane_project == project_id_str
-                    and pane_id.startswith('%')):
-                return pane_id
+            pane_id = parts[0].strip()
+            role = parts[1].strip()
+            slot = parts[2].strip()
+            pane_project = parts[3].strip()
+            window_name = parts[4].strip() if len(parts) > 4 else ''
+            current_command = parts[5].strip() if len(parts) > 5 else ''
+            if not pane_id.startswith('%'):
+                continue
+            if (
+                window_name == '__ccb_ctl'
+                and (not pane_project or pane_project == project_id_str)
+                and (not current_command or current_command in {'sh', 'bash', 'zsh', 'fish', 'dash'})
+            ):
+                if ctl_shell_match is None:
+                    ctl_shell_match = pane_id
+            if (
+                metadata_match is None
+                and role == 'cmd'
+                and slot == 'cmd'
+                and pane_project == project_id_str
+            ):
+                metadata_match = pane_id
+        if metadata_match:
+            return metadata_match
+        if ctl_shell_match:
+            return ctl_shell_match
     except Exception:
         _logger.debug('cmd pane discovery failed', exc_info=True)
 
