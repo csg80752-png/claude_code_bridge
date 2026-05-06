@@ -264,6 +264,24 @@ def test_ensure_daemon_started_waits_for_degraded_unreachable_daemon_with_fresh_
     assert spawn_calls == []
 
 
+def test_public_ensure_keeper_started_uses_extended_ready_timeout(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-keeper-timeout'
+    ctx = _context(project_root, 'agent1:codex\n')
+    seen: dict[str, object] = {}
+
+    def _fake_runtime_impl(context, **kwargs):
+        seen['context'] = context
+        seen.update(kwargs)
+        return True
+
+    monkeypatch.setattr(daemon_service, '_ensure_keeper_started_runtime_impl', _fake_runtime_impl)
+
+    assert daemon_service._ensure_keeper_started(ctx) is True
+
+    assert seen['context'] is ctx
+    assert seen['ready_timeout_s'] == daemon_service._DEF_KEEPER_READY_TIMEOUT_S
+
+
 def test_ensure_daemon_started_restarts_stale_unreachable_daemon_with_live_pid(
     monkeypatch,
     tmp_path: Path,

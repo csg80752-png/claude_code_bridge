@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import os
+
+
+START_CLIENT_TIMEOUT_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -28,7 +32,8 @@ def start_agents(
     pre_start_result = before_client_start_fn(context) if before_client_start_fn is not None else None
     handle = ensure_daemon_started_fn(context)
     assert handle.client is not None
-    payload = handle.client.start(
+    client = _client_for_start(handle.client)
+    payload = client.start(
         agent_names=command.agent_names,
         restore=command.restore,
         auto_permission=command.auto_permission,
@@ -47,6 +52,23 @@ def start_agents(
     if enrich_summary_fn is not None:
         return enrich_summary_fn(context, summary, pre_start_result)
     return summary
+
+
+def _client_for_start(client):
+    with_timeout = getattr(client, 'with_timeout', None)
+    if not callable(with_timeout):
+        return client
+    return with_timeout(_start_client_timeout_s())
+
+
+def _start_client_timeout_s() -> float:
+    raw = os.environ.get('CCB_CCBD_START_CLIENT_TIMEOUT_S')
+    if raw:
+        try:
+            return max(0.1, float(raw))
+        except Exception:
+            pass
+    return START_CLIENT_TIMEOUT_S
 
 
 def _summary_from_start_payload(context, payload: dict, *, daemon_started: bool, cleanup_summary_cls) -> StartSummary:
@@ -93,4 +115,4 @@ def _record_daemon_started_flag(context, *, daemon_started: bool, startup_report
         return
 
 
-__all__ = ["StartSummary", "start_agents"]
+__all__ = ["START_CLIENT_TIMEOUT_S", "StartSummary", "start_agents"]

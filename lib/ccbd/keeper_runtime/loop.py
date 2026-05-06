@@ -12,7 +12,10 @@ from .state import compute_project_id, restart_backoff_active
 from .support import reap_child_processes, try_acquire_keeper_lock
 
 
-def run_forever(app, *, poll_interval: float = 0.5, start_timeout_s: float = 5.0) -> int:
+DEFAULT_KEEPER_START_TIMEOUT_S = 30.0
+
+
+def run_forever(app, *, poll_interval: float = 0.5, start_timeout_s: float = DEFAULT_KEEPER_START_TIMEOUT_S) -> int:
     lock_path = app.paths.ccbd_dir / 'keeper.lock'
     lock_handle = try_acquire_keeper_lock(lock_path)
     if lock_handle is None:
@@ -163,4 +166,11 @@ def cleanup_transient_keeper_files(app, *, lock_path: Path) -> None:
             continue
 
 
-__all__ = ['cleanup_transient_keeper_files', 'daemon_matches_project_config', 'reconcile_once', 'request_shutdown', 'run_forever']
+__all__ = [
+    'DEFAULT_KEEPER_START_TIMEOUT_S',
+    'cleanup_transient_keeper_files',
+    'daemon_matches_project_config',
+    'reconcile_once',
+    'request_shutdown',
+    'run_forever',
+]
