@@ -5,7 +5,7 @@ import shlex
 from pathlib import Path
 from typing import Callable
 
-from provider_core.caller_env import caller_context_env
+from provider_core.caller_env import caller_context_env, interactive_terminal_env_clause
 from provider_backends.codex.launcher_runtime.codex_namespace_isolation import explicit_codex_home_overrides
 
 
@@ -37,7 +37,8 @@ def build_start_cmd(
         profile=profile,
         codex_home_overrides=codex_home_overrides,
     )
-    prefix_parts = build_codex_shell_prefix_fn(profile=profile)
+    prefix_parts = [interactive_terminal_env_clause()]
+    prefix_parts.extend(build_codex_shell_prefix_fn(profile=profile))
     exports = ' '.join(f'{key}={shlex.quote(str(value))}' for key, value in env_map.items() if str(value).strip())
     if exports:
         prefix_parts.append(f'export {exports}')

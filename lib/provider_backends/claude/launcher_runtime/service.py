@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import shlex
 
-from provider_core.caller_env import caller_context_env, export_env_clause, join_env_prefix
+from provider_core.caller_env import caller_context_env, export_env_clause, interactive_terminal_env_clause, join_env_prefix
 from provider_core.contracts import ProviderRuntimeLauncher
 
 
@@ -51,6 +51,7 @@ def build_start_cmd(
         home_dir=isolated_home,
     )
     env_prefix = join_env_prefix(
+        interactive_terminal_env_clause(),
         build_env_prefix_fn(profile=profile, extra_env=spec.env),
         export_env_clause(namespace_env),
         export_env_clause(caller_context_env(actor=spec.name, runtime_dir=runtime_dir, launch_session_id=launch_session_id)),
