@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -267,6 +268,85 @@ def test_project_namespace_controller_creates_state_and_lifecycle_event(tmp_path
     assert latest_event.event_kind == 'namespace_created'
     assert latest_event.details['recreated'] is False
     assert latest_event.details['reason'] == 'initial_create'
+
+
+def test_project_namespace_event_load_latest_skips_corrupt_rows(tmp_path: Path) -> None:
+    layout = PathLayout(tmp_path / 'repo-corrupt-lifecycle')
+    store = ProjectNamespaceEventStore(layout)
+    first = ProjectNamespaceEvent(
+        event_kind='namespace_created',
+        project_id='proj-1',
+        occurred_at='2026-04-03T02:00:00Z',
+        namespace_epoch=1,
+        tmux_socket_path=str(layout.ccbd_tmux_socket_path),
+        tmux_session_name=layout.ccbd_tmux_session_name,
+    )
+    second = ProjectNamespaceEvent(
+        event_kind='workspace_reflowed',
+        project_id='proj-1',
+        occurred_at='2026-04-03T02:01:00Z',
+        namespace_epoch=1,
+        tmux_socket_path=str(layout.ccbd_tmux_socket_path),
+        tmux_session_name=layout.ccbd_tmux_session_name,
+    )
+    store.append(first)
+    with layout.ccbd_lifecycle_log_path.open('ab') as handle:
+        handle.write(b'\0\0\0\n')
+    store.append(second)
+    with layout.ccbd_lifecycle_log_path.open('a', encoding='utf-8') as handle:
+        handle.write('\n')
+        handle.write('{not-json}\n')
+
+    latest_event = store.load_latest()
+
+    assert latest_event == second
+
+
+def test_project_namespace_event_read_all_remains_strict_for_corrupt_rows(tmp_path: Path) -> None:
+    layout = PathLayout(tmp_path / 'repo-corrupt-lifecycle-strict')
+    store = ProjectNamespaceEventStore(layout)
+    store.append(
+        ProjectNamespaceEvent(
+            event_kind='namespace_created',
+            project_id='proj-1',
+            occurred_at='2026-04-03T02:00:00Z',
+            namespace_epoch=1,
+            tmux_socket_path=str(layout.ccbd_tmux_socket_path),
+            tmux_session_name=layout.ccbd_tmux_session_name,
+        )
+    )
+    with layout.ccbd_lifecycle_log_path.open('a', encoding='utf-8') as handle:
+        handle.write('{not-json}\n')
+
+    try:
+        store.read_all()
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError('read_all should remain strict for corrupt JSONL rows')
+
+
+def test_project_namespace_event_load_latest_honors_injected_store(tmp_path: Path) -> None:
+    layout = PathLayout(tmp_path / 'repo-injected-event-store')
+    event = ProjectNamespaceEvent(
+        event_kind='namespace_created',
+        project_id='proj-1',
+        occurred_at='2026-04-03T02:00:00Z',
+        namespace_epoch=1,
+        tmux_socket_path=str(layout.ccbd_tmux_socket_path),
+        tmux_session_name=layout.ccbd_tmux_session_name,
+    )
+
+    class FakeStore:
+        def append(self, path, row, serializer=None):
+            raise AssertionError('append is not used')
+
+        def read_all(self, path, loader=None):
+            return [event]
+
+    store = ProjectNamespaceEventStore(layout, store=FakeStore())
+
+    assert store.load_latest() == event
 
 
 def test_project_namespace_controller_recreates_missing_session_with_new_epoch(tmp_path: Path) -> None:

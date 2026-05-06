@@ -46,6 +46,11 @@ class ProjectNamespaceEventStore:
         return tuple(rows)
 
     def load_latest(self) -> ProjectNamespaceEvent | None:
+        if hasattr(self._store, 'read_latest_valid'):
+            return self._store.read_latest_valid(
+                self._layout.ccbd_lifecycle_log_path,
+                loader=ProjectNamespaceEvent.from_record,
+            )
         rows = self.read_all()
         return rows[-1] if rows else None
 

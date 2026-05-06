@@ -61,6 +61,30 @@ class JsonlStore:
                 rows.append(loader(payload) if loader else payload)
         return rows
 
+    def read_latest_valid(
+        self,
+        path: Path,
+        loader: Callable[[dict[str, Any]], T] | None = None,
+    ) -> T | dict[str, Any] | None:
+        target = Path(path)
+        if not target.exists():
+            return None
+        for line in reversed(target.read_text(encoding='utf-8', errors='replace').splitlines()):
+            text = line.strip().strip('\x00')
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            try:
+                return loader(payload) if loader else payload
+            except (KeyError, TypeError, ValueError):
+                continue
+        return None
+
     def read_since(
         self,
         path: Path,
