@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import StringIO
 from types import SimpleNamespace
 
+import pytest
+
+from cli.parser import CliParser, CliUsageError
+from cli.phase2 import _command_requires_bootstrap_config
+from cli.phase2_runtime.handlers_ops import handle_sync_claude_home
+from cli.services.claude_home_sync import (
+    ClaudeHomeSyncAgentResult,
+    ClaudeHomeSyncSkippedAgent,
+    ClaudeHomeSyncSummary,
+)
 from cli.services.claude_home_sync import sync_project_claude_homes
 from provider_backends.claude.launcher import claude_namespace_env
 
@@ -115,3 +126,58 @@ def test_claude_home_sync_skips_safe_directory_with_nested_symlink(tmp_path: Pat
 
     assert "commands" not in summary.agents[0].synced
     assert not (target_claude_dir / "commands").exists()
+
+
+def test_cli_parser_accepts_sync_claude_home() -> None:
+    command = CliParser().parse(["sync-claude-home"])
+
+    assert command.kind == "sync-claude-home"
+
+
+def test_cli_parser_rejects_sync_claude_home_extra_args() -> None:
+    with pytest.raises(CliUsageError):
+        CliParser().parse(["sync-claude-home", "agent1"])
+
+
+def test_sync_claude_home_does_not_bootstrap_missing_config() -> None:
+    command = CliParser().parse(["sync-claude-home"])
+
+    assert _command_requires_bootstrap_config(command) is False
+
+
+def test_sync_claude_home_handler_renders_stable_summary(tmp_path: Path) -> None:
+    command = CliParser().parse(["sync-claude-home"])
+    out = StringIO()
+    summary = ClaudeHomeSyncSummary(
+        source_home=tmp_path / "source",
+        agents=(
+            ClaudeHomeSyncAgentResult(
+                agent_name="agent1",
+                path=tmp_path / "agent1" / "claude-home",
+                synced=("settings.json", "commands"),
+                skipped_auth=False,
+            ),
+        ),
+        skipped=(
+            ClaudeHomeSyncSkippedAgent(
+                agent_name="agent2",
+                reason="unmanaged-home",
+                path=tmp_path / "agent2" / "claude-home",
+            ),
+        ),
+    )
+    services = SimpleNamespace(
+        sync_project_claude_homes=lambda context, parsed: summary,
+        write_lines=lambda stream, lines: stream.write("\n".join(lines) + "\n"),
+    )
+
+    exit_code = handle_sync_claude_home(SimpleNamespace(), command, out, services)
+
+    assert exit_code == 0
+    assert out.getvalue().splitlines() == [
+        "command_status: synced",
+        f"source_home: {tmp_path / 'source'}",
+        "claude_agents: 1",
+        f"agent: agent1 synced=settings.json,commands path={tmp_path / 'agent1' / 'claude-home'}",
+        f"skipped: agent2 reason=unmanaged-home path={tmp_path / 'agent2' / 'claude-home'}",
+    ]

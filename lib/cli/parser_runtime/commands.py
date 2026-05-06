@@ -17,6 +17,7 @@ from cli.models import (
     ParsedQueueCommand,
     ParsedResubmitCommand,
     ParsedRetryCommand,
+    ParsedSyncClaudeHomeCommand,
     ParsedSyncCodexHomeCommand,
     ParsedTraceCommand,
     ParsedWaitCommand,
@@ -170,6 +171,11 @@ def parse_sync_codex_home(tokens: list[str], *, project: str | None, error_type)
     return ParsedSyncCodexHomeCommand(project=project, include_auth=bool(namespace.include_auth))
 
 
+def parse_sync_claude_home(tokens: list[str], *, project: str | None, error_type) -> ParsedSyncClaudeHomeCommand:
+    require_no_extra(tokens, command='sync-claude-home', error_type=error_type)
+    return ParsedSyncClaudeHomeCommand(project=project)
+
+
 __all__ = [
     'parse_ack',
     'parse_cancel',
@@ -185,6 +191,7 @@ __all__ = [
     'parse_queue',
     'parse_resubmit',
     'parse_retry',
+    'parse_sync_claude_home',
     'parse_sync_codex_home',
     'parse_trace',
     'parse_wait',

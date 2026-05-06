@@ -73,6 +73,7 @@ def print_start_help(*, file=None) -> None:
 
             Advanced diagnostics:
               ccb open | ccb ps | ccb logs <agent> | ccb doctor
+              ccb sync-claude-home
               ccb sync-codex-home [--include-auth]
               ccb version | ccb update | ccb uninstall | ccb reinstall
             """
@@ -177,6 +178,12 @@ _COMMAND_HELP = {
         Codex isolated home sync:
           ccb sync-codex-home                 Refresh safe config entries for configured Codex agents.
           ccb sync-codex-home --include-auth  Also refresh auth.json as a physical copy.
+    """,
+    "sync-claude-home": """
+        usage: ccb sync-claude-home
+
+        Claude isolated home sync:
+          ccb sync-claude-home                Refresh safe config entries for configured Claude agents.
     """,
 }
 

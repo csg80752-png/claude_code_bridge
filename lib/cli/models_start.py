@@ -47,6 +47,12 @@ class ParsedSyncCodexHomeCommand:
 
 
 @dataclass(frozen=True)
+class ParsedSyncClaudeHomeCommand:
+    project: str | None
+    kind: str = 'sync-claude-home'
+
+
+@dataclass(frozen=True)
 class ParsedDoctorCommand:
     project: str | None
     bundle: bool = False
@@ -77,5 +83,6 @@ __all__ = [
     'ParsedPingCommand',
     'ParsedPsCommand',
     'ParsedStartCommand',
+    'ParsedSyncClaudeHomeCommand',
     'ParsedSyncCodexHomeCommand',
 ]

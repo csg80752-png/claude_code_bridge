@@ -23,6 +23,7 @@ from .handlers_ops import (
     handle_logs,
     handle_open,
     handle_ps,
+    handle_sync_claude_home,
     handle_sync_codex_home,
 )
 from .handlers_start import handle_config_validate, handle_start
@@ -49,6 +50,7 @@ _HANDLERS = {
     'resubmit': handle_resubmit,
     'retry': handle_retry,
     'start': handle_start,
+    'sync-claude-home': handle_sync_claude_home,
     'sync-codex-home': handle_sync_codex_home,
     'trace': handle_trace,
     'wait': handle_wait,

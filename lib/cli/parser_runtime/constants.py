@@ -21,6 +21,7 @@ SUBCOMMANDS = {
     'logs',
     'doctor',
     'config',
+    'sync-claude-home',
     'sync-codex-home',
     'fault',
 }
