@@ -16,6 +16,7 @@ _START_RPC_TRANSIENT_ERROR_FRAGMENTS = (
     'socket_unreachable',
     'timed out',
 )
+_START_RPC_EMPTY_RESPONSE_ERROR = 'empty response from ccbd'
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,8 @@ def _call_start_with_transient_retries(client, **kwargs) -> dict:
 
 
 def _is_transient_start_rpc_error(exc: CcbdClientError) -> bool:
+    if str(exc) == _START_RPC_EMPTY_RESPONSE_ERROR:
+        return True
     if not isinstance(exc.__cause__, OSError):
         return False
     message = str(exc)
