@@ -10,7 +10,7 @@ import subprocess
 _ISOLATED_HOME_DIR = "codex-home"
 _POLICY_FILENAME = ".isolation-policy-version"
 _POLICY_VERSION = "r1"
-_INHERIT_ALLOWLIST = ("config.toml", "auth.json", "skills", "commands")
+_INHERIT_ALLOWLIST = ("config.toml", "skills", "commands")
 _SYNC_ALLOWLIST = ("config.toml", "skills", "commands", "rules")
 _CP_BIN = shutil.which("cp") or "/bin/cp"
 
@@ -95,6 +95,9 @@ def prepare_codex_isolated_home(runtime_dir: Path, *, source_home: Path | None =
         if not src.exists():
             continue
         _refresh_inherited_entry(src, dst)
+    auth_source = source / "auth.json"
+    if auth_source.is_file() and not auth_source.is_symlink():
+        _refresh_secret_file(auth_source, isolated_home / "auth.json")
     config_path = isolated_home / "config.toml"
     if not config_path.exists():
         config_path.write_text("# ccb isolated codex config\n", encoding="utf-8")
@@ -110,20 +113,26 @@ def sync_codex_home_from_source(
 ) -> CodexHomeSyncResult:
     source = Path(source_home) if source_home is not None else system_codex_home()
     target_home = Path(isolated_home)
+    if target_home.is_symlink():
+        raise ValueError("codex home must not be a symlink")
+    sentinel = target_home / _POLICY_FILENAME
+    if sentinel.is_symlink():
+        raise ValueError("policy sentinel must not be a symlink")
     target_home.mkdir(parents=True, exist_ok=True)
     (target_home / "sessions").mkdir(parents=True, exist_ok=True)
 
     synced: list[str] = []
     for name in _SYNC_ALLOWLIST:
         src = source / name
-        if not src.exists():
+        if not src.exists() or src.is_symlink():
             continue
-        _refresh_inherited_entry(src, target_home / name)
+        _refresh_physical_entry(src, target_home / name)
         synced.append(name)
 
     auth_source = source / "auth.json"
-    skipped_auth = auth_source.exists() and not include_auth
-    if auth_source.exists() and include_auth:
+    auth_source_is_file = auth_source.is_file() and not auth_source.is_symlink()
+    skipped_auth = auth_source.exists() and (not include_auth or not auth_source_is_file)
+    if auth_source_is_file and include_auth:
         _refresh_secret_file(auth_source, target_home / "auth.json")
         synced.append("auth.json")
 
@@ -242,6 +251,15 @@ def _refresh_secret_file(source: Path, target: Path) -> None:
     _remove_path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
+
+
+def _refresh_physical_entry(source: Path, target: Path) -> None:
+    _remove_path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_file():
+        shutil.copy2(source, target)
+    elif source.is_dir():
+        shutil.copytree(source, target, symlinks=True)
 
 
 def _run_cp(args: list[str]) -> None:

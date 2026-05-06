@@ -27,8 +27,9 @@ def handle_ps(context, command, out, services) -> int:
 
 def handle_sync_codex_home(context, command, out, services) -> int:
     summary = services.sync_project_codex_homes(context, command)
+    status = 'synced' if summary.agents else 'noop'
     lines = [
-        'command_status: synced',
+        f'command_status: {status}',
         f'source_home: {summary.source_home}',
         f'codex_agents: {len(summary.agents)}',
     ]
@@ -36,6 +37,9 @@ def handle_sync_codex_home(context, command, out, services) -> int:
         synced = ','.join(result.synced) if result.synced else '(none)'
         auth_note = ' auth=skipped' if result.skipped_auth else ''
         lines.append(f'agent: {result.agent_name} synced={synced}{auth_note} path={result.path}')
+    for skipped in getattr(summary, 'skipped', ()):
+        path_note = f' path={skipped.path}' if skipped.path is not None else ''
+        lines.append(f'skipped: {skipped.agent_name} reason={skipped.reason}{path_note}')
     services.write_lines(out, lines)
     return 0
 

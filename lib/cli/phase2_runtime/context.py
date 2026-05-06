@@ -85,7 +85,7 @@ def resolve_requested_project_root(command, *, cwd: Path, project_discovery_erro
 
 def should_bootstrap_if_missing(command) -> bool:
     kind = getattr(command, 'kind', None)
-    return kind not in {'config-validate', 'kill'}
+    return kind not in {'config-validate', 'kill', 'sync-codex-home'}
 
 
 def confirm_project_reset(project_root: Path, *, out, stdin, stream_is_tty_fn) -> None:

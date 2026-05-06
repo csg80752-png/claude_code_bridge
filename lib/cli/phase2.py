@@ -76,7 +76,7 @@ def maybe_handle_phase2(
 
 def _command_requires_bootstrap_config(command) -> bool:
     kind = getattr(command, 'kind', None)
-    return kind not in {'config-validate', 'kill'}
+    return kind not in {'config-validate', 'kill', 'sync-codex-home'}
 
 
 def _render_kill_without_anchor(command, *, cwd: Path | None, out: TextIO) -> int:
