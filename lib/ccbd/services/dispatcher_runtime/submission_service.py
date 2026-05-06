@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from agents.models import AgentState
 from ccbd.api_models import DeliveryScope, JobRecord, MessageEnvelope, TargetKind
+from mailbox_runtime.targets import CMD_ACTOR
 from message_bureau import AttemptState, AttemptStore, MessageStore
 
 from .submission_models import _JobDraft, _message_for_agent, _SubmissionPlan
@@ -20,6 +21,8 @@ _TERMINAL_ATTEMPT_STATES = frozenset(
 
 def _plan_agent_submission(dispatcher, request: MessageEnvelope) -> _SubmissionPlan:
     dispatcher._validate_sender(request.from_actor)
+    if request.delivery_scope is DeliveryScope.SINGLE and request.to_agent == CMD_ACTOR:
+        return _plan_cmd_submission(dispatcher, request)
     targets = dispatcher._resolve_targets(request)
     if not targets:
         raise dispatcher._dispatch_error('no eligible target agents are alive for this request')
@@ -34,6 +37,27 @@ def _plan_agent_submission(dispatcher, request: MessageEnvelope) -> _SubmissionP
         drafts=tuple(drafts),
         submission_id=submission_id,
         target_scope='all' if submission_id is not None else None,
+    )
+
+
+def _plan_cmd_submission(dispatcher, request: MessageEnvelope) -> _SubmissionPlan:
+    if not bool(getattr(dispatcher._config, 'cmd_enabled', False)):
+        raise dispatcher._dispatch_error(f'unknown agent: {CMD_ACTOR}')
+    return _SubmissionPlan(
+        project_id=request.project_id,
+        from_actor=request.from_actor,
+        request=request,
+        task_id=request.task_id,
+        drafts=(
+            _JobDraft(
+                agent_name=CMD_ACTOR,
+                provider=CMD_ACTOR,
+                request=request,
+                target_kind=TargetKind.CMD,
+                target_name=CMD_ACTOR,
+                workspace_path=str(dispatcher._layout.project_root),
+            ),
+        ),
     )
 
 

@@ -35,6 +35,77 @@ def test_submit_ask_rejects_unknown_target(tmp_path: Path) -> None:
     assert str(exc_info.value) == 'unknown agent: agent9'
 
 
+def test_submit_ask_allows_cmd_target_when_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-ask-cmd-target'
+    project_root.mkdir()
+    context = _build_context(project_root)
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        def submit(self, envelope) -> dict:
+            captured['to_agent'] = envelope.to_agent
+            captured['delivery_scope'] = envelope.delivery_scope
+            return {
+                'job_id': 'job_cmd',
+                'agent_name': 'cmd',
+                'target_kind': 'cmd',
+                'target_name': 'cmd',
+                'status': 'accepted',
+            }
+
+    monkeypatch.setattr(
+        ask_service,
+        'load_project_config',
+        lambda project_root: SimpleNamespace(config=SimpleNamespace(agents={'agent1': {}, 'agent2': {}}, cmd_enabled=True)),
+    )
+    monkeypatch.setattr(ask_service, 'resolve_ask_sender', lambda context, sender: 'agent1')
+    monkeypatch.setattr(
+        ask_service,
+        'connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=_FakeClient()),
+    )
+
+    summary = ask_service.submit_ask(
+        context,
+        ParsedAskCommand(project=None, target='cmd', sender=None, message='hello operator'),
+    )
+
+    assert captured == {
+        'to_agent': 'cmd',
+        'delivery_scope': DeliveryScope.SINGLE,
+    }
+    assert summary.jobs == (
+        {
+            'job_id': 'job_cmd',
+            'agent_name': 'cmd',
+            'target_kind': 'cmd',
+            'target_name': 'cmd',
+            'provider_instance': None,
+            'status': 'accepted',
+        },
+    )
+
+
+def test_submit_ask_rejects_cmd_target_when_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-ask-cmd-target-disabled'
+    project_root.mkdir()
+    context = _build_context(project_root)
+
+    monkeypatch.setattr(
+        ask_service,
+        'load_project_config',
+        lambda project_root: SimpleNamespace(config=SimpleNamespace(agents={'agent1': {}}, cmd_enabled=False)),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        ask_service.submit_ask(
+            context,
+            ParsedAskCommand(project=None, target='cmd', sender=None, message='hello operator'),
+        )
+
+    assert str(exc_info.value) == 'unknown agent: cmd'
+
+
 def test_submit_ask_maps_broadcast_payload_and_submission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-ask-broadcast'
     project_root.mkdir()

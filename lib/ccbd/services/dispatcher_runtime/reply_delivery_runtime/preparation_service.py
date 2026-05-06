@@ -8,9 +8,11 @@ import os
 from pathlib import Path
 import time
 
+from completion.models import CompletionConfidence, CompletionDecision, CompletionStatus
 from mailbox_kernel.gc import compact_mailbox_jsonl
 from ccbd.system import parse_utc_timestamp
 from mailbox_kernel import InboundEventStatus, InboundEventType
+from message_bureau.facade_recording_common import job_id_from_payload_ref
 from message_bureau.reply_payloads import reply_id_from_payload
 from terminal_runtime.tmux_backend_runtime.actions import (
     capture_tmux_value as _capture_tmux_value,
@@ -98,6 +100,7 @@ def prepare_reply_deliveries(dispatcher):
             created.append(job)
 
     if bool(getattr(dispatcher._config, 'cmd_enabled', False)):
+        _deliver_cmd_requests(dispatcher)
         _deliver_cmd_replies(dispatcher)
 
     return tuple(created)
@@ -140,6 +143,91 @@ def _deliver_cmd_replies(dispatcher):
     if pending_count > 0:
         _maybe_emit_cmd_pane_discovery_diag(dispatcher, pending_count=pending_count)
     return _deliver_cmd_replies_impl(dispatcher)
+
+
+def _deliver_cmd_requests(dispatcher) -> None:
+    control = getattr(dispatcher, '_message_bureau_control', None)
+    kernel = getattr(control, '_mailbox_kernel', None) if control is not None else None
+    if kernel is None:
+        return
+    head = kernel.head_pending_event('cmd')
+    if head is None or head.event_type is not InboundEventType.TASK_REQUEST:
+        return
+    if head.status not in (InboundEventStatus.CREATED, InboundEventStatus.QUEUED):
+        return
+    job_id = job_id_from_payload_ref(head.payload_ref)
+    if not job_id:
+        try:
+            kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
+        except Exception:
+            _logger.debug('cmd request abandon (malformed payload) failed', exc_info=True)
+        return
+
+    from ..records import get_job
+
+    job = get_job(dispatcher, job_id)
+    if job is None:
+        try:
+            kernel.abandon('cmd', head.inbound_event_id, finished_at=dispatcher._clock())
+        except Exception:
+            _logger.debug('cmd request abandon (missing job) failed', exc_info=True)
+        return
+
+    pane_id = _discover_cmd_pane_id(dispatcher)
+    if not pane_id:
+        return
+    backend = _get_tmux_backend(dispatcher)
+    if backend is None:
+        return
+    try:
+        if not backend.is_alive(pane_id):
+            return
+    except Exception:
+        _logger.debug('cmd request pane liveness check raised', exc_info=True)
+        return
+    project_root = _resolve_project_root(dispatcher)
+    ready, _foreground_command, _held_reason = _cmd_delivery_gate(
+        backend,
+        pane_id,
+        project_root=project_root,
+    )
+    if not ready:
+        return
+
+    body = f'CCB_REQ_ID: {job.job_id}\n\n{job.request.body}'
+    try:
+        backend.send_text_to_pane(pane_id, body)
+    except Exception:
+        _logger.debug('cmd request pane injection failed', exc_info=True)
+        return
+
+    finished_at = dispatcher._clock()
+    consumed = kernel.consume('cmd', head.inbound_event_id, finished_at=finished_at)
+    if consumed is None:
+        return
+    dispatcher._state.remove_queued_for(job.target_kind, job.target_name, job.job_id)
+    dispatcher._state.mark_active_for(job.target_kind, job.target_name, job.job_id)
+    dispatcher.complete(
+        job.job_id,
+        CompletionDecision(
+            terminal=True,
+            status=CompletionStatus.COMPLETED,
+            reason='cmd_request_delivered',
+            confidence=CompletionConfidence.OBSERVED,
+            reply='',
+            anchor_seen=True,
+            reply_started=False,
+            reply_stable=True,
+            provider_turn_ref=pane_id,
+            source_cursor=None,
+            finished_at=finished_at,
+            diagnostics={
+                'cmd_target': True,
+                'delivery_status': 'sent',
+                'pane_id': pane_id,
+            },
+        ),
+    )
 
 
 def _deliver_cmd_replies_impl(dispatcher):

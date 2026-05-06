@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from agents.models import normalize_agent_name
+from mailbox_runtime.targets import normalize_mailbox_owner_name
 
 from ..enums import (
     CompletionConfidence,
@@ -130,7 +130,7 @@ class CompletionSnapshot:
     def __post_init__(self) -> None:
         if not (self.job_id or '').strip():
             raise CompletionValidationError('job_id cannot be empty')
-        object.__setattr__(self, 'agent_name', normalize_agent_name(self.agent_name))
+        object.__setattr__(self, 'agent_name', normalize_mailbox_owner_name(self.agent_name))
         if not self.updated_at:
             raise CompletionValidationError('updated_at cannot be empty')
         object.__setattr__(self, 'latest_reply_preview', self.latest_reply_preview or '')

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agents.models import normalize_agent_name
+from mailbox_runtime.targets import CMD_ACTOR
 
 from .common import JobStatus, TargetKind
 
@@ -25,6 +26,10 @@ class AcceptedJobReceipt:
             normalized_agent = normalize_agent_name(self.target_name or self.agent_name)
             object.__setattr__(self, "agent_name", normalized_agent)
             object.__setattr__(self, "target_name", normalized_agent)
+            object.__setattr__(self, "provider_instance", None)
+        elif self.target_kind is TargetKind.CMD:
+            object.__setattr__(self, "agent_name", CMD_ACTOR)
+            object.__setattr__(self, "target_name", CMD_ACTOR)
             object.__setattr__(self, "provider_instance", None)
         else:
             target_name = str(self.target_name or "").strip().lower()
@@ -107,6 +112,10 @@ class CancelReceipt:
             normalized_agent = normalize_agent_name(self.target_name or self.agent_name)
             object.__setattr__(self, "agent_name", normalized_agent)
             object.__setattr__(self, "target_name", normalized_agent)
+            object.__setattr__(self, "provider_instance", None)
+        elif self.target_kind is TargetKind.CMD:
+            object.__setattr__(self, "agent_name", CMD_ACTOR)
+            object.__setattr__(self, "target_name", CMD_ACTOR)
             object.__setattr__(self, "provider_instance", None)
         else:
             target_name = str(self.target_name or "").strip().lower()

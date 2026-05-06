@@ -24,6 +24,7 @@ class DeliveryScope(str, Enum):
 
 class TargetKind(str, Enum):
     AGENT = "agent"
+    CMD = "cmd"
 
 
 __all__ = ["API_VERSION", "SCHEMA_VERSION", "DeliveryScope", "JobStatus", "TargetKind"]

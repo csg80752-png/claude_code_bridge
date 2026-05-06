@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from ccbd.api_models import DeliveryScope, JobEvent, JobRecord, JobStatus, MessageEnvelope, SubmissionRecord, TargetKind
+from ccbd.api_models import (
+    AcceptedJobReceipt,
+    DeliveryScope,
+    JobEvent,
+    JobRecord,
+    JobStatus,
+    MessageEnvelope,
+    SubmissionRecord,
+    TargetKind,
+)
 
 
 def test_message_envelope_validates_delivery_scope() -> None:
@@ -33,6 +42,21 @@ def test_message_envelope_normalizes_agent_names_and_system_sender() -> None:
 
     assert envelope.to_agent == 'agent1'
     assert envelope.from_actor == 'system'
+
+
+def test_message_envelope_preserves_cmd_target() -> None:
+    envelope = MessageEnvelope(
+        project_id='proj',
+        to_agent='CMD',
+        from_actor='agent1',
+        body='hello operator',
+        task_id=None,
+        reply_to=None,
+        message_type='ask',
+        delivery_scope=DeliveryScope.SINGLE,
+    )
+
+    assert envelope.to_agent == 'cmd'
 
 
 def test_message_envelope_preserves_cmd_and_email_actors() -> None:
@@ -218,3 +242,66 @@ def test_job_event_normalizes_agent_target_identity() -> None:
     assert event.agent_name == 'agent1'
     assert record['target_kind'] == 'agent'
     assert record['target_name'] == 'agent1'
+
+
+def test_job_record_preserves_cmd_target_identity() -> None:
+    envelope = MessageEnvelope(
+        project_id='proj',
+        to_agent='cmd',
+        from_actor='agent1',
+        body='hello operator',
+        task_id=None,
+        reply_to=None,
+        message_type='ask',
+        delivery_scope=DeliveryScope.SINGLE,
+    )
+
+    job = JobRecord(
+        job_id='job-cmd-1',
+        submission_id=None,
+        agent_name='Agent1',
+        provider='cmd',
+        target_kind=TargetKind.CMD,
+        target_name='CMD',
+        request=envelope,
+        status=JobStatus.ACCEPTED,
+        terminal_decision=None,
+        cancel_requested_at=None,
+        created_at='2026-03-18T00:00:00Z',
+        updated_at='2026-03-18T00:00:01Z',
+    )
+
+    record = job.to_record()
+    assert job.target_kind is TargetKind.CMD
+    assert job.target_name == 'cmd'
+    assert job.agent_name == 'cmd'
+    assert record['target_kind'] == 'cmd'
+    assert record['target_name'] == 'cmd'
+
+
+def test_job_event_and_receipt_preserve_cmd_target_identity() -> None:
+    event = JobEvent(
+        event_id='evt-cmd-1',
+        job_id='job-cmd-1',
+        agent_name='Agent1',
+        target_kind=TargetKind.CMD,
+        target_name='CMD',
+        type='job_started',
+        payload={'status': 'running'},
+        timestamp='2026-03-18T00:00:00Z',
+    )
+    receipt = AcceptedJobReceipt(
+        job_id='job-cmd-1',
+        agent_name='Agent1',
+        target_kind=TargetKind.CMD,
+        target_name='CMD',
+        provider_instance='ignored',
+        status=JobStatus.ACCEPTED,
+        accepted_at='2026-03-18T00:00:00Z',
+    )
+
+    assert event.agent_name == 'cmd'
+    assert event.target_name == 'cmd'
+    assert receipt.agent_name == 'cmd'
+    assert receipt.target_name == 'cmd'
+    assert receipt.provider_instance is None

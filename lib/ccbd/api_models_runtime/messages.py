@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from agents.models import normalize_agent_name
-from mailbox_runtime.targets import normalize_actor_name
+from mailbox_runtime.targets import CMD_ACTOR, normalize_actor_name
 
 from .common import DeliveryScope
 
@@ -30,8 +30,11 @@ class MessageEnvelope:
             raise ValueError("from_actor cannot be empty")
         if not self.body.strip():
             raise ValueError("body cannot be empty")
-        if str(self.to_agent).strip().lower() == "all":
+        normalized_target = str(self.to_agent).strip().lower()
+        if normalized_target == "all":
             object.__setattr__(self, "to_agent", "all")
+        elif normalized_target == CMD_ACTOR:
+            object.__setattr__(self, "to_agent", CMD_ACTOR)
         else:
             object.__setattr__(self, "to_agent", normalize_agent_name(self.to_agent))
         object.__setattr__(self, "from_actor", normalize_actor_name(self.from_actor))

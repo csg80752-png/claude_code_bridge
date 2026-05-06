@@ -12,7 +12,9 @@ from completion.models import (
     CompletionItemKind,
     CompletionProfile,
     CompletionRequestContext,
+    CompletionSnapshot,
     CompletionSourceKind,
+    CompletionState,
     CompletionStatus,
     ReplyCandidateKind,
     SelectorFamily,
@@ -106,3 +108,30 @@ def test_request_context_normalizes_agent_name() -> None:
         anchor_text='anchor',
     )
     assert context.agent_name == 'agent1'
+
+
+def test_completion_snapshot_accepts_cmd_mailbox_owner() -> None:
+    snapshot = CompletionSnapshot(
+        job_id='job-cmd-1',
+        agent_name='CMD',
+        profile_family=CompletionFamily.TERMINAL_TEXT_QUIET,
+        state=CompletionState(),
+        latest_decision=CompletionDecision(
+            terminal=True,
+            status=CompletionStatus.COMPLETED,
+            reason='cmd_request_delivered',
+            confidence=CompletionConfidence.OBSERVED,
+            reply='',
+            anchor_seen=True,
+            reply_started=False,
+            reply_stable=True,
+            provider_turn_ref='%cmd',
+            source_cursor=None,
+            finished_at='2026-03-18T00:00:03Z',
+            diagnostics={},
+        ),
+        latest_reply_preview='',
+        updated_at='2026-03-18T00:00:03Z',
+    )
+
+    assert snapshot.agent_name == 'cmd'

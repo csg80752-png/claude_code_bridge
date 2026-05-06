@@ -19,7 +19,7 @@ def submit_ask(
 ) -> AskSummary:
     config = load_project_config_fn(context.project.project_root).config
     normalized_target = _normalize_target(command.target)
-    _validate_target(normalized_target, config.agents)
+    _validate_target(normalized_target, config.agents, cmd_enabled=bool(getattr(config, 'cmd_enabled', False)))
     sender = resolve_ask_sender_fn(context, command.sender)
     normalized_sender = _normalize_sender(sender)
     _validate_sender(normalized_sender, config.agents, cmd_enabled=bool(getattr(config, 'cmd_enabled', False)))
@@ -55,7 +55,9 @@ def _normalize_target(value: str | None) -> str:
     return _normalize_sender(normalized)
 
 
-def _validate_target(target: str, configured_agents: Collection[str]) -> None:
+def _validate_target(target: str, configured_agents: Collection[str], *, cmd_enabled: bool) -> None:
+    if target == CMD_ACTOR and cmd_enabled:
+        return
     if target != 'all' and target not in configured_agents:
         raise ValueError(f'unknown agent: {target}')
 

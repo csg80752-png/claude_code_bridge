@@ -3,6 +3,8 @@ from __future__ import annotations
 from uuid import uuid4
 
 from agents.models import AgentState, AgentValidationError
+from ccbd.api_models import TargetKind
+from completion.models import CompletionFamily
 from completion.tracker import CompletionTrackerView
 
 from .completion import apply_tracker_view, merge_terminal_decision
@@ -61,6 +63,8 @@ class DispatcherFacadeMixin:
         return manifest.completion_family
 
     def _profile_family_for_job(self, job):
+        if job.target_kind is not TargetKind.AGENT:
+            return CompletionFamily.TERMINAL_TEXT_QUIET
         return self._profile_family(job.agent_name)
 
     def _has_outstanding_work(self, agent_name: str) -> bool:
