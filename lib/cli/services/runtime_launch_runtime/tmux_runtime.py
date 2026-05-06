@@ -28,6 +28,7 @@ def launch_tmux_runtime(
     pane_meets_minimum_size_fn,
     best_effort_kill_tmux_pane_fn,
     write_session_file_fn,
+    before_launch_fn=None,
     assigned_pane_id: str | None = None,
     style_index: int = 0,
     tmux_socket_path: str | None = None,
@@ -40,6 +41,8 @@ def launch_tmux_runtime(
     backend = tmux_backend(backend_factory, tmux_socket_path)
     pane_title_marker = pane_title_marker_fn(context, spec)
     start_cmd = launcher.build_start_cmd(command, spec, runtime_dir, launch_session_id)
+    if before_launch_fn is not None:
+        before_launch_fn(context, spec, runtime_dir)
     runtime_cwd = run_cwd(
         launcher,
         command=command,

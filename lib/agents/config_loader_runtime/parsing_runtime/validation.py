@@ -16,11 +16,13 @@ def validate_project_config(document: dict[str, Any], *, source_path: Path | Non
     parsed_agents = parse_agents(document.get('agents'))
     cmd_enabled = _parse_cmd_enabled(document)
     layout_spec = _parse_layout_spec(document)
+    provider_home_sync = _parse_provider_home_sync(document)
     return _build_project_config(
         default_agents=default_agents,
         parsed_agents=parsed_agents,
         cmd_enabled=cmd_enabled,
         layout_spec=layout_spec,
+        provider_home_sync=provider_home_sync,
         source_path=source_path,
     )
 
@@ -60,12 +62,26 @@ def _parse_layout_spec(document: dict[str, Any]) -> str | None:
     return expect_string(document['layout'], field_name='layout')
 
 
+def _parse_provider_home_sync(document: dict[str, Any]) -> tuple[str, ...]:
+    if document.get('provider_home_sync') is None:
+        return ()
+    providers = []
+    for item in expect_string_list(document['provider_home_sync'], field_name='provider_home_sync'):
+        provider = item.strip().lower()
+        if provider not in {'codex', 'claude'}:
+            raise ConfigValidationError('provider_home_sync only supports: codex, claude')
+        if provider not in providers:
+            providers.append(provider)
+    return tuple(providers)
+
+
 def _build_project_config(
     *,
     default_agents: tuple[str, ...],
     parsed_agents,
     cmd_enabled: bool,
     layout_spec: str | None,
+    provider_home_sync: tuple[str, ...],
     source_path: Path | None,
 ) -> ProjectConfig:
     try:
@@ -75,6 +91,7 @@ def _build_project_config(
             agents=parsed_agents,
             cmd_enabled=cmd_enabled,
             layout_spec=layout_spec,
+            provider_home_sync=provider_home_sync,
             source_path=str(source_path) if source_path else None,
         )
     except AgentValidationError as exc:

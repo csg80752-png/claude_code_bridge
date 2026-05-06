@@ -14,6 +14,7 @@ class ProjectConfig:
     agents: dict[str, object]
     cmd_enabled: bool = False
     layout_spec: str | None = None
+    provider_home_sync: tuple[str, ...] = ()
     source_path: str | None = None
 
     def __post_init__(self) -> None:
@@ -40,6 +41,7 @@ class ProjectConfig:
             'agents': {name: spec.to_record() for name, spec in self.agents.items()},
             'cmd_enabled': bool(self.cmd_enabled),
             'layout_spec': self.layout_spec,
+            'provider_home_sync': list(self.provider_home_sync),
             'source_path': self.source_path,
         }
 
