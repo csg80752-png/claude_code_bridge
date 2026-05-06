@@ -1,7 +1,8 @@
 """Direct tests for guarded cmd reply delivery.
 
 The function's contract:
-- It injects to safe, ready cmd consumers and leaves the head for human ack.
+- It injects to safe, ready cmd consumers and consumes injected events so
+  mailbox metrics reflect delivered replies.
 - Unsafe or not-ready consumers hold delivery without injecting or acking.
 - Environmental failures (no pane, dead backend, send error) leave the head
   QUEUED so the next tick retries.
@@ -45,6 +46,8 @@ class _RecordingKernel:
     def pending_events(self, agent_name: str, *, event_type=None):
         if self._head is None:
             return ()
+        if self._head.status not in (InboundEventStatus.CREATED, InboundEventStatus.QUEUED):
+            return ()
         if event_type is not None and self._head.event_type is not event_type:
             return ()
         return (self._head,)
@@ -55,6 +58,8 @@ class _RecordingKernel:
 
     def consume(self, agent_name: str, inbound_event_id: str, *, finished_at=None):
         self.calls.append(('consume', inbound_event_id))
+        if self._head is not None and self._head.inbound_event_id == inbound_event_id:
+            self._head.status = InboundEventStatus.CONSUMED
         return self._head
 
     def abandon(self, agent_name: str, inbound_event_id: str, *, finished_at=None):
@@ -235,7 +240,7 @@ def _patch_foreground_sequence(monkeypatch, commands: list[str]):
 
 # --- Happy path ---
 
-def test_inject_sends_text_and_does_not_auto_ack_head(
+def test_inject_sends_text_and_consumes_delivered_head(
     _stub_pane_and_backend, monkeypatch
 ):
     head = _make_head()
@@ -244,7 +249,7 @@ def test_inject_sends_text_and_does_not_auto_ack_head(
 
     preparation_service._deliver_cmd_replies(dispatcher)
 
-    assert kernel.calls == []
+    assert kernel.calls == [('consume', 'evt-1')]
     # The pane received the text.
     assert len(_stub_pane_and_backend.injected) == 1
     pane_id, text = _stub_pane_and_backend.injected[0]
@@ -262,7 +267,7 @@ def test_idempotent_no_reinject_on_second_call(_stub_pane_and_backend):
     preparation_service._deliver_cmd_replies(dispatcher)
 
     assert len(_stub_pane_and_backend.injected) == 1, 'should inject exactly once for the same reply_id'
-    assert kernel.calls == []
+    assert kernel.calls == [('consume', 'evt-1')]
 
 
 # --- Persisted injected cache ---
@@ -356,7 +361,30 @@ def test_warm_restart_uses_persisted_cache_to_skip_reinject(monkeypatch, tmp_pat
     preparation_service._deliver_cmd_replies(dispatcher_b)
 
     assert backend_b.injected == []
-    assert kernel_b.calls == []
+    assert kernel_b.calls == [('consume', 'evt-1')]
+
+
+def test_durable_cache_hit_consumes_delivered_cmd_event(monkeypatch, tmp_path):
+    _write_cache_records(
+        tmp_path,
+        [_cache_record('rep-cached', '2026-04-24T00:00:00Z')],
+    )
+    backend = _RecordingBackend()
+    monkeypatch.setattr(preparation_service, '_discover_cmd_pane_id', lambda d: '%1')
+    monkeypatch.setattr(preparation_service, '_get_tmux_backend', lambda d: backend)
+    _patch_claude_foreground(monkeypatch)
+    dispatcher, kernel = _make_dispatcher(
+        head=_make_head(payload_ref='reply:rep-cached'),
+        reply=_make_reply(reply_id='rep-cached', body='already visible'),
+        backend=backend,
+        project_root=tmp_path,
+        clock='2026-04-24T00:05:00Z',
+    )
+
+    preparation_service._deliver_cmd_replies(dispatcher)
+
+    assert backend.injected == []
+    assert kernel.calls == [('consume', 'evt-1')]
 
 
 def test_injected_cache_corrupt_line_skips_with_warning(tmp_path, caplog):
@@ -612,7 +640,7 @@ def test_send_failure_does_not_claim_or_burn_head(monkeypatch):
 
 def test_retry_succeeds_after_transient_send_failure(monkeypatch):
     """First tick: backend rejects send. Second tick: backend healthy. Reply
-    delivered exactly once and head still untouched."""
+    delivered exactly once and the delivered event is consumed."""
     head = _make_head()
     reply = _make_reply()
     backend = _RecordingBackend(send_raises=True)
@@ -627,7 +655,7 @@ def test_retry_succeeds_after_transient_send_failure(monkeypatch):
     backend._send_raises = False
     preparation_service._deliver_cmd_replies(dispatcher)
     assert len(backend.injected) == 1
-    assert kernel.calls == []
+    assert kernel.calls[-1:] == [('consume', 'evt-1')]
 
 
 # --- DELIVERING / unexpected status filtering ---
@@ -717,7 +745,7 @@ def test_long_body_happy_path_emits_header_only_dispatch_telemetry(
     assert len(dispatch_events) == 1
     assert dispatch_events[0]['reply_id'] == reply.reply_id
     assert dispatch_events[0]['body_char_count'] == len(long_body)
-    assert kernel.calls == []
+    assert kernel.calls == [('consume', 'evt-1')]
 
 
 def test_long_body_without_project_root_records_fallback_telemetry(monkeypatch, tmp_path):
@@ -751,7 +779,7 @@ def test_long_body_without_project_root_records_fallback_telemetry(monkeypatch, 
     success_events = [r for r in records if r.get('event') == 'cmd_delivery_success']
     assert len(success_events) == 1
     assert success_events[0]['body_char_count'] == len(long_body)
-    assert kernel.calls == []
+    assert kernel.calls == [('consume', 'evt-1')]
 
 
 def test_plan_exception_records_phase2_failure_telemetry(monkeypatch, tmp_path):
@@ -811,9 +839,8 @@ def test_plan_exception_records_phase2_failure_telemetry(monkeypatch, tmp_path):
 
 
 def test_lru_cache_eviction_keeps_user_visible_delivery_at_least_once(_stub_pane_and_backend):
-    """cmd reply delivery is human-ack and at-least-once if the in-memory
-    suppression cache is manually evicted while the mailbox head remains
-    queued."""
+    """cmd reply delivery consumes successfully surfaced events, so evicting
+    the in-memory cache after delivery does not re-inject a drained event."""
     head = _make_head()
     reply = _make_reply()
     dispatcher, kernel = _make_dispatcher(head=head, reply=reply, backend=_stub_pane_and_backend)
@@ -826,8 +853,8 @@ def test_lru_cache_eviction_keeps_user_visible_delivery_at_least_once(_stub_pane
     cache.clear()
 
     preparation_service._deliver_cmd_replies(dispatcher)
-    assert len(_stub_pane_and_backend.injected) == 2
-    assert kernel.calls == []
+    assert len(_stub_pane_and_backend.injected) == 1
+    assert kernel.calls == [('consume', 'evt-1')]
 
 
 def test_durable_cache_hit_for_evicted_old_reply_does_not_block_fresh_reply(
@@ -898,7 +925,10 @@ def test_durable_cache_hit_for_evicted_old_reply_does_not_block_fresh_reply(
 
     assert len(backend.injected) == 1
     assert 'fresh visible body' in backend.injected[0][1]
-    assert kernel.calls == []
+    assert kernel.calls == [
+        ('consume', 'evt-old-surfaced'),
+        ('consume', 'evt-fresh-visible'),
+    ]
 
 
 def test_load_cmd_safe_consumers_default_without_project_root(monkeypatch):
@@ -956,7 +986,7 @@ def test_ready_claude_delivery_records_success(monkeypatch, tmp_path):
     preparation_service._deliver_cmd_replies(dispatcher)
 
     assert len(backend.injected) == 1
-    assert kernel.calls == []
+    assert kernel.calls == [('consume', 'evt-1')]
     success = [r for r in _read_metrics(tmp_path) if r.get('event') == 'cmd_delivery_success']
     assert len(success) == 1
     assert success[0]['foreground_command'] == 'claude'

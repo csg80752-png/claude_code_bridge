@@ -86,4 +86,4 @@ def test_deliver_cmd_replies_sees_reply_appended_after_cached_empty_head(monkeyp
     assert len(backend.sent) == 1
     assert backend.sent[0][0] == 'cmd-pane'
     assert 'hello from cache' in backend.sent[0][1]
-    assert inbound_store.get_latest('cmd', 'evt-reply-1').status == InboundEventStatus.QUEUED
+    assert inbound_store.get_latest('cmd', 'evt-reply-1').status == InboundEventStatus.CONSUMED

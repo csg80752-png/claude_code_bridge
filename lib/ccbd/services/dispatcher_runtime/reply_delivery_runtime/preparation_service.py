@@ -238,25 +238,26 @@ def _deliver_cmd_request(dispatcher, kernel, head, job) -> None:
 
 
 def _deliver_cmd_replies_impl(dispatcher):
-    """Side-effect-only cmd delivery: inject pane text, leave head for human ack.
+    """Surface cmd replies in the pane and consume successfully surfaced events.
 
-    CCB contract: `client.ack('cmd')` is the human-driven consumer of the cmd
-    mailbox head. This function's job is to surface replies in the tmux pane,
-    NOT to burn the inbox head. Any claim/consume/abandon here would race
-    against the user's ack call (and was the root cause of the reply-loss
-    finding from codex structural review 2026-04-22).
+    CCB contract: once a task_reply is visibly injected into a safe cmd pane,
+    or is already known visible via the durable delivered cache, the mailbox
+    event is consumed. The delivered cache is the idempotency source of truth;
+    the cmd inbox is not kept pinned for a separate human ack. That keeps
+    pending_cmd_replies/mailbox state aligned with what the user can already
+    see in the operator pane.
 
     Per-tick sweep: process ALL pending non-terminal task_reply events on
     the cmd queue, not just the head. The injected_cache acts as the
     idempotent guard so events injected on a previous tick are not re-sent.
-    Without this sweep, a pinned-head real reply (still awaiting human ack)
-    would block subsequent replies indefinitely, even though they are
-    independently deliverable to the pane (root cause confirmed 2026-05-03
-    KST via live ack probe; v8.3.3 cmd-pending-sweep fix).
+    Without this sweep, an old delivered reply can pin the queue head and
+    block subsequent replies indefinitely, even though they are independently
+    deliverable to the pane (root cause confirmed 2026-05-03 KST via live ack
+    probe; v8.3.3 cmd-pending-sweep fix).
 
     Ordering preservation: the sweep ONLY skips ahead past events that are
-    fully resolved this tick — already-injected (cache hit), abandoned
-    (malformed payload OR planning exception), or suppressed-and-acked
+    fully resolved this tick — already-injected-and-consumed (cache hit),
+    abandoned (malformed payload OR planning exception), or suppressed-and-acked
     (heartbeat / cancelled empty). Any TRANSIENT deferred outcome (gate
     hold, reply_store race, pane unavailability) STOPS the sweep, so a
     later reply never overtakes an earlier reply still waiting to surface.
@@ -272,10 +273,11 @@ def _deliver_cmd_replies_impl(dispatcher):
     KST; v8.3.3 R3 fix). The phase-2 failure record is still emitted for
     telemetry / triage so the abandoned reply is not silently lost.
 
-    Idempotency: reply_ids already injected are cached in an LRU on the
-    dispatcher so we don't spam the pane on every tick while the user
-    hasn't acked yet. Environmental failures (no pane, dead backend) return
-    silently and let the next tick retry once the environment recovers.
+    Idempotency: reply_ids already injected are cached in an LRU/durable
+    cache and consumed from the cmd mailbox after successful pane injection,
+    so mailbox metrics reflect delivered replies. Environmental failures
+    (no pane, dead backend) return silently and let the next tick retry once
+    the environment recovers.
     """
     control = getattr(dispatcher, '_message_bureau_control', None)
     if control is None:
@@ -430,10 +432,12 @@ def _deliver_cmd_replies_impl(dispatcher):
 
         if reply_id in injected_cache:
             _clear_pane_retry_count(dispatcher, head.inbound_event_id)
+            _consume_delivered_cmd_reply(kernel, head, timestamp=dispatcher._clock())
             injected_cache.move_to_end(reply_id)
             continue
         if _rehydrate_injected_cache_hit(dispatcher, injected_cache, reply_id):
             _clear_pane_retry_count(dispatcher, head.inbound_event_id)
+            _consume_delivered_cmd_reply(kernel, head, timestamp=dispatcher._clock())
             injected_cache.move_to_end(reply_id)
             continue
 
@@ -709,6 +713,8 @@ def _deliver_cmd_replies_impl(dispatcher):
                 injected_cache.popitem(last=False)
             _persist_injected_reply(dispatcher, reply_id, injected_at)
 
+        _consume_delivered_cmd_reply(kernel, head, timestamp=dispatcher._clock())
+
 
 def _get_cmd_delivery_mode_result(dispatcher, project_root):
     result = getattr(dispatcher, '_cmd_delivery_mode_result', None)
@@ -809,6 +815,19 @@ def _load_injected_cache(dispatcher):
     if line_count > _CMD_DELIVERED_CACHE_MAX_DISK or saw_expired:
         _compact_injected_cache_file(cache_path, cache)
     return cache
+
+
+def _consume_delivered_cmd_reply(kernel, head, *, timestamp: str | None = None) -> bool:
+    try:
+        consumed = kernel.consume('cmd', head.inbound_event_id, finished_at=timestamp)
+    except Exception:
+        _logger.debug('cmd delivered-reply consume failed', exc_info=True)
+        return False
+    return bool(
+        consumed is not None
+        and getattr(consumed, 'inbound_event_id', None) == head.inbound_event_id
+        and getattr(consumed, 'status', None) is InboundEventStatus.CONSUMED
+    )
 
 
 def _try_ack(kernel, head, *, timestamp: str | None = None) -> bool:
