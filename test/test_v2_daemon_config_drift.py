@@ -392,6 +392,51 @@ def test_connect_mounted_daemon_recovers_after_transient_degraded_unreachable_da
     assert handle is expected_handle
 
 
+def test_connect_mounted_daemon_waits_for_repeated_transient_degraded_unreachable_daemon(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'repo-ask-recover-repeated'
+    ctx = _context(project_root, 'cmd,agent1:codex; agent2:codex,agent3:claude\n')
+    degraded = _inspection(
+        ctx,
+        health=LeaseHealth.DEGRADED,
+        socket_connectable=False,
+        pid_alive=True,
+        heartbeat_fresh=True,
+        reason='socket_unreachable',
+    )
+    healthy = _inspection(
+        ctx,
+        health=LeaseHealth.HEALTHY,
+        socket_connectable=True,
+        pid_alive=True,
+        heartbeat_fresh=True,
+        reason='healthy',
+    )
+    expected_handle = daemon_service.DaemonHandle(client=None, inspection=healthy, started=False)
+    inspections = iter([degraded, degraded, degraded, healthy])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(daemon_service, 'inspect_daemon', lambda context: (None, None, next(inspections)))
+    monkeypatch.setattr(
+        daemon_service,
+        '_connect_compatible_daemon',
+        lambda context, inspection, restart_on_mismatch: expected_handle if inspection.socket_connectable else None,
+    )
+    monkeypatch.setattr(
+        daemon_service,
+        'ensure_daemon_started',
+        lambda context: (_ for _ in ()).throw(AssertionError('should not restart daemon')),
+    )
+    monkeypatch.setattr('cli.services.daemon_runtime.lifecycle.time.sleep', lambda seconds: sleeps.append(seconds))
+
+    handle = daemon_service.connect_mounted_daemon(ctx, allow_restart_stale=True)
+
+    assert handle is expected_handle
+    assert sleeps == [0.05, 0.05]
+
+
 def test_connect_mounted_daemon_restarts_unmounted_daemon_when_recovery_allowed(
     monkeypatch,
     tmp_path: Path,

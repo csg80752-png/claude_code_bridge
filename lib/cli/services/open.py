@@ -22,6 +22,7 @@ _UNMOUNTED_ERRORS = frozenset(
 )
 _TRANSIENT_CONNECT_ERROR_FRAGMENTS = (
     'socket_unreachable',
+    'Connection refused',
     'timed out',
     'Resource temporarily unavailable',
 )
@@ -81,15 +82,26 @@ def _connect_attachable_daemon(context: CliContext):
                 retryable = True
             elif observed_config_drift and message in _UNMOUNTED_ERRORS:
                 retryable = True
-            elif _is_transient_open_connect_error(message):
+            elif _is_transient_open_connect_error(message, exc=exc):
                 retryable = True
             if not retryable or time.time() >= deadline:
                 raise
             time.sleep(_OPEN_RECOVERY_POLL_S)
 
 
-def _is_transient_open_connect_error(message: str) -> bool:
+def _is_transient_open_connect_error(message: str, *, exc: Exception | None = None) -> bool:
+    if 'Connection refused' in message and not _is_transport_connection_refused(exc):
+        return False
     return any(fragment in message for fragment in _TRANSIENT_CONNECT_ERROR_FRAGMENTS)
+
+
+def _is_transport_connection_refused(exc: Exception | None) -> bool:
+    if exc is None:
+        return False
+    if isinstance(exc, CcbdServiceError):
+        return True
+    cause = getattr(exc, '__cause__', None)
+    return isinstance(exc, ConnectionRefusedError) or isinstance(cause, ConnectionRefusedError)
 
 
 def _wait_for_attachable_namespace(client) -> dict:
@@ -103,7 +115,7 @@ def _wait_for_attachable_namespace(client) -> dict:
             if tmux_socket_path and tmux_session_name and bool(payload.get('namespace_ui_attachable')):
                 return payload
         except Exception as exc:
-            if not _is_transient_open_connect_error(str(exc)):
+            if not _is_transient_open_connect_error(str(exc), exc=exc):
                 raise
             last_transient_error = exc
         if time.time() >= deadline:
