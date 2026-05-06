@@ -92,7 +92,7 @@ def _resume_id_is_resumable(session_id: str, *, runtime_dir: Path, data: dict) -
         for path in root.glob("**/*.jsonl"):
             if not path.is_file():
                 continue
-            if session_id.lower() in path.name.lower():
+            if session_id.lower() in path.name.lower() and _codex_session_has_resume_content(path):
                 return True
     except OSError:
         return False
@@ -129,7 +129,29 @@ def _path_contains_session_id(value: object, session_id: str, *, root: Path) -> 
             path.resolve().relative_to(root.resolve())
         except Exception:
             return False
-    return session_id.lower() in path.name.lower()
+    return session_id.lower() in path.name.lower() and _codex_session_has_resume_content(path)
+
+
+def _codex_session_has_resume_content(path: Path) -> bool:
+    saw_record = False
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    record = json.loads(raw)
+                except Exception:
+                    return True
+                if not isinstance(record, dict):
+                    return True
+                saw_record = True
+                if record.get("type") != "session_meta":
+                    return True
+    except OSError:
+        return False
+    return not saw_record
 
 
 def clear_stale_session_pointer(session_path: Path, *, data: dict | None = None) -> None:
