@@ -206,6 +206,43 @@ def test_start_agents_does_not_retry_daemon_application_errors_with_transient_te
     assert attempts == ['start']
 
 
+def test_start_agents_retries_empty_start_rpc_response(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-start-rpc-empty-response'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedStartCommand(project=None, agent_names=('demo',), restore=True, auto_permission=True)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+    attempts: list[str] = []
+
+    class _FakeClient:
+        def with_timeout(self, timeout_s: float):
+            return self
+
+        def start(self, **kwargs):
+            del kwargs
+            attempts.append('start')
+            if len(attempts) == 1:
+                raise CcbdClientError('empty response from ccbd')
+            return {
+                'project_root': str(project_root),
+                'project_id': context.project.project_id,
+                'started': ['demo'],
+                'socket_path': str(context.paths.ccbd_socket_path),
+                'cleanup_summaries': [],
+            }
+
+    monkeypatch.setattr(
+        'cli.services.start.ensure_daemon_started',
+        lambda context: SimpleNamespace(client=_FakeClient(), started=True),
+    )
+
+    summary = start_agents(context, command)
+
+    assert attempts == ['start', 'start']
+    assert summary.started == ('demo',)
+
+
 def test_start_agents_does_not_retry_after_start_rpc_deadline_expires(
     tmp_path: Path, monkeypatch
 ) -> None:
