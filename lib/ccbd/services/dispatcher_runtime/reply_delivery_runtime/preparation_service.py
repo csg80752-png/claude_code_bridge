@@ -203,7 +203,7 @@ def _deliver_cmd_request(dispatcher, kernel, head, job) -> None:
 
     body = f'CCB_REQ_ID: {job.job_id}\n\n{job.request.body}'
     try:
-        backend.send_text_to_pane(pane_id, body)
+        backend.send_text_to_pane(pane_id, body, extra_enter=True)
     except Exception:
         _logger.debug('cmd request pane injection failed', exc_info=True)
         return
@@ -595,7 +595,7 @@ def _deliver_cmd_replies_impl(dispatcher):
 
         send_succeeded = False
         try:
-            backend.send_text_to_pane(cmd_pane_id, plan.body)
+            backend.send_text_to_pane(cmd_pane_id, plan.body, extra_enter=True)
             send_succeeded = True
         except Exception:
             _logger.debug(
@@ -623,7 +623,7 @@ def _deliver_cmd_replies_impl(dispatcher):
                 )
             if retry_pane_id is not None and retry_backend is not None and retry_ready:
                 try:
-                    retry_backend.send_text_to_pane(retry_pane_id, plan.body)
+                    retry_backend.send_text_to_pane(retry_pane_id, plan.body, extra_enter=True)
                     send_succeeded = True
                     cmd_pane_id = retry_pane_id
                     backend = retry_backend

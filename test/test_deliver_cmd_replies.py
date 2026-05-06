@@ -93,6 +93,7 @@ class _RecordingBackend:
         self._pane_contents = list(pane_contents or ['❯ '])
         self._pane_content_raises = pane_content_raises
         self.injected: list[tuple[str, str]] = []
+        self.injected_kwargs: list[dict] = []
 
     def is_alive(self, pane_id: str) -> bool:
         return self._alive
@@ -101,6 +102,7 @@ class _RecordingBackend:
         if self._send_raises:
             raise RuntimeError('inject failed')
         self.injected.append((pane_id, text))
+        self.injected_kwargs.append(dict(kwargs))
 
     def get_pane_content(self, pane_id: str, lines: int = 120) -> str:
         del pane_id, lines
@@ -255,6 +257,39 @@ def test_inject_sends_text_and_consumes_delivered_head(
     pane_id, text = _stub_pane_and_backend.injected[0]
     assert pane_id == '%1'
     assert 'short reply text' in text
+    assert _stub_pane_and_backend.injected_kwargs[0].get('extra_enter') is True
+
+
+def test_cmd_request_delivery_uses_extra_enter(_stub_pane_and_backend):
+    head = _make_head(payload_ref='job:job-cmd')
+    job = SimpleNamespace(
+        job_id='job-cmd',
+        target_kind='cmd',
+        target_name='cmd',
+        request=SimpleNamespace(body='cmd target request text'),
+    )
+    state = SimpleNamespace(
+        remove_queued_for=lambda *args: None,
+        mark_active_for=lambda *args: None,
+    )
+    completions: list[tuple[str, object]] = []
+    dispatcher = SimpleNamespace(
+        _clock=lambda: '2026-04-23T00:00:00+00:00',
+        _state=state,
+        complete=lambda job_id, decision: completions.append((job_id, decision)),
+    )
+    kernel = _RecordingKernel(head)
+
+    preparation_service._deliver_cmd_request(dispatcher, kernel, head, job)
+
+    assert len(_stub_pane_and_backend.injected) == 1
+    pane_id, text = _stub_pane_and_backend.injected[0]
+    assert pane_id == '%1'
+    assert 'CCB_REQ_ID: job-cmd' in text
+    assert 'cmd target request text' in text
+    assert _stub_pane_and_backend.injected_kwargs[0].get('extra_enter') is True
+    assert kernel.calls == [('consume', 'evt-1')]
+    assert completions and completions[0][0] == 'job-cmd'
 
 
 def test_idempotent_no_reinject_on_second_call(_stub_pane_and_backend):
