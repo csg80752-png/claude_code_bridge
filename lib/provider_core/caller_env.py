@@ -27,4 +27,8 @@ def join_env_prefix(*clauses: str) -> str:
     return '; '.join(str(clause).strip() for clause in clauses if str(clause).strip())
 
 
-__all__ = ['caller_context_env', 'export_env_clause', 'join_env_prefix']
+def interactive_terminal_env_clause() -> str:
+    return 'unset NO_COLOR; if [ "${TERM:-}" = dumb ]; then export TERM=xterm-256color; fi'
+
+
+__all__ = ['caller_context_env', 'export_env_clause', 'interactive_terminal_env_clause', 'join_env_prefix']

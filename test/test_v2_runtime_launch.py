@@ -74,6 +74,12 @@ def _assert_caller_env_exports(start_cmd: str, *, actor: str, runtime_dir: Path,
     assert f'CCB_SESSION_ID={shlex.quote(session_id)}' in start_cmd
 
 
+def _assert_interactive_color_env_sanitized(start_cmd: str) -> None:
+    assert 'unset NO_COLOR' in start_cmd
+    assert '"${TERM:-}" = dumb' in start_cmd
+    assert 'TERM=xterm-256color' in start_cmd
+
+
 def test_ensure_agent_runtime_reconciles_claude_workspace_before_launch(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-claude-hooks'
     home = tmp_path / 'home'
@@ -203,7 +209,8 @@ def test_ensure_agent_runtime_launches_named_codex_session(monkeypatch, tmp_path
     assert payload['tmux_socket_path'] == '/tmp/ccb-agent.sock'
     assert payload['work_dir'] == str(plan.workspace_path)
     assert payload['work_dir_norm']
-    assert payload['codex_start_cmd'].startswith('export ')
+    _assert_interactive_color_env_sanitized(payload['codex_start_cmd'])
+    assert 'export RUST_LOG=info' in payload['codex_start_cmd']
     assert 'disable_paste_burst=true' in payload['codex_start_cmd']
     assert spawned['kwargs']['env']['CCB_SESSION_FILE'] == str(expected_session)
     expected_lib_root = str((Path(codex_launcher.__file__).resolve().parents[2]))
@@ -540,7 +547,8 @@ def test_ensure_agent_runtime_launches_named_claude_session(monkeypatch, tmp_pat
     assert payload['work_dir'] == str(resume_dir)
     assert payload['ccb_session_id'].startswith('ccb-reviewer-')
     assert tmux_state['cwd'] == str(resume_dir)
-    assert payload['start_cmd'].startswith('unset ANTHROPIC_BASE_URL; ')
+    _assert_interactive_color_env_sanitized(payload['start_cmd'])
+    assert 'unset ANTHROPIC_BASE_URL' in payload['start_cmd']
     _assert_caller_env_exports(
         payload['start_cmd'],
         actor='reviewer',
@@ -1356,7 +1364,8 @@ def test_claude_launcher_build_start_cmd_uses_overlay_and_drops_dead_local_user_
 
     start_cmd = claude_launcher.build_start_cmd(command, spec, runtime_dir, 'claude-sess-1')
 
-    assert start_cmd.startswith('unset ANTHROPIC_BASE_URL; ')
+    _assert_interactive_color_env_sanitized(start_cmd)
+    assert 'unset ANTHROPIC_BASE_URL' in start_cmd
     _assert_caller_env_exports(
         start_cmd,
         actor='reviewer',
@@ -1501,6 +1510,7 @@ def test_codex_launcher_build_start_cmd_uses_materialized_profile_home(monkeypat
 
     cmd = codex_launcher.build_start_cmd(command, spec, runtime_dir, 'sess-profile')
 
+    _assert_interactive_color_env_sanitized(cmd)
     assert 'unset OPENAI_API_KEY' in cmd
     assert f'CODEX_HOME={shlex.quote(str(profile_home))}' in cmd
     assert f'CODEX_SESSION_ROOT={shlex.quote(str(profile_home / "sessions"))}' in cmd
