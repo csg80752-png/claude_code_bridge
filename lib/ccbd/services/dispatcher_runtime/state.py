@@ -52,9 +52,13 @@ class DispatcherState(
                 self._job_index[record.job_id] = self._normalize_slot(record.target_kind, record.target_name)
                 self._ensure_queue((record.target_kind, record.target_name))
             for job_id in order:
-                latest = latest_by_job[job_id]
-                slot = self._normalize_slot(latest.target_kind, latest.target_name)
-                if latest.status is JobStatus.RUNNING:
-                    self._active_jobs[slot] = job_id
-                elif latest.status in _PENDING_STATES:
-                    self._ensure_queue(slot).push(job_id)
+                self.restore_record(latest_by_job[job_id])
+
+    def restore_record(self, record: JobRecord) -> None:
+        self._job_index[record.job_id] = self._normalize_slot(record.target_kind, record.target_name)
+        slot = self._normalize_slot(record.target_kind, record.target_name)
+        self._ensure_queue(slot)
+        if record.status is JobStatus.RUNNING:
+            self._active_jobs[slot] = record.job_id
+        elif record.status in _PENDING_STATES:
+            self._ensure_queue(slot).push(record.job_id)

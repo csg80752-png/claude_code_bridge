@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agents.models import normalize_agent_name
-from mailbox_runtime.targets import normalize_actor_name
+from mailbox_runtime.targets import CMD_ACTOR, normalize_actor_name
 
 from .common import SCHEMA_VERSION, JobStatus, TargetKind
 from .messages import MessageEnvelope
@@ -32,10 +32,15 @@ class JobRecord:
         if not self.job_id:
             raise ValueError("job_id cannot be empty")
         self.target_kind = TargetKind(self.target_kind)
-        normalized_agent = normalize_agent_name(self.target_name or self.agent_name)
-        self.agent_name = normalized_agent
-        self.target_name = normalized_agent
-        self.provider_instance = None
+        if self.target_kind is TargetKind.CMD:
+            self.agent_name = CMD_ACTOR
+            self.target_name = CMD_ACTOR
+            self.provider_instance = None
+        else:
+            normalized_agent = normalize_agent_name(self.target_name or self.agent_name)
+            self.agent_name = normalized_agent
+            self.target_name = normalized_agent
+            self.provider_instance = None
         self.provider_options = dict(self.provider_options or {})
         if self.status in {
             JobStatus.COMPLETED,
@@ -119,9 +124,13 @@ class JobEvent:
         if not self.type:
             raise ValueError("type cannot be empty")
         self.target_kind = TargetKind(self.target_kind)
-        normalized_agent = normalize_agent_name(self.target_name or self.agent_name)
-        self.agent_name = normalized_agent
-        self.target_name = normalized_agent
+        if self.target_kind is TargetKind.CMD:
+            self.agent_name = CMD_ACTOR
+            self.target_name = CMD_ACTOR
+        else:
+            normalized_agent = normalize_agent_name(self.target_name or self.agent_name)
+            self.agent_name = normalized_agent
+            self.target_name = normalized_agent
 
     def to_record(self) -> dict[str, Any]:
         return {

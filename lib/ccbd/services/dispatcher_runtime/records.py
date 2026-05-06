@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ccbd.api_models import JobEvent, JobRecord, TargetKind
+from mailbox_runtime.targets import CMD_ACTOR
 
 
 def get_job(dispatcher, job_id: str) -> JobRecord | None:
@@ -11,6 +12,11 @@ def get_job(dispatcher, job_id: str) -> JobRecord | None:
         record = dispatcher._job_store.get_latest(candidate, job_id)
         if record is not None:
             dispatcher._state.remember_job(job_id, TargetKind.AGENT, candidate)
+            return record
+    if bool(getattr(dispatcher._config, 'cmd_enabled', False)):
+        record = dispatcher._job_store.get_latest_target(TargetKind.CMD, CMD_ACTOR, job_id)
+        if record is not None:
+            dispatcher._state.remember_job(job_id, TargetKind.CMD, CMD_ACTOR)
             return record
     return None
 
@@ -51,6 +57,15 @@ def append_event(
 
 def rebuild_dispatcher_state(dispatcher) -> None:
     dispatcher._state.rebuild(dispatcher._job_store, agent_names=dispatcher._config.agents)
+    if bool(getattr(dispatcher._config, 'cmd_enabled', False)):
+        latest_by_job: dict[str, JobRecord] = {}
+        order: list[str] = []
+        for record in dispatcher._job_store.list_target(TargetKind.CMD, CMD_ACTOR):
+            if record.job_id not in latest_by_job:
+                order.append(record.job_id)
+            latest_by_job[record.job_id] = record
+        for job_id in order:
+            dispatcher._state.restore_record(latest_by_job[job_id])
 
 
 __all__ = [

@@ -50,6 +50,7 @@ def persist_terminal_completion(
         {'status': terminal.status.value},
         timestamp=finished_at,
     )
+    dispatcher._state.remove_queued_for(current.target_kind, current.target_name, current.job_id)
     dispatcher._state.clear_active_for(current.target_kind, current.target_name, job_id=current.job_id)
     if dispatcher._execution_service is not None:
         dispatcher._execution_service.finish(current.job_id)

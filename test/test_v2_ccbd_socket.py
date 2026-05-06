@@ -622,6 +622,191 @@ def test_ccbd_cmd_sender_routes_reply_into_cmd_mailbox(tmp_path: Path) -> None:
     assert not thread.is_alive()
 
 
+def test_ccbd_cmd_target_injects_request_into_cmd_pane(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-cmd-target'
+    ctx = _prepare_project(
+        project_root,
+        'cmd; codex:codex\n',
+    )
+    sent: list[tuple[str, str]] = []
+
+    class FakeBackend:
+        def is_alive(self, pane_id: str) -> bool:
+            return pane_id == '%cmd'
+
+        def get_foreground_command(self, pane_id: str) -> str:
+            assert pane_id == '%cmd'
+            return 'claude'
+
+        def get_pane_content(self, pane_id: str, lines: int = 20) -> str:
+            assert pane_id == '%cmd'
+            return '❯\n  ? for shortcuts'
+
+        def send_text_to_pane(self, pane_id: str, text: str, **kwargs) -> None:
+            sent.append((pane_id, text))
+
+    monkeypatch.setattr(
+        'ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service._discover_cmd_pane_id',
+        lambda dispatcher: '%cmd',
+    )
+    monkeypatch.setattr(
+        'ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service._get_tmux_backend',
+        lambda dispatcher: FakeBackend(),
+    )
+    monkeypatch.setattr(
+        'ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service._cmd_delivery_gate',
+        lambda backend, pane_id, project_root: (True, 'claude', ''),
+    )
+
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        _runtime(
+            'codex',
+            project_id=ctx.project_id,
+            workspace_path=str(app.paths.workspace_path('codex')),
+            pid=777,
+        )
+    )
+
+    thread = threading.Thread(target=app.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+    thread.start()
+    _wait_for(app.paths.ccbd_socket_path)
+
+    client = CcbdClient(app.paths.ccbd_socket_path)
+    submit = client.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='cmd',
+            from_actor='codex',
+            body='operator check',
+            task_id='task-cmd-target',
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+
+    job_id = submit['job_id']
+    completed = _wait_for_job_status(client, job_id, 'completed')
+    assert completed['target_kind'] == 'cmd'
+    assert completed['target_name'] == 'cmd'
+    assert sent == [('%cmd', f'CCB_REQ_ID: {job_id}\n\noperator check')]
+    inbox = client.inbox('cmd')
+    assert inbox['head'] is None
+
+    second = client.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='cmd',
+            from_actor='codex',
+            body='second operator check',
+            task_id='task-cmd-target-2',
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+
+    second_job_id = second['job_id']
+    assert second['status'] == 'accepted'
+    _wait_for_job_status(client, second_job_id, 'completed')
+    assert sent[-1] == ('%cmd', f'CCB_REQ_ID: {second_job_id}\n\nsecond operator check')
+
+    client.shutdown()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
+def test_ccbd_cmd_target_survives_restart_before_cmd_pane_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'repo-cmd-target-restart'
+    ctx = _prepare_project(
+        project_root,
+        'cmd; codex:codex\n',
+    )
+    sent: list[tuple[str, str]] = []
+    ready = {'value': False}
+
+    class FakeBackend:
+        def is_alive(self, pane_id: str) -> bool:
+            return pane_id == '%cmd'
+
+        def send_text_to_pane(self, pane_id: str, text: str, **kwargs) -> None:
+            sent.append((pane_id, text))
+
+    monkeypatch.setattr(
+        'ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service._discover_cmd_pane_id',
+        lambda dispatcher: '%cmd',
+    )
+    monkeypatch.setattr(
+        'ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service._get_tmux_backend',
+        lambda dispatcher: FakeBackend(),
+    )
+    monkeypatch.setattr(
+        'ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service._cmd_delivery_gate',
+        lambda backend, pane_id, project_root: (ready['value'], 'claude', ''),
+    )
+
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        _runtime(
+            'codex',
+            project_id=ctx.project_id,
+            workspace_path=str(app.paths.workspace_path('codex')),
+            pid=777,
+        )
+    )
+    thread = threading.Thread(target=app.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+    thread.start()
+    _wait_for(app.paths.ccbd_socket_path)
+
+    client = CcbdClient(app.paths.ccbd_socket_path)
+    submit = client.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='cmd',
+            from_actor='codex',
+            body='survive restart',
+            task_id='task-cmd-target-restart',
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+    job_id = submit['job_id']
+    assert sent == []
+    assert client.get(job_id)['status'] == 'accepted'
+
+    client.shutdown()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+    ready['value'] = True
+    restarted = CcbdApp(project_root)
+    restarted.registry.upsert(
+        _runtime(
+            'codex',
+            project_id=ctx.project_id,
+            workspace_path=str(restarted.paths.workspace_path('codex')),
+            pid=777,
+        )
+    )
+    thread = threading.Thread(target=restarted.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+    thread.start()
+    _wait_for(restarted.paths.ccbd_socket_path)
+
+    restarted_client = CcbdClient(restarted.paths.ccbd_socket_path)
+    completed = _wait_for_job_status(restarted_client, job_id, 'completed')
+    assert completed['target_kind'] == 'cmd'
+    assert sent == [('%cmd', f'CCB_REQ_ID: {job_id}\n\nsurvive restart')]
+
+    restarted_client.shutdown()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
 def test_ccbd_resubmit_creates_new_message_record_with_origin(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-resubmit-socket'
     ctx = _prepare_project(project_root, _single_agent_config_text('codex', 'codex'))

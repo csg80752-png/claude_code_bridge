@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.models import normalize_agent_name
-from mailbox_runtime.targets import normalize_actor_name
+from mailbox_runtime.targets import normalize_actor_name, normalize_mailbox_owner_name
 
 from .model_enums import AttemptState, MessageState, ReplyTerminalStatus, SCHEMA_VERSION
 
@@ -20,7 +19,7 @@ def normalize_message_record(model) -> None:
     object.__setattr__(
         model,
         'target_agents',
-        tuple(normalize_agent_name(agent_name) for agent_name in model.target_agents),
+        tuple(normalize_mailbox_owner_name(agent_name) for agent_name in model.target_agents),
     )
     object.__setattr__(model, 'reply_policy', dict(model.reply_policy or {}))
     object.__setattr__(model, 'retry_policy', dict(model.retry_policy or {}))
@@ -76,7 +75,7 @@ def normalize_attempt_record(model) -> None:
     _require_value('job_id', model.job_id)
     if model.retry_index < 0:
         raise ValueError('retry_index cannot be negative')
-    object.__setattr__(model, 'agent_name', normalize_agent_name(model.agent_name))
+    object.__setattr__(model, 'agent_name', normalize_mailbox_owner_name(model.agent_name))
     object.__setattr__(model, 'attempt_state', AttemptState(model.attempt_state))
 
 
@@ -118,7 +117,7 @@ def normalize_reply_record(model) -> None:
     _require_value('message_id', model.message_id)
     _require_value('attempt_id', model.attempt_id)
     _require_value('agent_name', model.agent_name)
-    object.__setattr__(model, 'agent_name', normalize_agent_name(model.agent_name))
+    object.__setattr__(model, 'agent_name', normalize_mailbox_owner_name(model.agent_name))
     object.__setattr__(model, 'terminal_status', ReplyTerminalStatus(model.terminal_status))
     object.__setattr__(model, 'diagnostics', dict(model.diagnostics or {}))
 
