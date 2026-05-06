@@ -151,6 +151,10 @@ def test_start_agents_retries_transient_start_rpc_socket_errors(tmp_path: Path, 
                     '[Errno 104] Connection reset by peer'
                 )
             if len(attempts) == 3:
+                raise CcbdClientError('[Errno 111] Connection refused') from ConnectionRefusedError(
+                    '[Errno 111] Connection refused'
+                )
+            if len(attempts) == 4:
                 raise CcbdClientError('[Errno 11] Resource temporarily unavailable') from BlockingIOError(
                     '[Errno 11] Resource temporarily unavailable'
                 )
@@ -169,8 +173,8 @@ def test_start_agents_retries_transient_start_rpc_socket_errors(tmp_path: Path, 
 
     summary = start_agents(context, command)
 
-    assert len(attempts) == 4
-    assert len(timeouts) == 4
+    assert len(attempts) == 5
+    assert len(timeouts) == 5
     assert max(timeouts) <= 30.0
     assert summary.started == ('demo',)
 

@@ -12,6 +12,7 @@ START_CLIENT_RETRY_POLL_S = 0.1
 _START_RPC_TRANSIENT_ERROR_FRAGMENTS = (
     'No such file or directory',
     'Connection reset by peer',
+    'Connection refused',
     'Resource temporarily unavailable',
     'socket_unreachable',
     'timed out',
@@ -86,9 +87,12 @@ def _start_client_timeout_s() -> float:
 def _call_start_with_transient_retries(client, **kwargs) -> dict:
     timeout_s = _start_client_timeout_s()
     deadline = time.time() + timeout_s
+    last_transient_error: CcbdClientError | None = None
     while True:
         remaining_s = deadline - time.time()
         if remaining_s <= 0:
+            if last_transient_error is not None:
+                raise CcbdClientError(f'ccbd start RPC timed out; last transient error: {last_transient_error}')
             raise CcbdClientError('ccbd start RPC timed out')
         try:
             return _client_for_start(client, max(0.1, remaining_s)).start(**kwargs)
@@ -96,6 +100,7 @@ def _call_start_with_transient_retries(client, **kwargs) -> dict:
             remaining_s = deadline - time.time()
             if not _is_transient_start_rpc_error(exc) or remaining_s <= 0:
                 raise
+            last_transient_error = exc
             time.sleep(min(START_CLIENT_RETRY_POLL_S, remaining_s))
 
 

@@ -8,6 +8,7 @@ import pytest
 
 from cli.context import CliContextBuilder
 from cli.models import ParsedOpenCommand
+from ccbd.socket_client import CcbdClientError
 from cli.services.daemon_runtime import CcbdServiceError
 import cli.services.open as open_module
 from cli.services.open import open_project
@@ -206,6 +207,7 @@ def test_open_project_retries_startup_transient_daemon_connection_errors(tmp_pat
     outcomes = iter(
         (
             CcbdServiceError('ccbd is unavailable: socket_unreachable'),
+            CcbdServiceError('[Errno 111] Connection refused'),
             CcbdServiceError('[Errno 11] Resource temporarily unavailable'),
             CcbdServiceError('timed out'),
             SimpleNamespace(client=_FakeClient()),
@@ -394,6 +396,84 @@ def test_open_project_retries_transient_ping_errors_while_waiting_for_attachable
     assert summary.tmux_session_name == context.paths.ccbd_tmux_session_name
     assert client.calls == 3
     assert calls[-1] == ['tmux', '-S', str(context.paths.ccbd_tmux_socket_path), 'attach-session', '-t', context.paths.ccbd_tmux_session_name]
+
+
+def test_open_project_retries_transport_connection_refused_ping_error(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-open-ping-refused'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedOpenCommand(project=None)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def ping(self, target: str) -> dict[str, object]:
+            assert target == 'ccbd'
+            self.calls += 1
+            if self.calls == 1:
+                raise CcbdClientError('[Errno 111] Connection refused') from ConnectionRefusedError(
+                    '[Errno 111] Connection refused'
+                )
+            return {
+                'namespace_tmux_socket_path': str(context.paths.ccbd_tmux_socket_path),
+                'namespace_tmux_session_name': context.paths.ccbd_tmux_session_name,
+                'namespace_workspace_window_name': context.paths.ccbd_tmux_workspace_window_name,
+                'namespace_ui_attachable': True,
+            }
+
+    client = _FakeClient()
+    calls: list[list[str]] = []
+
+    def _run(args, **kwargs):
+        del kwargs
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    monkeypatch.setattr('cli.services.open.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr(
+        'cli.services.open.connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=client),
+    )
+    monkeypatch.setattr('cli.services.open.subprocess.run', _run)
+    monkeypatch.setattr('cli.services.open.time.sleep', lambda seconds: None)
+
+    summary = open_project(context, command)
+
+    assert summary.tmux_session_name == context.paths.ccbd_tmux_session_name
+    assert client.calls == 2
+
+
+def test_open_project_does_not_retry_application_ping_error_with_connection_refused_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / 'repo-open-ping-refused-app'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedOpenCommand(project=None)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+    calls = 0
+
+    class _FakeClient:
+        def ping(self, target: str) -> dict[str, object]:
+            nonlocal calls
+            assert target == 'ccbd'
+            calls += 1
+            raise RuntimeError('provider failed: Connection refused')
+
+    monkeypatch.setattr('cli.services.open.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr(
+        'cli.services.open.connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=_FakeClient()),
+    )
+
+    with pytest.raises(RuntimeError, match='provider failed: Connection refused'):
+        open_project(context, command)
+
+    assert calls == 1
 
 
 def test_open_project_propagates_non_transient_ping_error(tmp_path: Path, monkeypatch) -> None:
