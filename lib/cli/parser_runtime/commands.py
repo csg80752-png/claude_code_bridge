@@ -17,6 +17,7 @@ from cli.models import (
     ParsedQueueCommand,
     ParsedResubmitCommand,
     ParsedRetryCommand,
+    ParsedSyncCodexHomeCommand,
     ParsedTraceCommand,
     ParsedWaitCommand,
     ParsedWatchCommand,
@@ -162,6 +163,13 @@ def parse_config(tokens: list[str], *, project: str | None, error_type) -> Parse
     return ParsedConfigValidateCommand(project=project)
 
 
+def parse_sync_codex_home(tokens: list[str], *, project: str | None, error_type) -> ParsedSyncCodexHomeCommand:
+    parser = argparse.ArgumentParser(prog='ccb sync-codex-home', add_help=False)
+    parser.add_argument('--include-auth', action='store_true')
+    namespace = parse_args(parser, tokens, error_message='invalid sync-codex-home command', error_type=error_type)
+    return ParsedSyncCodexHomeCommand(project=project, include_auth=bool(namespace.include_auth))
+
+
 __all__ = [
     'parse_ack',
     'parse_cancel',
@@ -177,6 +185,7 @@ __all__ = [
     'parse_queue',
     'parse_resubmit',
     'parse_retry',
+    'parse_sync_codex_home',
     'parse_trace',
     'parse_wait',
     'parse_watch',

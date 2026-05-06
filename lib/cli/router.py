@@ -73,6 +73,7 @@ def print_start_help(*, file=None) -> None:
 
             Advanced diagnostics:
               ccb open | ccb ps | ccb logs <agent> | ccb doctor
+              ccb sync-codex-home [--include-auth]
               ccb version | ccb update | ccb uninstall | ccb reinstall
             """
         ).strip(),
@@ -169,6 +170,13 @@ _COMMAND_HELP = {
 
         Config validation:
           ccb config validate   Validate `.ccb/ccb.config` for the current project.
+    """,
+    "sync-codex-home": """
+        usage: ccb sync-codex-home [--include-auth]
+
+        Codex isolated home sync:
+          ccb sync-codex-home                 Refresh safe config entries for configured Codex agents.
+          ccb sync-codex-home --include-auth  Also refresh auth.json as a physical copy.
     """,
 }
 
