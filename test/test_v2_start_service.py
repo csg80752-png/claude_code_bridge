@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from agents.models import AgentSpec, PermissionMode, QueuePolicy, RestoreMode, RuntimeMode, WorkspaceMode
 from agents.store import AgentSpecStore
+from ccbd.socket_client import CcbdClientError
 from ccbd.lifecycle_report_store import CcbdStartupReportStore
 from ccbd.models import CcbdStartupReport
 from cli.context import CliContextBuilder
@@ -118,8 +119,131 @@ def test_start_agents_uses_extended_timeout_for_start_rpc(tmp_path: Path, monkey
 
     summary = start_agents(context, command)
 
-    assert timeouts == [30.0]
+    assert len(timeouts) == 1
+    assert 29.0 <= timeouts[0] <= 30.0
     assert summary.started == ('demo',)
+
+
+def test_start_agents_retries_transient_start_rpc_socket_errors(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-start-rpc-transient'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedStartCommand(project=None, agent_names=('demo',), restore=True, auto_permission=True)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+    attempts: list[str] = []
+    timeouts: list[float] = []
+
+    class _FakeClient:
+        def with_timeout(self, timeout_s: float):
+            timeouts.append(timeout_s)
+            return self
+
+        def start(self, **kwargs):
+            del kwargs
+            attempts.append('start')
+            if len(attempts) == 1:
+                raise CcbdClientError('[Errno 2] No such file or directory') from FileNotFoundError(
+                    '[Errno 2] No such file or directory'
+                )
+            if len(attempts) == 2:
+                raise CcbdClientError('[Errno 104] Connection reset by peer') from ConnectionResetError(
+                    '[Errno 104] Connection reset by peer'
+                )
+            if len(attempts) == 3:
+                raise CcbdClientError('[Errno 11] Resource temporarily unavailable') from BlockingIOError(
+                    '[Errno 11] Resource temporarily unavailable'
+                )
+            return {
+                'project_root': str(project_root),
+                'project_id': context.project.project_id,
+                'started': ['demo'],
+                'socket_path': str(context.paths.ccbd_socket_path),
+                'cleanup_summaries': [],
+            }
+
+    monkeypatch.setattr(
+        'cli.services.start.ensure_daemon_started',
+        lambda context: SimpleNamespace(client=_FakeClient(), started=True),
+    )
+
+    summary = start_agents(context, command)
+
+    assert len(attempts) == 4
+    assert len(timeouts) == 4
+    assert max(timeouts) <= 30.0
+    assert summary.started == ('demo',)
+
+
+def test_start_agents_does_not_retry_daemon_application_errors_with_transient_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / 'repo-start-rpc-application-error'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedStartCommand(project=None, agent_names=('demo',), restore=True, auto_permission=True)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+    attempts: list[str] = []
+
+    class _FakeClient:
+        def with_timeout(self, timeout_s: float):
+            return self
+
+        def start(self, **kwargs):
+            del kwargs
+            attempts.append('start')
+            raise CcbdClientError('provider timed out while starting')
+
+    monkeypatch.setattr(
+        'cli.services.start.ensure_daemon_started',
+        lambda context: SimpleNamespace(client=_FakeClient(), started=True),
+    )
+
+    with pytest.raises(CcbdClientError, match='provider timed out while starting'):
+        start_agents(context, command)
+
+    assert attempts == ['start']
+
+
+def test_start_agents_does_not_retry_after_start_rpc_deadline_expires(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / 'repo-start-rpc-deadline'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedStartCommand(project=None, agent_names=('demo',), restore=True, auto_permission=True)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+    attempts: list[str] = []
+    sleeps: list[float] = []
+    times = iter((0.0, 0.0, 0.09, 0.11))
+
+    class _FakeClient:
+        def with_timeout(self, timeout_s: float):
+            return self
+
+        def start(self, **kwargs):
+            del kwargs
+            attempts.append('start')
+            raise CcbdClientError('[Errno 11] Resource temporarily unavailable') from BlockingIOError(
+                '[Errno 11] Resource temporarily unavailable'
+            )
+
+    monkeypatch.setenv('CCB_CCBD_START_CLIENT_TIMEOUT_S', '0.1')
+    monkeypatch.setattr('cli.services.start_runtime.time.time', lambda: next(times))
+    monkeypatch.setattr('cli.services.start_runtime.time.sleep', lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        'cli.services.start.ensure_daemon_started',
+        lambda context: SimpleNamespace(client=_FakeClient(), started=True),
+    )
+
+    with pytest.raises(CcbdClientError, match='ccbd start RPC timed out'):
+        start_agents(context, command)
+
+    assert attempts == ['start']
+    assert len(sleeps) == 1
+    assert 0.009 <= sleeps[0] <= 0.011
 
 
 def test_start_agents_parses_cleanup_summaries_from_ccbd_payload(tmp_path: Path, monkeypatch) -> None:

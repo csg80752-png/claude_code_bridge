@@ -2,9 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import os
+import time
+
+from ccbd.socket_client import CcbdClientError
 
 
 START_CLIENT_TIMEOUT_S = 30.0
+START_CLIENT_RETRY_POLL_S = 0.1
+_START_RPC_TRANSIENT_ERROR_FRAGMENTS = (
+    'No such file or directory',
+    'Connection reset by peer',
+    'Resource temporarily unavailable',
+    'socket_unreachable',
+    'timed out',
+)
 
 
 @dataclass(frozen=True)
@@ -32,8 +43,8 @@ def start_agents(
     pre_start_result = before_client_start_fn(context) if before_client_start_fn is not None else None
     handle = ensure_daemon_started_fn(context)
     assert handle.client is not None
-    client = _client_for_start(handle.client)
-    payload = client.start(
+    payload = _call_start_with_transient_retries(
+        handle.client,
         agent_names=command.agent_names,
         restore=command.restore,
         auto_permission=command.auto_permission,
@@ -54,11 +65,11 @@ def start_agents(
     return summary
 
 
-def _client_for_start(client):
+def _client_for_start(client, timeout_s: float):
     with_timeout = getattr(client, 'with_timeout', None)
     if not callable(with_timeout):
         return client
-    return with_timeout(_start_client_timeout_s())
+    return with_timeout(timeout_s)
 
 
 def _start_client_timeout_s() -> float:
@@ -69,6 +80,29 @@ def _start_client_timeout_s() -> float:
         except Exception:
             pass
     return START_CLIENT_TIMEOUT_S
+
+
+def _call_start_with_transient_retries(client, **kwargs) -> dict:
+    timeout_s = _start_client_timeout_s()
+    deadline = time.time() + timeout_s
+    while True:
+        remaining_s = deadline - time.time()
+        if remaining_s <= 0:
+            raise CcbdClientError('ccbd start RPC timed out')
+        try:
+            return _client_for_start(client, max(0.1, remaining_s)).start(**kwargs)
+        except CcbdClientError as exc:
+            remaining_s = deadline - time.time()
+            if not _is_transient_start_rpc_error(exc) or remaining_s <= 0:
+                raise
+            time.sleep(min(START_CLIENT_RETRY_POLL_S, remaining_s))
+
+
+def _is_transient_start_rpc_error(exc: CcbdClientError) -> bool:
+    if not isinstance(exc.__cause__, OSError):
+        return False
+    message = str(exc)
+    return any(fragment in message for fragment in _START_RPC_TRANSIENT_ERROR_FRAGMENTS)
 
 
 def _summary_from_start_payload(context, payload: dict, *, daemon_started: bool, cleanup_summary_cls) -> StartSummary:
@@ -115,4 +149,4 @@ def _record_daemon_started_flag(context, *, daemon_started: bool, startup_report
         return
 
 
-__all__ = ["START_CLIENT_TIMEOUT_S", "StartSummary", "start_agents"]
+__all__ = ["START_CLIENT_RETRY_POLL_S", "START_CLIENT_TIMEOUT_S", "StartSummary", "start_agents"]
