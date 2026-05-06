@@ -27,21 +27,31 @@ def handle_ps(context, command, out, services) -> int:
 
 def handle_sync_codex_home(context, command, out, services) -> int:
     summary = services.sync_project_codex_homes(context, command)
+    services.write_lines(out, _render_home_sync_summary(summary, provider_label='codex', include_auth_note=True))
+    return 0
+
+
+def handle_sync_claude_home(context, command, out, services) -> int:
+    summary = services.sync_project_claude_homes(context, command)
+    services.write_lines(out, _render_home_sync_summary(summary, provider_label='claude', include_auth_note=False))
+    return 0
+
+
+def _render_home_sync_summary(summary, *, provider_label: str, include_auth_note: bool) -> list[str]:
     status = 'synced' if summary.agents else 'noop'
     lines = [
         f'command_status: {status}',
         f'source_home: {summary.source_home}',
-        f'codex_agents: {len(summary.agents)}',
+        f'{provider_label}_agents: {len(summary.agents)}',
     ]
     for result in summary.agents:
         synced = ','.join(result.synced) if result.synced else '(none)'
-        auth_note = ' auth=skipped' if result.skipped_auth else ''
+        auth_note = ' auth=skipped' if include_auth_note and result.skipped_auth else ''
         lines.append(f'agent: {result.agent_name} synced={synced}{auth_note} path={result.path}')
     for skipped in getattr(summary, 'skipped', ()):
         path_note = f' path={skipped.path}' if skipped.path is not None else ''
         lines.append(f'skipped: {skipped.agent_name} reason={skipped.reason}{path_note}')
-    services.write_lines(out, lines)
-    return 0
+    return lines
 
 
 def handle_doctor(context, command, out, services) -> int:
@@ -81,5 +91,6 @@ __all__ = [
     'handle_logs',
     'handle_open',
     'handle_ps',
+    'handle_sync_claude_home',
     'handle_sync_codex_home',
 ]

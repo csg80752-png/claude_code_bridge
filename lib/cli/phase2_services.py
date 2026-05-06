@@ -33,6 +33,7 @@ from cli.services.ack import ack_reply
 from cli.services.ask import exit_code_for_ask_status, submit_ask, watch_ask_job, write_ask_output
 from cli.services.cancel import cancel_job
 from cli.services.config_validate import validate_config_context
+from cli.services.claude_home_sync import sync_project_claude_homes
 from cli.services.codex_home_sync import sync_project_codex_homes
 from cli.services.doctor import doctor_summary
 from cli.services.diagnostics import export_diagnostic_bundle
@@ -103,6 +104,7 @@ def build_phase2_dispatch_services(
         retry_attempt=retry_attempt,
         should_auto_open_after_start=should_auto_open_after_start,
         start_agents=start_agents,
+        sync_project_claude_homes=sync_project_claude_homes,
         sync_project_codex_homes=sync_project_codex_homes,
         submit_ask=submit_ask,
         trace_target=trace_target,
