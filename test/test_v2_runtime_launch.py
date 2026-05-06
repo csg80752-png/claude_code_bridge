@@ -556,6 +556,60 @@ def test_ensure_agent_runtime_launches_named_claude_session(monkeypatch, tmp_pat
     assert tmux_state['user_option'] == ('%44', '@ccb_project_id', ctx.project.project_id)
 
 
+def test_ensure_agent_runtime_syncs_claude_home_before_launch_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-claude-auto-sync'
+    home = tmp_path / 'home'
+    (project_root / '.ccb').mkdir(parents=True)
+    (project_root / '.ccb' / 'ccb.config').write_text(
+        """version = 2
+default_agents = ["reviewer"]
+provider_home_sync = ["claude"]
+
+[agents.reviewer]
+provider = "claude"
+target = "."
+workspace_mode = "git-worktree"
+restore = "auto"
+permission = "manual"
+""",
+        encoding='utf-8',
+    )
+    monkeypatch.setenv('HOME', str(home))
+    source_settings = home / '.claude' / 'settings.json'
+    source_settings.parent.mkdir(parents=True, exist_ok=True)
+    source_settings.write_text('{"status":"fresh"}\n', encoding='utf-8')
+
+    ctx = _context(project_root, ParsedStartCommand(project=None, agent_names=('reviewer',), restore=False, auto_permission=False))
+    spec = _spec('reviewer', provider='claude')
+    plan = WorkspacePlanner().plan(spec, ctx.project)
+    plan.workspace_path.mkdir(parents=True, exist_ok=True)
+
+    class FakeTmuxBackend:
+        def create_pane(self, cmd: str, cwd: str, direction: str = 'right', percent: int = 50, parent_pane: str | None = None) -> str:
+            runtime_home = ctx.paths.agent_dir('reviewer') / 'provider-runtime' / 'claude' / 'claude-home'
+            assert (runtime_home / '.claude' / 'settings.json').read_text(encoding='utf-8') == '{"status":"fresh"}\n'
+            return '%44'
+
+        def set_pane_title(self, pane_id: str, title: str) -> None:
+            pass
+
+        def set_pane_user_option(self, pane_id: str, name: str, value: str) -> None:
+            pass
+
+    monkeypatch.setattr('cli.services.runtime_launch._inside_tmux', lambda: True)
+    monkeypatch.setattr('cli.services.runtime_launch.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr('cli.services.runtime_launch.TmuxBackend', FakeTmuxBackend)
+    monkeypatch.setattr(
+        claude_launcher,
+        '_resolve_claude_restore_target',
+        lambda **kwargs: ProviderRestoreTarget(run_cwd=plan.workspace_path, has_history=False),
+    )
+
+    result = ensure_agent_runtime(ctx, ctx.command, spec, plan, None)
+
+    assert result.launched is True
+
+
 def test_ensure_agent_runtime_launches_named_opencode_session(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-opencode'
     (project_root / '.ccb').mkdir(parents=True)

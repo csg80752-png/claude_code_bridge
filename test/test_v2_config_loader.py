@@ -64,6 +64,36 @@ def test_load_project_config_supports_named_simple_agent_map(tmp_path: Path) -> 
     assert result.config.layout_spec == 'cmd, agent1:codex; agent2:codex, agent3:claude'
 
 
+def test_load_project_config_supports_provider_home_sync_list(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-provider-home-sync'
+    config_path = project_root / '.ccb' / 'ccb.config'
+    _write(
+        config_path,
+        """version = 2
+default_agents = ["agent1", "agent2"]
+provider_home_sync = ["codex", "claude"]
+
+[agents.agent1]
+provider = "codex"
+target = "."
+workspace_mode = "inplace"
+restore = "auto"
+permission = "manual"
+
+[agents.agent2]
+provider = "claude"
+target = "."
+workspace_mode = "inplace"
+restore = "auto"
+permission = "manual"
+""",
+    )
+
+    result = load_project_config(project_root)
+
+    assert result.config.provider_home_sync == ("codex", "claude")
+
+
 def test_load_project_config_normalizes_mixed_case_compact_agent_names(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-mixed-case'
     config_path = project_root / '.ccb' / 'ccb.config'

@@ -19,6 +19,7 @@ from workspace.models import WorkspacePlan
 
 from .provider_hooks import prepare_provider_workspace
 from .provider_binding import AgentBinding, resolve_agent_binding
+from .provider_home_auto_sync import sync_provider_home_before_launch
 from .runtime_launch_runtime import (
     best_effort_kill_tmux_pane as _best_effort_kill_tmux_pane_impl,
     binding_runtime_alive as _binding_runtime_alive_impl,
@@ -105,6 +106,7 @@ def _launch_tmux_runtime(
         pane_meets_minimum_size_fn=_pane_meets_minimum_size,
         best_effort_kill_tmux_pane_fn=_best_effort_kill_tmux_pane,
         write_session_file_fn=_write_session_file,
+        before_launch_fn=_sync_provider_home_before_launch,
         assigned_pane_id=assigned_pane_id,
         style_index=style_index,
         tmux_socket_path=tmux_socket_path,
@@ -141,6 +143,10 @@ def _write_session_file(
         launch_session_id=launch_session_id,
         provider_payload=provider_payload,
     )
+
+
+def _sync_provider_home_before_launch(context: CliContext, spec: AgentSpec, runtime_dir: Path) -> None:
+    sync_provider_home_before_launch(context, spec, runtime_dir)
 
 
 def _launch_session_id(agent_name: str) -> str:
