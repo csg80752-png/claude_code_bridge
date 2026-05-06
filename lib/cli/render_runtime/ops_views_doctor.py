@@ -126,6 +126,15 @@ def render_doctor(payload: Mapping[str, object]) -> tuple[str, ...]:
             f'reason={agent.get("provider_home_sync_reason")} '
             f'home={agent.get("provider_home_sync_home")}'
         )
+        for capability in agent.get("provider_home_sync_capabilities") or ():
+            lines.append(
+                'provider_home_sync_capability: '
+                f'provider={agent["provider"]} '
+                f'name={capability.get("name")} '
+                f'status={capability.get("status")} '
+                f'mode={capability.get("mode")} '
+                f'detail={capability.get("detail")}'
+            )
     return tuple(lines)
 
 

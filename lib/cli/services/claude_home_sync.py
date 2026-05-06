@@ -10,6 +10,7 @@ from provider_backends.claude.launcher import claude_home_for_runtime
 from provider_backends.claude.launcher_runtime.service import _POLICY_FILENAME, _POLICY_VERSION
 from cli.services.provider_home_sync import (
     ProviderHomeSyncAgentResult,
+    ProviderHomeSyncCapability,
     ProviderHomeSyncPolicy,
     ProviderHomeSyncSkippedAgent,
     ProviderHomeSyncSummary,
@@ -83,6 +84,38 @@ def _claude_policy() -> ProviderHomeSyncPolicy:
         profile_home=lambda runtime_dir: None,
         sync_options=lambda command: {},
         sync_home=sync_claude_home_from_source,
+        capabilities=(
+            ProviderHomeSyncCapability(
+                name="home_sync",
+                status="enabled",
+                mode="managed",
+                detail="syncs selected Claude config entries into the managed isolated home",
+            ),
+            ProviderHomeSyncCapability(
+                name="credential_lifecycle",
+                status="observed",
+                mode="observed",
+                detail="does not copy Claude OAuth credentials",
+            ),
+            ProviderHomeSyncCapability(
+                name="ownership_model",
+                status="enabled",
+                mode="managed",
+                detail="ccbd owns synced config entries under the isolated home",
+            ),
+            ProviderHomeSyncCapability(
+                name="mcp_registration",
+                status="not-managed",
+                mode="observed",
+                detail="MCP registration follows synced Claude settings",
+            ),
+            ProviderHomeSyncCapability(
+                name="instruction_provenance",
+                status="enabled",
+                mode="managed",
+                detail="CLAUDE.md remains Claude-specific instruction context",
+            ),
+        ),
     )
 
 

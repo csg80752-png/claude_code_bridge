@@ -13,6 +13,7 @@ from provider_backends.codex.launcher_runtime.codex_namespace_isolation import (
 )
 from cli.services.provider_home_sync import (
     ProviderHomeSyncAgentResult,
+    ProviderHomeSyncCapability,
     ProviderHomeSyncPolicy,
     ProviderHomeSyncSkippedAgent,
     ProviderHomeSyncSummary,
@@ -63,6 +64,38 @@ def _codex_policy() -> ProviderHomeSyncPolicy:
         profile_home=_profile_codex_home,
         sync_options=lambda command: {"include_auth": bool(getattr(command, "include_auth", False))},
         sync_home=sync_codex_home_from_source,
+        capabilities=(
+            ProviderHomeSyncCapability(
+                name="home_sync",
+                status="enabled",
+                mode="managed",
+                detail="syncs Codex config into the managed isolated home",
+            ),
+            ProviderHomeSyncCapability(
+                name="credential_lifecycle",
+                status="manual",
+                mode="observed",
+                detail="auth files sync only when explicitly requested",
+            ),
+            ProviderHomeSyncCapability(
+                name="ownership_model",
+                status="enabled",
+                mode="managed",
+                detail="ccbd owns synced config entries under the isolated home",
+            ),
+            ProviderHomeSyncCapability(
+                name="mcp_registration",
+                status="not-managed",
+                mode="observed",
+                detail="MCP registration follows synced Codex config",
+            ),
+            ProviderHomeSyncCapability(
+                name="instruction_provenance",
+                status="not-managed",
+                mode="observed",
+                detail="does not translate provider-specific instruction files",
+            ),
+        ),
     )
 
 

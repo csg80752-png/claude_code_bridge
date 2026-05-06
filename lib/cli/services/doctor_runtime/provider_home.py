@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cli.services.claude_home_sync import _claude_policy
+from cli.services.codex_home_sync import _codex_policy
 from cli.services.provider_home_sync import is_syncable_managed_home
 from provider_backends.claude.launcher import claude_home_for_runtime
 from provider_backends.claude.launcher_runtime.service import (
@@ -60,6 +62,7 @@ def _provider_home_sync_status(context, *, spec, enabled: set[str]) -> dict[str,
         "provider_home_sync_home": str(home) if home is not None else None,
         "provider_home_sync_managed": reason == "managed",
         "provider_home_sync_reason": reason,
+        "provider_home_sync_capabilities": _provider_home_sync_capabilities(provider, enabled=sync_enabled),
     }
 
 
@@ -87,6 +90,26 @@ def _codex_profile_home(context, *, spec) -> Path | None:
     if env_home:
         return Path(env_home).expanduser()
     return None
+
+
+def _provider_home_sync_capabilities(provider: str, *, enabled: bool) -> tuple[dict[str, str], ...]:
+    if not enabled:
+        return ()
+    if provider == "codex":
+        policy = _codex_policy()
+    elif provider == "claude":
+        policy = _claude_policy()
+    else:
+        return ()
+    return tuple(
+        {
+            "name": capability.name,
+            "status": capability.status,
+            "mode": capability.mode,
+            "detail": capability.detail,
+        }
+        for capability in policy.capabilities
+    )
 
 
 __all__ = ["enrich_provider_home_sync_status"]

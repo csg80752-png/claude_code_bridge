@@ -466,6 +466,14 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
                 'provider_home_sync_home': '/tmp/repo/.ccb/agents/codex/provider-runtime/codex/codex-home',
                 'provider_home_sync_managed': True,
                 'provider_home_sync_reason': 'managed',
+                'provider_home_sync_capabilities': (
+                    {
+                        'name': 'home_sync',
+                        'status': 'enabled',
+                        'mode': 'managed',
+                        'detail': 'syncs Codex config into the managed isolated home',
+                    },
+                ),
             }
         ],
     }
@@ -502,6 +510,10 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
     assert (
         'provider_home_sync: enabled=True managed=True reason=managed '
         'home=/tmp/repo/.ccb/agents/codex/provider-runtime/codex/codex-home'
+    ) in doctor_lines
+    assert (
+        'provider_home_sync_capability: provider=codex name=home_sync '
+        'status=enabled mode=managed detail=syncs Codex config into the managed isolated home'
     ) in doctor_lines
 
 

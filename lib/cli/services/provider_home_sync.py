@@ -13,6 +13,14 @@ class ProviderHomeSyncResultLike(Protocol):
 
 
 @dataclass(frozen=True)
+class ProviderHomeSyncCapability:
+    name: str
+    status: str
+    mode: str
+    detail: str
+
+
+@dataclass(frozen=True)
 class ProviderHomeSyncPolicy:
     provider: str
     sentinel_name: str
@@ -22,6 +30,7 @@ class ProviderHomeSyncPolicy:
     profile_home: Callable[[Path], Path | None]
     sync_options: Callable[[object | None], dict[str, object]]
     sync_home: Callable[..., ProviderHomeSyncResultLike]
+    capabilities: tuple[ProviderHomeSyncCapability, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +157,7 @@ def has_symlink_between(path: Path, ccb_dir: Path | None) -> bool:
 
 __all__ = [
     "ProviderHomeSyncAgentResult",
+    "ProviderHomeSyncCapability",
     "ProviderHomeSyncPolicy",
     "ProviderHomeSyncSkippedAgent",
     "ProviderHomeSyncSummary",

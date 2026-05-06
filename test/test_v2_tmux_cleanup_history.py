@@ -134,8 +134,41 @@ permission = "manual"
     assert agent1['provider_home_sync_enabled'] is True
     assert agent1['provider_home_sync_managed'] is True
     assert agent1['provider_home_sync_reason'] == 'managed'
+    assert agent1['provider_home_sync_capabilities'] == (
+        {
+            'name': 'home_sync',
+            'status': 'enabled',
+            'mode': 'managed',
+            'detail': 'syncs selected Claude config entries into the managed isolated home',
+        },
+        {
+            'name': 'credential_lifecycle',
+            'status': 'observed',
+            'mode': 'observed',
+            'detail': 'does not copy Claude OAuth credentials',
+        },
+        {
+            'name': 'ownership_model',
+            'status': 'enabled',
+            'mode': 'managed',
+            'detail': 'ccbd owns synced config entries under the isolated home',
+        },
+        {
+            'name': 'mcp_registration',
+            'status': 'not-managed',
+            'mode': 'observed',
+            'detail': 'MCP registration follows synced Claude settings',
+        },
+        {
+            'name': 'instruction_provenance',
+            'status': 'enabled',
+            'mode': 'managed',
+            'detail': 'CLAUDE.md remains Claude-specific instruction context',
+        },
+    )
     assert agent2['provider_home_sync_enabled'] is False
     assert agent2['provider_home_sync_reason'] == 'not-enabled'
+    assert agent2['provider_home_sync_capabilities'] == ()
 
 
 def test_doctor_summary_reports_codex_profile_home_sync_skip(tmp_path: Path) -> None:
