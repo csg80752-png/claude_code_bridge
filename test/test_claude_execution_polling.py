@@ -324,7 +324,7 @@ def test_poll_submission_reply_delivery_completes_after_dispatch(monkeypatch) ->
             "ready_timeout_s": 30.0,
         },
     )
-    sent: list[tuple[str, str]] = []
+    sent: list[tuple[str, str, dict[str, object]]] = []
 
     class ReadyBackend:
         def get_pane_content(self, pane_id: str, lines: int = 120) -> str:
@@ -333,7 +333,7 @@ def test_poll_submission_reply_delivery_completes_after_dispatch(monkeypatch) ->
             return "❯\n  ? for shortcuts"
 
         def send_text(self, pane_id: str, text: str, **kwargs) -> None:
-            sent.append((pane_id, text))
+            sent.append((pane_id, text, dict(kwargs)))
 
     prepared = SimpleNamespace(reader=object(), backend=ReadyBackend(), pane_id="%1")
 
@@ -356,7 +356,67 @@ def test_poll_submission_reply_delivery_completes_after_dispatch(monkeypatch) ->
     assert result.decision is not None
     assert result.decision.reason == "reply_delivery_sent"
     assert result.submission.runtime_state["prompt_sent"] is True
-    assert sent == [("%1", "CCB_REPLY from=agent2 reply=rep_1")]
+    assert sent == [("%1", "CCB_REPLY from=agent2 reply=rep_1", {"extra_enter": True})]
+
+
+def test_poll_submission_reply_delivery_preserves_extra_enter_with_strict_pane_send(monkeypatch) -> None:
+    submission = ProviderSubmission(
+        job_id="job_reply",
+        agent_name="agent1",
+        provider="claude",
+        accepted_at="2026-04-06T00:00:00Z",
+        ready_at="2026-04-06T00:00:00Z",
+        source_kind=CompletionSourceKind.SESSION_EVENT_LOG,
+        reply="",
+        runtime_state={
+            "state": {},
+            "mode": "active",
+            "pane_id": "%1",
+            "prompt_text": "CCB_REPLY from=agent2 reply=rep_1",
+            "prompt_sent": False,
+            "reply_delivery_complete_on_dispatch": True,
+            "reply_delivery_require_ready": True,
+            "request_anchor": "job_reply",
+            "ready_wait_started_at": "2026-04-06T00:00:00Z",
+            "ready_timeout_s": 30.0,
+        },
+    )
+    sent: list[tuple[str, str, dict[str, object]]] = []
+
+    class StrictPaneBackend:
+        def get_pane_content(self, pane_id: str, lines: int = 120) -> str:
+            assert pane_id == "%1"
+            assert lines == 120
+            return "❯\n  ? for shortcuts"
+
+        def send_text_to_pane(self, pane_id: str, text: str, **kwargs) -> None:
+            sent.append((pane_id, text, dict(kwargs)))
+
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
+            raise AssertionError("strict pane send should be preferred")
+
+    prepared = SimpleNamespace(reader=object(), backend=StrictPaneBackend(), pane_id="%1")
+
+    monkeypatch.setattr(
+        "provider_backends.claude.execution_runtime.polling.prepare_active_poll_without_liveness",
+        lambda submission, now: prepared,
+    )
+    monkeypatch.setattr(
+        "provider_backends.claude.execution_runtime.polling.poll_exact_hook",
+        lambda submission, now: (_ for _ in ()).throw(AssertionError("hook should not run")),
+    )
+    monkeypatch.setattr(
+        "provider_backends.claude.execution_runtime.polling.ensure_active_pane_alive",
+        lambda submission, backend, pane_id, now: (_ for _ in ()).throw(AssertionError("liveness should not run")),
+    )
+
+    result = poll_submission(None, submission, now="2026-04-06T00:00:01Z")
+
+    assert isinstance(result, ProviderPollResult)
+    assert result.decision is not None
+    assert result.decision.reason == "reply_delivery_sent"
+    assert result.submission.runtime_state["prompt_sent"] is True
+    assert sent == [("%1", "CCB_REPLY from=agent2 reply=rep_1", {"extra_enter": True})]
 
 
 def test_looks_ready_accepts_nbsp_prompt_line() -> None:
