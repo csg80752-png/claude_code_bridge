@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import shutil
 
@@ -15,7 +16,7 @@ from cli.services.provider_home_sync import (
 )
 
 
-_SAFE_ENTRIES = ("settings.json", "commands", "agents", "skills")
+_SAFE_ENTRIES = ("settings.json", "CLAUDE.md", "commands", "agents", "skills")
 
 
 @dataclass(frozen=True)
@@ -65,8 +66,6 @@ def sync_claude_home_from_source(
         src = source / name
         if not src.exists() or src.is_symlink():
             continue
-        if src.is_dir() and _contains_symlink(src):
-            continue
         _refresh_physical_entry(src, target_config_home / name)
         synced.append(name)
     return ClaudeHomeSyncResult(path=target_home, synced=tuple(synced))
@@ -85,16 +84,56 @@ def _claude_policy() -> ProviderHomeSyncPolicy:
 
 
 def _refresh_physical_entry(source: Path, target: Path) -> None:
-    _remove_path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     if source.is_file():
-        shutil.copy2(source, target)
-    elif source.is_dir():
-        shutil.copytree(source, target, symlinks=False)
+        staging_file = _staging_path(target)
+        _remove_path(staging_file)
+        try:
+            shutil.copy2(source, staging_file)
+            os.replace(staging_file, target)
+        finally:
+            _remove_path(staging_file)
+        return
+    if source.is_dir():
+        staging_dir = _staging_path(target)
+        backup_dir = _backup_path(target)
+        _remove_path(staging_dir)
+        _remove_path(backup_dir)
+        try:
+            _copy_physical_tree(source, staging_dir)
+            if target.exists() or target.is_symlink():
+                os.replace(target, backup_dir)
+            os.replace(staging_dir, target)
+        except Exception:
+            if backup_dir.exists() and not target.exists():
+                os.replace(backup_dir, target)
+            raise
+        finally:
+            _remove_path(staging_dir)
+            _remove_path(backup_dir)
 
 
-def _contains_symlink(path: Path) -> bool:
-    return any(child.is_symlink() for child in path.rglob("*"))
+def _copy_physical_tree(source: Path, target: Path) -> None:
+    target.mkdir(parents=True)
+    for child in source.iterdir():
+        child_target = target / child.name
+        if child.is_symlink():
+            resolved = child.resolve(strict=False)
+            if resolved.is_file():
+                shutil.copy2(resolved, child_target)
+            continue
+        if child.is_dir():
+            _copy_physical_tree(child, child_target)
+        elif child.is_file():
+            shutil.copy2(child, child_target)
+
+
+def _staging_path(target: Path) -> Path:
+    return target.with_name(f".{target.name}.ccb-sync-tmp-{os.getpid()}")
+
+
+def _backup_path(target: Path) -> Path:
+    return target.with_name(f".{target.name}.ccb-sync-old-{os.getpid()}")
 
 
 def _remove_path(path: Path) -> None:
