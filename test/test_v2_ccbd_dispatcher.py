@@ -607,6 +607,40 @@ def test_dispatcher_marks_job_failed_when_provider_start_raises(tmp_path: Path) 
     assert 'tmux pane disappeared' in completed[0].terminal_decision['diagnostics']['error_message']
 
 
+def test_dispatcher_logs_provider_start_exception(tmp_path: Path, caplog) -> None:
+    project_root = tmp_path / 'repo-provider-start-logs'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex')
+    registry = AgentRegistry(layout, config)
+    registry.upsert(_runtime('codex', project_id=ctx.project_id, layout=layout, pid=101))
+    dispatcher = JobDispatcher(
+        layout,
+        config,
+        registry,
+        execution_service=FailingStartExecutionService(),
+        clock=lambda: '2026-03-18T00:00:00Z',
+    )
+    dispatcher.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='codex',
+            from_actor='user',
+            body='hello',
+            task_id=None,
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+
+    with caplog.at_level('ERROR'):
+        dispatcher.tick()
+
+    assert 'provider start failed for job' in caplog.text
+    assert 'tmux pane disappeared' in caplog.text
+
+
 def test_dispatcher_uses_latest_attached_binding_refs(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-runtime-binding'
     ctx = _bootstrap_test_project(project_root)

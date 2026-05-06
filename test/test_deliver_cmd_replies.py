@@ -292,6 +292,13 @@ def test_cmd_request_delivery_uses_extra_enter(_stub_pane_and_backend):
     assert completions and completions[0][0] == 'job-cmd'
 
 
+def test_cmd_pane_send_helper_uses_extra_enter(_stub_pane_and_backend):
+    preparation_service._send_to_cmd_pane(_stub_pane_and_backend, '%1', 'helper body')
+
+    assert _stub_pane_and_backend.injected == [('%1', 'helper body')]
+    assert _stub_pane_and_backend.injected_kwargs == [{'extra_enter': True}]
+
+
 def test_idempotent_no_reinject_on_second_call(_stub_pane_and_backend):
     head = _make_head()
     reply = _make_reply(body='one-shot text')
