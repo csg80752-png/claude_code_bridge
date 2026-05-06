@@ -20,6 +20,9 @@ class CcbdClient:
         self._socket_path = Path(socket_path)
         self._timeout_s = _resolve_timeout(timeout_s)
 
+    def with_timeout(self, timeout_s: float) -> 'CcbdClient':
+        return CcbdClient(self._socket_path, timeout_s=timeout_s)
+
     def request(self, op: str, payload: dict | None = None) -> dict:
         req = RpcRequest(op=op, request=payload or {})
         try:

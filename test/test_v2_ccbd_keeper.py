@@ -119,6 +119,31 @@ def test_project_keeper_spawns_missing_daemon(tmp_path: Path) -> None:
     assert next_state.last_failure_reason is None
 
 
+def test_project_keeper_default_run_forever_uses_extended_start_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / 'repo-keeper-default-timeout'
+    _write(project_root / '.ccb' / 'ccb.config', 'agent1:codex\n')
+    seen: dict[str, object] = {}
+    keeper = ProjectKeeper(project_root)
+
+    def _fake_run_forever(app, *, poll_interval: float, start_timeout_s: float) -> int:
+        seen['app'] = app
+        seen['poll_interval'] = poll_interval
+        seen['start_timeout_s'] = start_timeout_s
+        return 0
+
+    monkeypatch.setattr(keeper_module, 'run_forever', _fake_run_forever)
+
+    assert keeper.run_forever() == 0
+
+    assert seen == {
+        'app': keeper,
+        'poll_interval': 0.5,
+        'start_timeout_s': keeper_module.DEFAULT_KEEPER_START_TIMEOUT_S,
+    }
+
+
 def test_project_keeper_does_not_restart_degraded_unreachable_daemon_with_fresh_heartbeat(
     tmp_path: Path,
     monkeypatch,

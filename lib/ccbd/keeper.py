@@ -9,7 +9,14 @@ from agents.config_loader import load_project_config
 from ccbd.daemon_process import spawn_ccbd_process
 from ccbd.keeper_runtime.app_state import KeeperAppState, KeeperAppStateMixin
 from ccbd.keeper_runtime import KeeperState, KeeperStateStore, ShutdownIntent, ShutdownIntentStore, keeper_state_is_running
-from ccbd.keeper_runtime.loop import cleanup_transient_keeper_files, daemon_matches_project_config, reconcile_once, request_shutdown, run_forever
+from ccbd.keeper_runtime.loop import (
+    DEFAULT_KEEPER_START_TIMEOUT_S,
+    cleanup_transient_keeper_files,
+    daemon_matches_project_config,
+    reconcile_once,
+    request_shutdown,
+    run_forever,
+)
 from ccbd.keeper_runtime.state import compute_project_id
 from ccbd.keeper_runtime.support import reap_child_processes, try_acquire_keeper_lock
 from ccbd.services.mount import MountManager
@@ -48,7 +55,12 @@ class ProjectKeeper(KeeperAppStateMixin):
             intent_store=ShutdownIntentStore(paths),
         )
 
-    def run_forever(self, *, poll_interval: float = 0.5, start_timeout_s: float = 5.0) -> int:
+    def run_forever(
+        self,
+        *,
+        poll_interval: float = 0.5,
+        start_timeout_s: float = DEFAULT_KEEPER_START_TIMEOUT_S,
+    ) -> int:
         return run_forever(self, poll_interval=poll_interval, start_timeout_s=start_timeout_s)
 
     def _reconcile_once(self, *, state: KeeperState, start_timeout_s: float) -> KeeperState:
@@ -111,6 +123,7 @@ __all__ = [
     'ProjectKeeper',
     'ShutdownIntent',
     'ShutdownIntentStore',
+    'DEFAULT_KEEPER_START_TIMEOUT_S',
     '_reap_child_processes',
     'keeper_state_is_running',
 ]
