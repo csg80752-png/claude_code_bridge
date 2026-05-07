@@ -4,6 +4,7 @@ from agents.config_loader import load_project_config
 from agents.store import AgentRuntimeStore
 from cli.context import CliContext
 from cli.models import ParsedPsCommand
+from mailbox_kernel.store import MailboxStore
 
 from .daemon import ping_local_state
 from .provider_binding import binding_status
@@ -13,11 +14,13 @@ def ps_summary(context: CliContext, command: ParsedPsCommand) -> dict:
     del command
     config = load_project_config(context.project.project_root).config
     store = AgentRuntimeStore(context.paths)
+    mailbox_store = MailboxStore(context.paths)
     local = ping_local_state(context)
     agents: list[dict] = []
     for agent_name, spec in sorted(config.agents.items()):
         runtime = store.load(agent_name)
-        agents.append(_agent_summary(context, agent_name=agent_name, spec=spec, runtime=runtime))
+        mailbox = mailbox_store.load(agent_name)
+        agents.append(_agent_summary(context, agent_name=agent_name, spec=spec, runtime=runtime, mailbox=mailbox))
     return {
         'project_id': context.project.project_id,
         'ccbd_state': local.mount_state,
@@ -25,7 +28,7 @@ def ps_summary(context: CliContext, command: ParsedPsCommand) -> dict:
     }
 
 
-def _agent_summary(context: CliContext, *, agent_name: str, spec, runtime) -> dict:
+def _agent_summary(context: CliContext, *, agent_name: str, spec, runtime, mailbox=None) -> dict:
     workspace_path = _workspace_path(context, agent_name=agent_name, runtime=runtime)
     runtime_ref = _runtime_attr(runtime, 'runtime_ref')
     session_ref = _session_ref(runtime)
@@ -35,7 +38,7 @@ def _agent_summary(context: CliContext, *, agent_name: str, spec, runtime) -> di
         'runtime_mode': spec.runtime_mode.value,
         'workspace_mode': spec.workspace_mode.value,
         'state': _runtime_enum_value(runtime, 'state', 'stopped'),
-        'queue_depth': _runtime_attr(runtime, 'queue_depth', 0),
+        'queue_depth': _queue_depth(runtime, mailbox),
         'workspace_path': workspace_path,
         'runtime_ref': runtime_ref,
         'session_ref': session_ref,
@@ -56,6 +59,12 @@ def _runtime_attr(runtime, name: str, default=None):
     if runtime is None:
         return default
     return getattr(runtime, name, default)
+
+
+def _queue_depth(runtime, mailbox) -> int:
+    if mailbox is not None:
+        return int(getattr(mailbox, 'queue_depth', 0))
+    return int(_runtime_attr(runtime, 'queue_depth', 0) or 0)
 
 
 def _runtime_enum_value(runtime, name: str, default: str) -> str:
