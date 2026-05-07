@@ -931,6 +931,122 @@ def test_runtime_supervisor_project_namespace_start_does_not_preheal_dead_bindin
     assert 'prepare_tmux_layout:demo' in summary.actions_taken
 
 
+def test_runtime_supervisor_fresh_namespace_rebuilds_full_layout_instead_of_reusing_old_panes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / 'repo-ccbd-fresh-layout-rebuild'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text(
+        '(cmd; agent1:codex), (agent2:codex; agent3:claude)\n',
+        encoding='utf-8',
+    )
+    bootstrap_project(project_root)
+    app = CcbdApp(project_root)
+    monkeypatch.setattr(
+        app.project_namespace,
+        'ensure',
+        lambda **kwargs: SimpleNamespace(
+            tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+            tmux_session_name=app.paths.ccbd_tmux_session_name,
+            workspace_window_id='@workspace-new',
+            namespace_epoch=4,
+            created_this_call=True,
+        ),
+    )
+    monkeypatch.setattr('ccbd.start_flow.TmuxBackend', _FakeNamespaceTmuxBackend)
+    monkeypatch.setattr('ccbd.start_flow.set_tmux_ui_active', lambda active: None)
+    monkeypatch.setattr('ccbd.start_flow.cleanup_project_tmux_orphans_by_socket', lambda **kwargs: ())
+    monkeypatch.setattr(
+        'ccbd.start_flow.TmuxCleanupHistoryStore',
+        lambda paths: SimpleNamespace(append=lambda event: None),
+    )
+
+    layout_targets: list[tuple[str, ...]] = []
+
+    def _prepare_layout(context, config, targets, **kwargs):
+        del context, config, kwargs
+        layout_targets.append(tuple(targets))
+        return SimpleNamespace(
+            cmd_pane_id='%1',
+            agent_panes={
+                'agent1': '%3',
+                'agent2': '%2',
+                'agent3': '%4',
+            },
+        )
+
+    monkeypatch.setattr('ccbd.start_flow.prepare_tmux_start_layout', _prepare_layout)
+
+    def _old_binding(**kwargs):
+        agent_name = kwargs['agent_name']
+        old_panes = {'agent1': '%30', 'agent2': '%20', 'agent3': '%70'}
+        return AgentBinding(
+            runtime_ref=f'tmux:{old_panes[agent_name]}',
+            session_ref=f'old-session-{agent_name}',
+            provider=kwargs['provider'],
+            runtime_root=str(app.paths.agent_provider_runtime_dir(agent_name, kwargs['provider'])),
+            runtime_pid=100,
+            session_file=str(project_root / '.ccb' / f'.{agent_name}.session'),
+            session_id=f'old-session-{agent_name}',
+            tmux_socket_name=None,
+            tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+            terminal='tmux',
+            pane_id=old_panes[agent_name],
+            active_pane_id=old_panes[agent_name],
+            pane_title_marker=f'CCB-{agent_name}',
+            pane_state='alive',
+        )
+
+    monkeypatch.setattr('ccbd.start_flow.resolve_agent_binding', _old_binding)
+    launch_calls: list[tuple[str, str | None]] = []
+
+    def _ensure_agent_runtime(context, command, spec, plan, launch_binding_hint, **kwargs):
+        del context, command, plan, launch_binding_hint
+        assigned_pane_id = kwargs.get('assigned_pane_id')
+        launch_calls.append((spec.name, assigned_pane_id))
+        return RuntimeLaunchResult(
+            launched=True,
+            binding=AgentBinding(
+                runtime_ref=f'tmux:{assigned_pane_id}',
+                session_ref=f'new-session-{spec.name}',
+                provider=spec.provider,
+                runtime_root=str(app.paths.agent_provider_runtime_dir(spec.name, spec.provider)),
+                runtime_pid=200,
+                session_file=str(project_root / '.ccb' / f'.{spec.name}.session'),
+                session_id=f'new-session-{spec.name}',
+                tmux_socket_name=None,
+                tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+                terminal='tmux',
+                pane_id=assigned_pane_id,
+                active_pane_id=assigned_pane_id,
+                pane_title_marker=f'CCB-{spec.name}',
+                pane_state='alive',
+            ),
+        )
+
+    monkeypatch.setattr('ccbd.start_flow.ensure_agent_runtime', _ensure_agent_runtime)
+
+    summary = app.runtime_supervisor.start(
+        agent_names=('agent1', 'agent2', 'agent3'),
+        restore=False,
+        auto_permission=False,
+        cleanup_tmux_orphans=False,
+        interactive_tmux_layout=True,
+    )
+
+    assert summary.started == ('agent1', 'agent2', 'agent3')
+    assert layout_targets == [('agent1', 'agent2', 'agent3')]
+    assert launch_calls == [('agent1', '%3'), ('agent2', '%2'), ('agent3', '%4')]
+    assert 'prepare_tmux_layout:agent1,agent2,agent3' in summary.actions_taken
+    assert 'relaunch_runtime:agent1' in summary.actions_taken
+    assert 'relaunch_runtime:agent2' in summary.actions_taken
+    assert 'relaunch_runtime:agent3' in summary.actions_taken
+    assert 'reuse_binding:agent1' not in summary.actions_taken
+    assert 'reuse_binding:agent2' not in summary.actions_taken
+    assert 'reuse_binding:agent3' not in summary.actions_taken
+
+
 def test_ccbd_start_marks_project_mounted_before_socket_listen(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / 'repo-ccbd-start-order'
     (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
