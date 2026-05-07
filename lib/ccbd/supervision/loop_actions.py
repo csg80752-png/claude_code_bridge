@@ -39,6 +39,20 @@ def ensure_agent_mounted(ctx: RuntimeSupervisionContext, agent_name: str, *, run
     )
 
 
+def fail_unbound_starting_runtime(ctx: RuntimeSupervisionContext, agent_name: str, *, runtime) -> str:
+    attempted_at = ctx.clock()
+    prior_health = runtime.health if runtime is not None else 'unmounted'
+    return persist_mount_failure(
+        ctx,
+        runtime,
+        agent_name=agent_name,
+        attempted_at=attempted_at,
+        prior_health=prior_health,
+        next_restart_count=int(getattr(runtime, 'restart_count', 0) or 0) + 1,
+        reason='mount-produced-unbound-runtime',
+    )
+
+
 def persist_mount_failure(
     ctx: RuntimeSupervisionContext,
     runtime,
@@ -81,5 +95,6 @@ def recover_agent_runtime(ctx: RuntimeSupervisionContext, agent_name: str, *, ru
 
 __all__ = [
     'ensure_agent_mounted',
+    'fail_unbound_starting_runtime',
     'recover_agent_runtime',
 ]

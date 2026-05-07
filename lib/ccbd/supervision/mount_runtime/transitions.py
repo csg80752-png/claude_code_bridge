@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from agents.models import AgentState
 
+from ..runtime_binding import (
+    runtime_binding_missing,
+    runtime_mode_requires_binding,
+    runtime_requires_binding_and_is_unbound,
+)
 from .events import record_mount_failed
 
 SUCCESS_RUNTIME_HEALTHS = frozenset({'healthy', 'restored'})
@@ -99,5 +104,8 @@ __all__ = [
     'mount_or_reflow',
     'persist_mount_exception',
     'persist_mount_success',
+    'runtime_binding_missing',
+    'runtime_mode_requires_binding',
+    'runtime_requires_binding_and_is_unbound',
     'start_mount_attempt',
 ]
