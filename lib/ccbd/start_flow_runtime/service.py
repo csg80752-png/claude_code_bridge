@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from .binding import launch_binding_hint, relabel_project_namespace_pane
@@ -77,6 +78,13 @@ def run_start_flow(
         tmux_session_name=tmux_session_name,
         workspace_window_id=workspace_window_id,
     )
+    if force_fresh_tmux_layout(
+        interactive_tmux_layout=interactive_tmux_layout,
+        cmd_enabled=bool(getattr(config, 'cmd_enabled', False)),
+        fresh_namespace=fresh_namespace,
+        fresh_workspace=fresh_workspace,
+    ):
+        prepared_agents = tuple(reset_prepared_binding_for_layout(item) for item in prepared_agents)
     prepared_by_agent = {item.agent_name: item for item in prepared_agents}
 
     tmux_layout = tmux_layout_for_start(
@@ -162,4 +170,20 @@ def run_start_flow(
     )
 
 
-__all__ = ['run_start_flow']
+def force_fresh_tmux_layout(
+    *,
+    interactive_tmux_layout: bool,
+    cmd_enabled: bool,
+    fresh_namespace: bool,
+    fresh_workspace: bool,
+) -> bool:
+    return bool(interactive_tmux_layout and cmd_enabled and (fresh_namespace or fresh_workspace))
+
+
+def reset_prepared_binding_for_layout(prepared):
+    if prepared.binding is None:
+        return prepared
+    return replace(prepared, binding=None, stale_binding=prepared.raw_binding is not None)
+
+
+__all__ = ['force_fresh_tmux_layout', 'reset_prepared_binding_for_layout', 'run_start_flow']
