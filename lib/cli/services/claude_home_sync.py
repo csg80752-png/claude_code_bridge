@@ -20,6 +20,7 @@ from cli.services.provider_home_sync import (
 
 _SAFE_ENTRIES = ("settings.json", "CLAUDE.md", "commands", "agents", "skills")
 _LOG = logging.getLogger(__name__)
+_BROKEN_SYMLINK_WARNED: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -158,7 +159,7 @@ def _copy_physical_tree(source: Path, target: Path) -> None:
             if resolved.is_file():
                 shutil.copy2(resolved, child_target)
             else:
-                _LOG.warning("Claude home sync skipped broken symlink: %s", child)
+                _warn_broken_symlink_once(child)
             continue
         if child.is_dir():
             _copy_physical_tree(child, child_target)
@@ -218,6 +219,14 @@ def _collect_tree_snapshot(
 def _file_signature(path: Path) -> tuple[int, int]:
     stat = path.stat()
     return stat.st_size, stat.st_mtime_ns
+
+
+def _warn_broken_symlink_once(path: Path) -> None:
+    key = str(path)
+    if key in _BROKEN_SYMLINK_WARNED:
+        return
+    _BROKEN_SYMLINK_WARNED.add(key)
+    _LOG.warning("Claude home sync skipped broken symlink: %s", path)
 
 
 def _staging_path(target: Path) -> Path:

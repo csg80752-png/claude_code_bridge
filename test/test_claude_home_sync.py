@@ -10,6 +10,7 @@ import pytest
 from cli.parser import CliParser, CliUsageError
 from cli.phase2 import _command_requires_bootstrap_config
 from cli.phase2_runtime.handlers_ops import handle_sync_claude_home
+from cli.services import claude_home_sync as claude_home_sync_module
 from cli.services.claude_home_sync import (
     ClaudeHomeSyncAgentResult,
     ClaudeHomeSyncSkippedAgent,
@@ -55,6 +56,13 @@ def _context(tmp_path: Path):
         paths=_FakePaths(tmp_path / "project"),
         project=SimpleNamespace(project_root=tmp_path / "project"),
     )
+
+
+@pytest.fixture(autouse=True)
+def _clear_broken_symlink_warning_cache():
+    claude_home_sync_module._BROKEN_SYMLINK_WARNED.clear()
+    yield
+    claude_home_sync_module._BROKEN_SYMLINK_WARNED.clear()
 
 
 def test_claude_home_sync_refreshes_safe_entries_without_runtime_state(tmp_path: Path) -> None:
@@ -168,6 +176,33 @@ def test_claude_home_sync_warns_for_broken_nested_symlink(caplog, tmp_path: Path
 
     assert "skills" in summary.agents[0].synced
     assert "Claude home sync skipped broken symlink:" in caplog.text
+
+
+def test_claude_home_sync_warns_once_for_repeated_broken_nested_symlink(caplog, tmp_path: Path) -> None:
+    source = _source_claude_dir(tmp_path)
+    broken_link = source / "skills" / "broken" / "SKILL.md"
+    broken_link.parent.mkdir()
+    broken_link.symlink_to(tmp_path / "missing-skill.md")
+    target_home = tmp_path / "target-home"
+
+    with caplog.at_level(logging.WARNING):
+        sync_claude_home_from_source(target_home, source_home=source)
+        sync_claude_home_from_source(target_home, source_home=source)
+
+    assert caplog.text.count(f"Claude home sync skipped broken symlink: {broken_link}") == 1
+
+
+def test_claude_home_sync_warns_once_for_same_broken_symlink_across_targets(caplog, tmp_path: Path) -> None:
+    source = _source_claude_dir(tmp_path)
+    broken_link = source / "skills" / "broken" / "SKILL.md"
+    broken_link.parent.mkdir()
+    broken_link.symlink_to(tmp_path / "missing-skill.md")
+
+    with caplog.at_level(logging.WARNING):
+        sync_claude_home_from_source(tmp_path / "target-home-1", source_home=source)
+        sync_claude_home_from_source(tmp_path / "target-home-2", source_home=source)
+
+    assert caplog.text.count(f"Claude home sync skipped broken symlink: {broken_link}") == 1
 
 
 def test_claude_home_sync_skips_unchanged_physical_tree(monkeypatch, tmp_path: Path) -> None:
