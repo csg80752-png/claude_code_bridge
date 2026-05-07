@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from io import StringIO
 from types import SimpleNamespace
@@ -241,6 +242,23 @@ def test_claude_home_sync_refreshes_changed_physical_tree(tmp_path: Path) -> Non
     assert (target_home / ".claude" / "skills" / "new" / "SKILL.md").read_text(
         encoding="utf-8"
     ) == "new skill\n"
+
+
+def test_claude_home_sync_refreshes_same_size_same_mtime_changed_file(tmp_path: Path) -> None:
+    source = _source_claude_dir(tmp_path)
+    target_home = tmp_path / "target-home"
+
+    sync_claude_home_from_source(target_home, source_home=source)
+    source_file = source / "skills" / "qa" / "SKILL.md"
+    target_file = target_home / ".claude" / "skills" / "qa" / "SKILL.md"
+    original_stat = source_file.stat()
+    source_file.write_text("qb\n", encoding="utf-8")
+    assert source_file.stat().st_size == target_file.stat().st_size
+    os.utime(source_file, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    sync_claude_home_from_source(target_home, source_home=source)
+
+    assert target_file.read_text(encoding="utf-8") == "qb\n"
 
 
 def test_claude_home_sync_replaces_target_nested_symlinks(tmp_path: Path) -> None:

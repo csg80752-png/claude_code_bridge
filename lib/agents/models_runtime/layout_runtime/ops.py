@@ -41,6 +41,12 @@ def build_balanced_layout(
     )
     if len(leaves) == 1:
         return leaves[0]
+    if cmd_enabled and len(ordered_agents) == 3:
+        return LayoutNode(
+            kind='vertical',
+            left=stack_horizontal(leaves[:2]),
+            right=stack_horizontal(leaves[2:]),
+        )
     mid = (len(leaves) + 1) // 2
     left = stack_vertical(leaves[:mid])
     right = stack_vertical(leaves[mid:])
@@ -79,6 +85,15 @@ def stack_vertical(leaves: list[LayoutNode]) -> LayoutNode | None:
     node = leaves[0]
     for leaf in leaves[1:]:
         node = LayoutNode(kind='vertical', left=node, right=leaf)
+    return node
+
+
+def stack_horizontal(leaves: list[LayoutNode]) -> LayoutNode:
+    if not leaves:
+        raise ValueError('at least one leaf is required')
+    node = leaves[0]
+    for leaf in leaves[1:]:
+        node = LayoutNode(kind='horizontal', left=node, right=leaf)
     return node
 
 

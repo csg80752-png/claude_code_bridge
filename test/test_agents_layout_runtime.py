@@ -36,7 +36,29 @@ def test_build_balanced_layout_adds_cmd_leaf_first() -> None:
         cmd_enabled=True,
     )
 
-    assert layout.render() == 'cmd, agent1:codex; agent2:claude(worktree), agent3:gemini'
+    assert layout.render() == '(cmd; agent1:codex), (agent2:claude(worktree); agent3:gemini)'
+
+
+def test_build_balanced_layout_preserves_existing_four_agent_no_cmd_shape() -> None:
+    layout = build_balanced_layout(
+        ('agent1', 'agent2', 'agent3', 'agent4'),
+        providers_by_agent={},
+        workspace_modes_by_agent={},
+        cmd_enabled=False,
+    )
+
+    assert layout.render() == 'agent1, agent2; agent3, agent4'
+
+
+def test_build_balanced_layout_cmd_plus_four_agents_uses_general_balancing() -> None:
+    layout = build_balanced_layout(
+        ('agent1', 'agent2', 'agent3', 'agent4'),
+        providers_by_agent={},
+        workspace_modes_by_agent={},
+        cmd_enabled=True,
+    )
+
+    assert layout.render() == 'cmd, agent1, agent2; agent3, agent4'
 
 
 def test_parse_layout_spec_rejects_invalid_leaf_token() -> None:

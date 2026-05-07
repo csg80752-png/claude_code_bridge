@@ -365,9 +365,11 @@ def test_open_project_retries_transient_ping_errors_while_waiting_for_attachable
             assert target == 'ccbd'
             self.calls += 1
             if self.calls == 1:
-                raise RuntimeError('[Errno 11] Resource temporarily unavailable')
+                raise CcbdClientError('[Errno 11] Resource temporarily unavailable') from BlockingIOError(
+                    '[Errno 11] Resource temporarily unavailable'
+                )
             if self.calls == 2:
-                raise RuntimeError('timed out')
+                raise CcbdClientError('timed out') from TimeoutError('timed out')
             return {
                 'namespace_tmux_socket_path': str(context.paths.ccbd_tmux_socket_path),
                 'namespace_tmux_session_name': context.paths.ccbd_tmux_session_name,
@@ -476,6 +478,62 @@ def test_open_project_does_not_retry_application_ping_error_with_connection_refu
     assert calls == 1
 
 
+def test_open_project_does_not_retry_application_ping_error_with_timeout_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / 'repo-open-ping-timeout-app'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedOpenCommand(project=None)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+    calls = 0
+
+    class _FakeClient:
+        def ping(self, target: str) -> dict[str, object]:
+            nonlocal calls
+            assert target == 'ccbd'
+            calls += 1
+            raise RuntimeError('provider operation timed out')
+
+    monkeypatch.setattr('cli.services.open.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr(
+        'cli.services.open.connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=_FakeClient()),
+    )
+
+    with pytest.raises(RuntimeError, match='provider operation timed out'):
+        open_project(context, command)
+
+    assert calls == 1
+
+
+def test_open_project_does_not_retry_service_error_with_application_timeout_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_root = tmp_path / 'repo-open-service-timeout-app'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('demo:codex\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedOpenCommand(project=None)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+    calls = 0
+
+    def _connect(context, allow_restart_stale):
+        nonlocal calls
+        del context, allow_restart_stale
+        calls += 1
+        raise CcbdServiceError('provider operation timed out')
+
+    monkeypatch.setattr('cli.services.open.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr('cli.services.open.connect_mounted_daemon', _connect)
+
+    with pytest.raises(CcbdServiceError, match='provider operation timed out'):
+        open_project(context, command)
+
+    assert calls == 1
+
+
 def test_open_project_propagates_non_transient_ping_error(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / 'repo-open-ping-fatal'
     (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
@@ -520,7 +578,9 @@ def test_open_project_reports_last_transient_ping_error_on_attachable_timeout(tm
     class _FakeClient:
         def ping(self, target: str) -> dict[str, object]:
             assert target == 'ccbd'
-            raise RuntimeError('[Errno 11] Resource temporarily unavailable')
+            raise CcbdClientError('[Errno 11] Resource temporarily unavailable') from BlockingIOError(
+                '[Errno 11] Resource temporarily unavailable'
+            )
 
     current_time = 0.0
 
@@ -561,7 +621,9 @@ def test_open_project_clears_transient_ping_error_after_successful_not_attachabl
             assert target == 'ccbd'
             self.calls += 1
             if self.calls == 1:
-                raise RuntimeError('[Errno 11] Resource temporarily unavailable')
+                raise CcbdClientError('[Errno 11] Resource temporarily unavailable') from BlockingIOError(
+                    '[Errno 11] Resource temporarily unavailable'
+                )
             return {
                 'namespace_tmux_socket_path': str(context.paths.ccbd_tmux_socket_path),
                 'namespace_tmux_session_name': context.paths.ccbd_tmux_session_name,

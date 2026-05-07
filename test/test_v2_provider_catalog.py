@@ -10,7 +10,7 @@ from provider_core.catalog import (
     ProviderCatalog,
     build_default_provider_catalog,
 )
-from provider_core.manifests import ProviderManifest
+from provider_core.manifests import ProviderManifest, ProviderOnboardingContract
 from completion.profiles import CompletionManifest
 from completion.models import CompletionSourceKind, SelectorFamily
 
@@ -63,6 +63,18 @@ def test_provider_catalog_rejects_duplicate_provider() -> None:
                 supports_reply_stability=False,
                 supports_terminal_reason=True,
                 selector_family=SelectorFamily.FINAL_MESSAGE,
+            )
+        },
+        onboarding_contracts={
+            RuntimeMode.PANE_BACKED: ProviderOnboardingContract(
+                schema_version=1,
+                prompt_transport='tmux-paste',
+                readiness='pane-safe-consumer',
+                completion='exact',
+                diagnostics='structured',
+                restart_recovery='resume',
+                home_isolation='managed',
+                credential_lifecycle='user',
             )
         },
     )

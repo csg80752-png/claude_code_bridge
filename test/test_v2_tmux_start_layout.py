@@ -39,7 +39,7 @@ def test_prepare_tmux_start_layout_uses_current_pane_as_cmd_anchor(monkeypatch, 
             mapping = {
                 ('right', '%0'): '%1',
                 ('bottom', '%0'): '%2',
-                ('bottom', '%1'): '%3',
+                ('right', '%2'): '%3',
             }
             return mapping[(direction, str(parent_pane))]
 
@@ -52,10 +52,10 @@ def test_prepare_tmux_start_layout_uses_current_pane_as_cmd_anchor(monkeypatch, 
     )
 
     assert layout.cmd_pane_id == '%0'
-    assert layout.agent_panes == {'agent1': '%2', 'agent2': '%1', 'agent3': '%3'}
+    assert layout.agent_panes == {'agent1': '%1', 'agent2': '%2', 'agent3': '%3'}
     assert ('title', '%0', 'cmd') in calls
-    assert ('title', '%2', 'agent1') in calls
-    assert ('title', '%1', 'agent2') in calls
+    assert ('title', '%1', 'agent1') in calls
+    assert ('title', '%2', 'agent2') in calls
     assert ('title', '%3', 'agent3') in calls
 
 
@@ -89,7 +89,7 @@ def test_prepare_tmux_start_layout_assigns_slot_stable_styles(monkeypatch, tmp_p
             mapping = {
                 ('right', '%0'): '%1',
                 ('bottom', '%0'): '%2',
-                ('bottom', '%1'): '%3',
+                ('right', '%2'): '%3',
             }
             return mapping[(direction, str(parent_pane))]
 
@@ -101,17 +101,17 @@ def test_prepare_tmux_start_layout_assigns_slot_stable_styles(monkeypatch, tmp_p
         targets=('agent1', 'agent2', 'agent3'),
     )
 
-    assert layout.agent_panes == {'agent1': '%2', 'agent2': '%1', 'agent3': '%3'}
+    assert layout.agent_panes == {'agent1': '%1', 'agent2': '%2', 'agent3': '%3'}
     cmd_visual = pane_visual(project_id=ctx.project.project_id, slot_key='cmd', is_cmd=True)
     agent1_visual = pane_visual(project_id=ctx.project.project_id, slot_key='agent1', order_index=0)
     agent2_visual = pane_visual(project_id=ctx.project.project_id, slot_key='agent2', order_index=1)
     agent3_visual = pane_visual(project_id=ctx.project.project_id, slot_key='agent3', order_index=2)
     assert options[('%0', '@ccb_label_style')] == cmd_visual.label_style
-    assert options[('%2', '@ccb_label_style')] == agent1_visual.label_style
-    assert options[('%1', '@ccb_label_style')] == agent2_visual.label_style
+    assert options[('%1', '@ccb_label_style')] == agent1_visual.label_style
+    assert options[('%2', '@ccb_label_style')] == agent2_visual.label_style
     assert options[('%3', '@ccb_label_style')] == agent3_visual.label_style
-    assert styles['%2'] == (agent1_visual.border_style, agent1_visual.active_border_style)
-    assert styles['%1'] == (agent2_visual.border_style, agent2_visual.active_border_style)
+    assert styles['%1'] == (agent1_visual.border_style, agent1_visual.active_border_style)
+    assert styles['%2'] == (agent2_visual.border_style, agent2_visual.active_border_style)
     assert styles['%3'] == (agent3_visual.border_style, agent3_visual.active_border_style)
 
 

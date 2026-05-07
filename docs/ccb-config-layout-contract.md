@@ -46,7 +46,7 @@ Examples:
 
 - `cmd; agent1:codex`
 - `cmd; agent1:codex, agent2:claude`
-- `cmd, agent1:codex; agent2:codex, agent3:claude`
+- `(cmd; agent1:codex), (agent2:codex; agent3:claude)`
 - `cmd, agent1:codex; agent2:codex, (agent3:claude; agent4:gemini)`
 
 ## 4. Semantic Rules
@@ -60,18 +60,20 @@ Examples:
 
 ## 5. Default Layout Contract
 
-Bootstrap must generate a balanced two-column layout over all visible panes.
+Bootstrap must generate a stable default layout over all visible panes. For the common
+`cmd + 3 default agents` shape, the first row must be `cmd` and `agent1`, and the
+second row must be `agent2` and `agent3`.
 
 For `cmd + N agents`:
 
 - 1 agent: `cmd; agent1`
 - 2 agents: `cmd; agent1, agent2`
-- 3 agents: `cmd, agent1; agent2, agent3`
+- 3 agents: `(cmd; agent1), (agent2; agent3)`
 - 4 agents: `cmd, agent1; agent2, agent3, agent4`
 
 General rule:
 
-- split the full pane list into left and right halves
+- split the full pane list into left and right halves, except four visible panes use two horizontal rows
 - stack each half vertically
 - keep pane areas uniform by sizing each split according to descendant leaf counts
 

@@ -144,6 +144,98 @@ def test_project_keeper_default_run_forever_uses_extended_start_timeout(
     }
 
 
+def test_project_keeper_spawn_failure_records_exception_type_for_empty_message(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-keeper-empty-exc'
+    ctx = _context(project_root, 'agent1:codex\n')
+
+    class EmptyMessageError(RuntimeError):
+        def __str__(self) -> str:
+            return ''
+
+    def _fail_spawn(**kwargs) -> None:
+        del kwargs
+        raise EmptyMessageError()
+
+    keeper = ProjectKeeper(
+        project_root,
+        pid=777,
+        clock=lambda: '2026-04-02T00:00:00Z',
+        spawn_ccbd_process_fn=_fail_spawn,
+    )
+    state = KeeperState(
+        project_id=ctx.project.project_id,
+        keeper_pid=777,
+        started_at='2026-04-02T00:00:00Z',
+        last_check_at='2026-04-02T00:00:00Z',
+        state='running',
+    )
+
+    next_state = keeper._spawn_daemon(state=state, start_timeout_s=0.1)
+
+    assert next_state.last_failure_reason == 'EmptyMessageError; log: .ccb/ccbd/keeper.runtime.log'
+
+
+def test_project_keeper_spawn_failure_logs_traceback_and_log_pointer(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-keeper-traceback'
+    ctx = _context(project_root, 'agent1:codex\n')
+
+    def _fail_spawn(**kwargs) -> None:
+        del kwargs
+        raise RuntimeError('spawn boom')
+
+    keeper = ProjectKeeper(
+        project_root,
+        pid=777,
+        clock=lambda: '2026-04-02T00:00:00Z',
+        spawn_ccbd_process_fn=_fail_spawn,
+    )
+    state = KeeperState(
+        project_id=ctx.project.project_id,
+        keeper_pid=777,
+        started_at='2026-04-02T00:00:00Z',
+        last_check_at='2026-04-02T00:00:00Z',
+        state='running',
+    )
+
+    next_state = keeper._spawn_daemon(state=state, start_timeout_s=0.1)
+
+    assert next_state.last_failure_reason == 'RuntimeError: spawn boom; log: .ccb/ccbd/keeper.runtime.log'
+    runtime_log = project_root / '.ccb' / 'ccbd' / 'keeper.runtime.log'
+    log_text = runtime_log.read_text(encoding='utf-8')
+    assert 'keeper spawn daemon failed' in log_text
+    assert 'Traceback (most recent call last):' in log_text
+    assert 'RuntimeError: spawn boom' in log_text
+
+
+def test_project_keeper_spawn_failure_preserves_reason_when_traceback_log_fails(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-keeper-traceback-log-fails'
+    ctx = _context(project_root, 'agent1:codex\n')
+    ccbd_path = project_root / '.ccb' / 'ccbd'
+    ccbd_path.write_text('not a directory', encoding='utf-8')
+
+    def _fail_spawn(**kwargs) -> None:
+        del kwargs
+        raise RuntimeError('spawn boom')
+
+    keeper = ProjectKeeper(
+        project_root,
+        pid=777,
+        clock=lambda: '2026-04-02T00:00:00Z',
+        spawn_ccbd_process_fn=_fail_spawn,
+    )
+    state = KeeperState(
+        project_id=ctx.project.project_id,
+        keeper_pid=777,
+        started_at='2026-04-02T00:00:00Z',
+        last_check_at='2026-04-02T00:00:00Z',
+        state='running',
+    )
+
+    next_state = keeper._spawn_daemon(state=state, start_timeout_s=0.1)
+
+    assert next_state.last_failure_reason == 'RuntimeError: spawn boom'
+
+
 def test_project_keeper_does_not_restart_degraded_unreachable_daemon_with_fresh_heartbeat(
     tmp_path: Path,
     monkeypatch,

@@ -157,10 +157,10 @@ def terminal_decision_from_applied_state(persisted) -> CompletionDecision | None
     runtime_state = dict(getattr(submission, 'runtime_state', {}) or {})
     if not bool(runtime_state.get('reached_terminal')):
         return None
-    reply = str(getattr(submission, 'reply', '') or '').strip()
+    terminal_evidence = _terminal_evidence_from_items(getattr(persisted, 'pending_items', ()) or ())
+    reply = _recovered_terminal_reply(submission, terminal_evidence)
     if not reply:
         return None
-    terminal_evidence = _terminal_evidence_from_items(getattr(persisted, 'pending_items', ()) or ())
     status = terminal_evidence[0] if terminal_evidence is not None else CompletionStatus.COMPLETED
     reason = terminal_evidence[1] if terminal_evidence is not None else 'terminal_state_recovered'
     return CompletionDecision(
@@ -183,19 +183,53 @@ def terminal_decision_from_applied_state(persisted) -> CompletionDecision | None
     )
 
 
-def _terminal_evidence_from_items(items) -> tuple[CompletionStatus, str] | None:
+def _terminal_evidence_from_items(items) -> tuple[CompletionStatus, str, dict[str, object], CompletionItemKind] | None:
     for item in reversed(tuple(items)):
         kind = getattr(item, 'kind', None)
         payload = dict(getattr(item, 'payload', {}) or {})
         if kind is CompletionItemKind.TURN_ABORTED:
-            return _status_from_payload(payload, default=CompletionStatus.FAILED), _reason_from_payload(payload, 'turn_aborted')
+            return (
+                _status_from_payload(payload, default=CompletionStatus.FAILED),
+                _reason_from_payload(payload, 'turn_aborted'),
+                payload,
+                kind,
+            )
         if kind is CompletionItemKind.CANCEL_INFO:
-            return CompletionStatus.CANCELLED, _reason_from_payload(payload, 'cancelled')
+            return CompletionStatus.CANCELLED, _reason_from_payload(payload, 'cancelled'), payload, kind
         if kind is CompletionItemKind.ERROR or kind is CompletionItemKind.PANE_DEAD:
-            return CompletionStatus.FAILED, _reason_from_payload(payload, 'error')
+            return CompletionStatus.FAILED, _reason_from_payload(payload, 'error'), payload, kind
         if kind is CompletionItemKind.TURN_BOUNDARY or kind is CompletionItemKind.RESULT:
-            return _status_from_payload(payload, default=CompletionStatus.COMPLETED), _reason_from_payload(payload, 'task_complete')
+            return (
+                _status_from_payload(payload, default=CompletionStatus.COMPLETED),
+                _reason_from_payload(payload, 'task_complete'),
+                payload,
+                kind,
+            )
     return None
+
+
+def _recovered_terminal_reply(
+    submission,
+    terminal_evidence: tuple[CompletionStatus, str, dict[str, object], CompletionItemKind] | None,
+) -> str:
+    reply = str(getattr(submission, 'reply', '') or '').strip()
+    if reply:
+        return reply
+    if terminal_evidence is None:
+        return ''
+    payload = terminal_evidence[2]
+    kind = terminal_evidence[3]
+    if kind is CompletionItemKind.TURN_ABORTED:
+        fallback_keys = ('last_agent_message', 'reply')
+    elif kind is CompletionItemKind.TURN_BOUNDARY or kind is CompletionItemKind.RESULT:
+        fallback_keys = ('reply', 'text', 'merged_text', 'last_agent_message')
+    else:
+        fallback_keys = ()
+    for key in fallback_keys:
+        value = str(payload.get(key) or '').strip()
+        if value:
+            return value
+    return ''
 
 
 def _status_from_payload(payload: dict[str, object], *, default: CompletionStatus) -> CompletionStatus:

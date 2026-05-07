@@ -179,7 +179,7 @@ def test_ensure_bootstrap_project_config_recovers_from_agent_specs(tmp_path: Pat
     written = ensure_bootstrap_project_config(project_root)
 
     assert written.exists()
-    assert written.read_text(encoding='utf-8') == 'cmd, agent1:codex; agent2:codex, agent3:claude\n'
+    assert written.read_text(encoding='utf-8') == '(cmd; agent1:codex), (agent2:codex; agent3:claude)\n'
 
 
 def test_load_project_config_supports_explicit_worktree_suffix_in_compact_config(tmp_path: Path) -> None:

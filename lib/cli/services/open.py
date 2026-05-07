@@ -90,18 +90,30 @@ def _connect_attachable_daemon(context: CliContext):
 
 
 def _is_transient_open_connect_error(message: str, *, exc: Exception | None = None) -> bool:
-    if 'Connection refused' in message and not _is_transport_connection_refused(exc):
+    if _contains_transport_fragment(message) and not _is_transport_error(exc):
         return False
     return any(fragment in message for fragment in _TRANSIENT_CONNECT_ERROR_FRAGMENTS)
 
 
-def _is_transport_connection_refused(exc: Exception | None) -> bool:
+def _contains_transport_fragment(message: str) -> bool:
+    return any(fragment in message for fragment in _TRANSIENT_CONNECT_ERROR_FRAGMENTS)
+
+
+def _is_transport_error(exc: Exception | None) -> bool:
     if exc is None:
         return False
     if isinstance(exc, CcbdServiceError):
-        return True
+        return _is_service_transport_message(str(exc))
     cause = getattr(exc, '__cause__', None)
-    return isinstance(exc, ConnectionRefusedError) or isinstance(cause, ConnectionRefusedError)
+    return isinstance(exc, OSError) or isinstance(cause, OSError)
+
+
+def _is_service_transport_message(message: str) -> bool:
+    return (
+        message == 'timed out'
+        or message.startswith('[Errno ')
+        or message == 'ccbd is unavailable: socket_unreachable'
+    )
 
 
 def _wait_for_attachable_namespace(client) -> dict:

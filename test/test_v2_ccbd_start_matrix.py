@@ -73,7 +73,7 @@ def test_phase2_start_initializes_empty_existing_anchor(monkeypatch, tmp_path: P
     assert seen['source'] == 'anchor'
     assert seen['project_root'] == project_root.resolve()
     assert (project_root / '.ccb' / 'ccb.config').is_file()
-    assert (project_root / '.ccb' / 'ccb.config').read_text(encoding='utf-8') == 'cmd, agent1:codex; agent2:codex, agent3:claude\n'
+    assert (project_root / '.ccb' / 'ccb.config').read_text(encoding='utf-8') == '(cmd; agent1:codex), (agent2:codex; agent3:claude)\n'
     assert 'start_status: ok' in stdout
     assert 'agents: agent1, agent2, agent3' in stdout
 

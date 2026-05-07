@@ -6,9 +6,31 @@ from completion.profiles import CompletionManifest
 from provider_execution.fake import FakeProviderAdapter
 
 from provider_core.contracts import ProviderBackend
-from provider_core.manifests import ProviderManifest
+from provider_core.manifests import ProviderManifest, ProviderOnboardingContract
 
 TEST_DOUBLE_PROVIDER_NAMES = ("fake", "fake-codex", "fake-claude", "fake-gemini", "fake-legacy")
+
+
+def _contract(
+    *,
+    prompt_transport: str = "structured",
+    readiness: str = "structured",
+    completion: str = "exact",
+    diagnostics: str = "structured",
+    restart_recovery: str = "resume",
+    home_isolation: str = "none",
+    credential_lifecycle: str = "none",
+) -> ProviderOnboardingContract:
+    return ProviderOnboardingContract(
+        schema_version=1,
+        prompt_transport=prompt_transport,
+        readiness=readiness,
+        completion=completion,
+        diagnostics=diagnostics,
+        restart_recovery=restart_recovery,
+        home_isolation=home_isolation,
+        credential_lifecycle=credential_lifecycle,
+    )
 
 
 def build_test_double_backends() -> list[ProviderBackend]:
@@ -21,6 +43,10 @@ def build_test_double_backends() -> list[ProviderBackend]:
                 supports_stream_watch=True,
                 supports_subagents=False,
                 supports_workspace_attach=True,
+                onboarding_contracts={
+                    RuntimeMode.PANE_BACKED: _contract(),
+                    RuntimeMode.HEADLESS: _contract(),
+                },
                 runtime_profiles={
                     RuntimeMode.PANE_BACKED: CompletionManifest(
                         provider="fake",
@@ -58,6 +84,14 @@ def build_test_double_backends() -> list[ProviderBackend]:
                 supports_stream_watch=True,
                 supports_subagents=False,
                 supports_workspace_attach=True,
+                onboarding_contracts={
+                    RuntimeMode.PANE_BACKED: _contract(
+                        prompt_transport="tmux-paste",
+                        readiness="pane-safe-consumer",
+                        completion="exact",
+                        credential_lifecycle="user",
+                    ),
+                },
                 runtime_profiles={
                     RuntimeMode.PANE_BACKED: CompletionManifest(
                         provider="fake-codex",
@@ -87,6 +121,14 @@ def build_test_double_backends() -> list[ProviderBackend]:
                 supports_stream_watch=True,
                 supports_subagents=False,
                 supports_workspace_attach=True,
+                onboarding_contracts={
+                    RuntimeMode.PANE_BACKED: _contract(
+                        prompt_transport="tmux-paste",
+                        readiness="pane-safe-consumer",
+                        completion="observed-boundary",
+                        credential_lifecycle="user",
+                    ),
+                },
                 runtime_profiles={
                     RuntimeMode.PANE_BACKED: CompletionManifest(
                         provider="fake-claude",
@@ -116,6 +158,15 @@ def build_test_double_backends() -> list[ProviderBackend]:
                 supports_stream_watch=True,
                 supports_subagents=False,
                 supports_workspace_attach=True,
+                onboarding_contracts={
+                    RuntimeMode.PANE_BACKED: _contract(
+                        prompt_transport="tmux-paste",
+                        readiness="pane-safe-consumer",
+                        completion="stability-window",
+                        diagnostics="degraded",
+                        credential_lifecycle="user",
+                    ),
+                },
                 runtime_profiles={
                     RuntimeMode.PANE_BACKED: CompletionManifest(
                         provider="fake-gemini",
@@ -145,6 +196,15 @@ def build_test_double_backends() -> list[ProviderBackend]:
                 supports_stream_watch=True,
                 supports_subagents=False,
                 supports_workspace_attach=True,
+                onboarding_contracts={
+                    RuntimeMode.PANE_BACKED: _contract(
+                        prompt_transport="terminal-text",
+                        readiness="best-effort",
+                        completion="terminal-quiet",
+                        diagnostics="minimal",
+                        restart_recovery="none",
+                    ),
+                },
                 runtime_profiles={
                     RuntimeMode.PANE_BACKED: CompletionManifest(
                         provider="fake-legacy",
