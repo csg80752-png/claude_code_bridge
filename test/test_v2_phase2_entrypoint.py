@@ -1005,7 +1005,7 @@ def test_ccb_long_running_job_keeps_heartbeat_and_doctor_healthy(tmp_path: Path)
     assert start.returncode == 0, start.stderr
 
     ask = _run_ccb(
-        ['ask', '--task-id', 'fake;latency_ms=1800', 'demo', 'from', 'user', 'heartbeat probe'],
+        ['ask', '--task-id', 'fake;latency_ms=6000', 'demo', 'from', 'user', 'heartbeat probe'],
         cwd=project_root,
     )
     assert ask.returncode == 0, ask.stderr
@@ -1048,7 +1048,7 @@ def test_ccb_long_running_job_keeps_heartbeat_and_doctor_healthy(tmp_path: Path)
     assert 'ccbd_health: healthy' in doctor_2.stdout
     assert 'ccbd_heartbeat_fresh: True' in doctor_2.stdout
 
-    completed = _wait_for_status(project_root, job_id, 'completed', timeout=5.0)
+    completed = _wait_for_status(project_root, job_id, 'completed', timeout=10.0)
     assert 'reply: FAKE[demo] heartbeat probe' in completed.stdout
 
     kill = _run_ccb(['kill'], cwd=project_root)

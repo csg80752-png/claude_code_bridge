@@ -20,6 +20,21 @@ from .state_machine import (
 )
 from .start import looks_ready, send_prompt, state_session_path
 
+_STAGED_PROMPT_BOTTOM_LINES = 10
+_MIN_STAGED_PROMPT_TAIL_CHARS = 12
+_UNSAFE_STAGED_PROMPT_TAILS = frozenset(
+    {
+        "continue",
+        "go",
+        "next",
+        "no",
+        "ok",
+        "proceed",
+        "run",
+        "yes",
+    }
+)
+
 
 def poll_submission(
     adapter,
@@ -81,6 +96,9 @@ def _dispatch_deferred_prompt(
 ) -> ProviderPollResult | tuple[ProviderSubmission, bool] | None:
     if bool(submission.runtime_state.get("prompt_sent", True)):
         return None
+    staged = _submit_staged_prompt_if_present(submission, backend=prepared.backend, pane_id=prepared.pane_id, now=now)
+    if staged is not None:
+        return staged, not bool(submission.runtime_state.get("anchor_seen", False))
     if not _prompt_delivery_due(submission, backend=prepared.backend, pane_id=prepared.pane_id, now=now):
         return None
     prompt = str(submission.runtime_state.get("prompt_text") or "")
@@ -96,6 +114,86 @@ def _dispatch_deferred_prompt(
         runtime_state=runtime_state,
     )
     return updated, not anchor_seen
+
+
+def _submit_staged_prompt_if_present(
+    submission: ProviderSubmission,
+    *,
+    backend: object,
+    pane_id: str,
+    now: str,
+) -> ProviderSubmission | None:
+    prompt = str(submission.runtime_state.get("prompt_text") or "").rstrip()
+    if not prompt:
+        return None
+    get_pane_content = getattr(backend, "get_pane_content", None)
+    send_key = getattr(backend, "send_key", None)
+    if not callable(get_pane_content) or not callable(send_key):
+        return None
+    try:
+        text = str(get_pane_content(pane_id, lines=120) or "")
+    except Exception:
+        return None
+    tail = _current_prompt_tail(text)
+    if not tail:
+        return None
+    if not _prompt_text_suffix_matches_tail(prompt, tail):
+        return None
+    if send_key(pane_id, "Enter") is not True:
+        return None
+    runtime_state = {
+        **submission.runtime_state,
+        "prompt_sent": True,
+        "prompt_sent_at": now,
+        "staged_prompt_submitted_at": now,
+    }
+    return replace(submission, runtime_state=runtime_state)
+
+
+def _current_prompt_tail(text: str) -> str:
+    bottom = _bottom_screen_text(text)
+    if _has_blocking_marker(bottom):
+        return ""
+    for line in reversed(bottom.splitlines()):
+        stripped = line.lstrip()
+        if stripped.startswith("❯"):
+            return stripped[1:].strip()
+    return ""
+
+
+def _bottom_screen_text(text: str) -> str:
+    lines = str(text or "").splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines[-_STAGED_PROMPT_BOTTOM_LINES:])
+
+
+def _has_blocking_marker(text: str) -> bool:
+    lowered = str(text or "").lower()
+    blockers = (
+        "esc to interrupt",
+        "do you want",
+        "select:",
+        "choose:",
+        "press enter",
+        "approval required",
+        "thinking",
+        "processing",
+        "compacting",
+        "loading",
+    )
+    return any(blocker in lowered for blocker in blockers)
+
+
+def _prompt_text_suffix_matches_tail(prompt: str, tail: str) -> bool:
+    normalized_tail = " ".join(str(tail or "").split())
+    if (
+        len(normalized_tail) < _MIN_STAGED_PROMPT_TAIL_CHARS
+        or normalized_tail.lower() in _UNSAFE_STAGED_PROMPT_TAILS
+    ):
+        return False
+    prompt_lines = [" ".join(line.split()) for line in str(prompt or "").splitlines() if line.strip()]
+    return bool(prompt_lines and prompt_lines[-1] == normalized_tail)
 
 
 def _prompt_delivery_due(

@@ -563,13 +563,18 @@ def test_ccbd_inbox_and_ack_roundtrip_reply_delivery(tmp_path: Path) -> None:
     assert not thread.is_alive()
 
 
-def test_ccbd_cmd_sender_routes_reply_into_cmd_mailbox(tmp_path: Path) -> None:
+def test_ccbd_cmd_sender_routes_reply_into_cmd_mailbox(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-inbox-ack-cmd'
     ctx = _prepare_project(
         project_root,
         'cmd; codex:codex,claude:claude\n',
     )
     app = CcbdApp(project_root)
+    app.dispatcher._runtime_state.auto_reply_delivery_on_complete = False
+    monkeypatch.setattr(
+        'ccbd.services.dispatcher_runtime.reply_delivery_runtime.preparation_service._discover_cmd_pane_id',
+        lambda _dispatcher: None,
+    )
     app.registry.upsert(
         _runtime(
             'codex',
@@ -583,7 +588,7 @@ def test_ccbd_cmd_sender_routes_reply_into_cmd_mailbox(tmp_path: Path) -> None:
     thread.start()
     _wait_for(app.paths.ccbd_socket_path)
 
-    client = CcbdClient(app.paths.ccbd_socket_path)
+    client = CcbdClient(app.paths.ccbd_socket_path).with_timeout(15.0)
     submit = client.submit(
         MessageEnvelope(
             project_id=ctx.project_id,
