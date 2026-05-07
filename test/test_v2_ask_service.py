@@ -392,6 +392,73 @@ def test_watch_ask_job_retries_when_reconnect_attempt_temporarily_fails(
     assert stable.calls == [0]
 
 
+def test_watch_ask_job_rechecks_watch_once_before_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'repo-ask-watch-terminal-get'
+    project_root.mkdir()
+    context = _build_context(project_root)
+    clock = iter([0.0, 1.1])
+
+    class _LaggingWatchClient:
+        def __init__(self) -> None:
+            self.watch_calls: list[int] = []
+
+        def watch(self, job_id: str, *, cursor: int = 0) -> dict:
+            assert job_id == 'job_1'
+            self.watch_calls.append(cursor)
+            if len(self.watch_calls) == 1:
+                return {
+                    'job_id': 'job_1',
+                    'agent_name': 'agent3',
+                    'target_name': 'agent3',
+                    'cursor': 7,
+                    'generation': 3,
+                    'terminal': False,
+                    'status': 'running',
+                    'reply': '',
+                    'events': [],
+                }
+            return {
+                'job_id': 'job_1',
+                'agent_name': 'agent3',
+                'target_name': 'agent3',
+                'target_kind': 'agent',
+                'provider': 'claude',
+                'provider_instance': 'agent3',
+                'cursor': 9,
+                'generation': 3,
+                'terminal': True,
+                'status': 'completed',
+                'reply': 'pong-late-terminal',
+                'events': [
+                    {'event_id': 'evt_terminal', 'job_id': 'job_1', 'agent_name': 'agent3', 'type': 'job_completed', 'timestamp': '2026-04-06T00:00:02Z'},
+                ],
+            }
+
+    client = _LaggingWatchClient()
+
+    monkeypatch.setattr(
+        ask_service,
+        'connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=client),
+    )
+    monkeypatch.setattr(ask_service, 'ask_wait_timeout_seconds', lambda: 1.0)
+    monkeypatch.setattr(ask_service, 'ask_wait_poll_interval_seconds', lambda: 0.0)
+    monkeypatch.setattr(ask_service.time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(ask_service.time, 'sleep', lambda seconds: None)
+
+    batch = ask_service.watch_ask_job(context, 'job_1', StringIO(), timeout=None, emit_output=False)
+
+    assert batch.terminal is True
+    assert batch.status == 'completed'
+    assert batch.reply == 'pong-late-terminal'
+    assert batch.cursor == 9
+    assert [event['event_id'] for event in batch.events] == ['evt_terminal']
+    assert client.watch_calls == [0, 7]
+
+
 def test_write_ask_output_appends_newline(tmp_path: Path) -> None:
     path = tmp_path / 'reply.txt'
 

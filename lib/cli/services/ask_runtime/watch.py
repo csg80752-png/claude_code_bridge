@@ -56,6 +56,11 @@ def watch_ask_job(
                 write_lines_fn(out, render_watch_batch_fn(batch))
             return batch
         if _deadline_exceeded(deadline, monotonic_fn=monotonic_fn):
+            terminal_batch = _terminal_batch_from_watch(client, job_id, cursor=cursor, reconnect_error_classes=reconnect_error_classes)
+            if terminal_batch is not None:
+                if emit_output:
+                    write_lines_fn(out, render_watch_batch_fn(terminal_batch))
+                return terminal_batch
             raise RuntimeError(f'wait timed out for {job_id}')
         sleep_fn(poll_interval)
 
@@ -92,6 +97,23 @@ def _watch_batch_from_payload(job_id: str, payload: dict) -> WatchEventBatch:
         reply=payload.get('reply') or '',
         events=tuple(payload.get('events', ())),
     )
+
+
+def _terminal_batch_from_watch(
+    client,
+    job_id: str,
+    *,
+    cursor: int,
+    reconnect_error_classes: tuple[type[BaseException], ...],
+) -> WatchEventBatch | None:
+    try:
+        payload = client.watch(job_id, cursor=cursor)
+    except reconnect_error_classes:
+        return None
+    batch = _watch_batch_from_payload(job_id, payload)
+    if not batch.terminal:
+        return None
+    return batch
 
 
 __all__ = ['watch_ask_job']
