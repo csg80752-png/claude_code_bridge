@@ -56,3 +56,42 @@ def test_materialize_codex_profile_copies_inherited_assets(tmp_path: Path, monke
     assert (runtime_home / 'skills' / 'demo.md').is_file()
     assert (runtime_home / 'commands' / 'demo.md').is_file()
     assert (runtime_home / 'sessions').is_dir()
+
+
+def test_materialize_codex_profile_ignores_inherited_ccb_isolated_codex_home(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo'
+    real_home = tmp_path / 'home'
+    isolated_home = (
+        project_root
+        / '.ccb'
+        / 'agents'
+        / 'agent1'
+        / 'provider-runtime'
+        / 'codex'
+        / 'codex-home'
+    )
+    real_codex_home = real_home / '.codex'
+    isolated_home.mkdir(parents=True)
+    real_codex_home.mkdir(parents=True)
+    (isolated_home / 'auth.json').write_text('{"OPENAI_API_KEY":"isolated-key"}', encoding='utf-8')
+    (real_codex_home / 'auth.json').write_text('{"OPENAI_API_KEY":"real-key"}', encoding='utf-8')
+    monkeypatch.setenv('HOME', str(real_home))
+    monkeypatch.setenv('CODEX_HOME', str(isolated_home))
+
+    profile = materialize_provider_profile(
+        layout=PathLayout(project_root),
+        spec=_spec(
+            'agent1',
+            provider_profile=ProviderProfileSpec(
+                mode='isolated',
+                inherit_auth=True,
+                inherit_config=False,
+                inherit_skills=False,
+                inherit_commands=False,
+            ),
+        ),
+        workspace_path=project_root,
+    )
+
+    runtime_home = Path(profile.runtime_home or '')
+    assert (runtime_home / 'auth.json').read_text(encoding='utf-8') == '{"OPENAI_API_KEY":"real-key"}'

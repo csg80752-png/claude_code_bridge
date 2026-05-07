@@ -209,7 +209,25 @@ def legacy_sessions_root() -> Path:
 
 
 def system_codex_home() -> Path:
-    return Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
+    explicit_home = str(os.environ.get("CODEX_HOME") or "").strip()
+    if explicit_home:
+        codex_home = Path(explicit_home).expanduser()
+        if not _path_is_ccb_isolated_codex_home(codex_home):
+            return codex_home
+    return Path.home() / ".codex"
+
+
+def _path_is_ccb_isolated_codex_home(path: Path) -> bool:
+    parts = path.parts
+    if len(parts) < 6:
+        return False
+    return (
+        parts[-1] == _ISOLATED_HOME_DIR
+        and parts[-2] == "codex"
+        and parts[-3] == "provider-runtime"
+        and parts[-5] == "agents"
+        and parts[-6] == ".ccb"
+    )
 
 
 def _agent_name_from_session_filename(name: str) -> str | None:
@@ -299,4 +317,5 @@ __all__ = [
     "prepare_codex_isolated_home",
     "resolve_codex_sessions_root",
     "sync_codex_home_from_source",
+    "system_codex_home",
 ]
