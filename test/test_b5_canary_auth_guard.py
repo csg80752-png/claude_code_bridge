@@ -42,3 +42,16 @@ def test_b5_codex_turn_id_probe_skips_when_probe_reports_auth_error() -> None:
 
     with pytest.raises(pytest.skip.Exception, match="B5 canary requires authenticated codex-cli"):
         _skip_if_codex_probe_auth_error(result)
+
+
+def test_b5_codex_turn_id_probe_skips_when_live_probe_times_out() -> None:
+    result = SimpleNamespace(
+        state=BROKEN_STATE,
+        error=(
+            "startup turn_id probe did not respond within 30s; slow startup or auth refresh "
+            "may need CCB_CODEX_PROBE_TIMEOUT_SECONDS=30"
+        ),
+    )
+
+    with pytest.raises(pytest.skip.Exception, match="startup probe timed out"):
+        _skip_if_codex_probe_auth_error(result)

@@ -133,4 +133,4 @@ def test_cli_context_bootstraps_local_project_instead_of_reusing_home_anchor(
     assert context.project.project_root == project_root.resolve()
     assert context.project.source == 'bootstrapped'
     rendered = (project_root / '.ccb' / 'ccb.config').read_text(encoding='utf-8')
-    assert rendered == 'cmd, agent1:codex; agent2:codex, agent3:claude\n'
+    assert rendered == '(cmd; agent1:codex), (agent2:codex; agent3:claude)\n'

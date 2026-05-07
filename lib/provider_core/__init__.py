@@ -32,6 +32,7 @@ from .runtime_specs import (
     provider_marker_prefix,
 )
 from .contracts import ProviderBackend, ProviderRuntimeLauncher, ProviderSessionBinding
+from .manifests import ProviderManifest, ProviderOnboardingContract
 from .protocol import (
     ANY_DONE_LINE_RE,
     ANY_REQ_ID_PATTERN,
@@ -83,6 +84,8 @@ __all__ = [
     'ProviderClientSpec',
     'ProviderCatalog',
     'ProviderLock',
+    'ProviderManifest',
+    'ProviderOnboardingContract',
     'ProviderRuntimeSpec',
     'QWEN_CLIENT_SPEC',
     'QWEN_RUNTIME_SPEC',

@@ -176,7 +176,7 @@ def test_phase2_start_bootstraps_missing_project_and_default_config(monkeypatch,
     assert seen['project_root'] == project_root.resolve()
     assert (project_root / '.ccb').is_dir()
     assert (project_root / '.ccb' / 'ccb.config').is_file()
-    assert (project_root / '.ccb' / 'ccb.config').read_text(encoding='utf-8') == 'cmd, agent1:codex; agent2:codex, agent3:claude\n'
+    assert (project_root / '.ccb' / 'ccb.config').read_text(encoding='utf-8') == '(cmd; agent1:codex), (agent2:codex; agent3:claude)\n'
     assert 'start_status: ok' in stdout
     assert 'agents: codex, claude' in stdout
 
@@ -351,7 +351,7 @@ def test_phase2_start_with_new_context_rebuilds_stale_anchor_before_bootstrap(mo
 
     assert code == 0, stderr.getvalue()
     assert seen['ghost_exists'] is False
-    assert seen['config_text'] == 'cmd, agent1:codex; agent2:codex, agent3:claude\n'
+    assert seen['config_text'] == '(cmd; agent1:codex), (agent2:codex; agent3:claude)\n'
     assert seen['restore'] is False
     assert 'start_status: ok' in stdout.getvalue()
 
@@ -388,7 +388,7 @@ def test_phase2_start_with_new_context_rebuilds_after_kill_when_config_missing(m
     assert code == 0, stderr.getvalue()
     assert seen['restore'] is False
     assert seen['demo_exists'] is False
-    assert seen['config_text'] == 'cmd, agent1:codex; agent2:codex, agent3:claude\n'
+    assert seen['config_text'] == '(cmd; agent1:codex), (agent2:codex; agent3:claude)\n'
     assert 'start_status: ok' in stdout.getvalue()
 
 
@@ -1063,7 +1063,7 @@ def test_ccb_fake_provider_recovers_running_execution_after_ccbd_restart(tmp_pat
     assert start.returncode == 0, start.stderr
 
     ask = _run_ccb(
-        ['ask', '--task-id', 'fake;latency_ms=1500', 'demo', 'from', 'user', 'resume after restart'],
+        ['ask', '--task-id', 'fake;latency_ms=6000', 'demo', 'from', 'user', 'resume after restart'],
         cwd=project_root,
     )
     assert ask.returncode == 0, ask.stderr
@@ -1097,7 +1097,7 @@ def test_ccb_fake_provider_recovers_running_execution_after_ccbd_restart(tmp_pat
     assert 'ccbd_last_restore_restored_execution_count: 1' in doctor.stdout
     assert 'ccbd_last_restore_results_text: demo/fake:restored(provider_resumed)' in doctor.stdout
 
-    completed = _wait_for_status(project_root, job_id, 'completed', timeout=5.0)
+    completed = _wait_for_status(project_root, job_id, 'completed', timeout=10.0)
     assert 'reply: FAKE[demo] resume after restart' in completed.stdout
     assert not execution_path.exists()
 

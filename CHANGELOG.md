@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Provider Onboarding Contract**: Provider manifests now declare runtime-mode onboarding contracts for prompt transport, readiness, completion, diagnostics, restart recovery, home isolation, and credential lifecycle; out-of-tree providers must add matching `onboarding_contracts`.
+- **Default Four-Pane Layout**: Fresh `cmd + agent1/2/3` projects now start as `(cmd; agent1), (agent2; agent3)` while explicit project layouts and other default pane counts keep their existing balancing behavior.
+- **Startup Diagnostics & Recovery Hardening**: Keeper spawn failures now record exception type plus traceback log pointers, `ccb open` avoids retrying application-level timeout text as transport failure, and terminal restore avoids promoting diagnostic error text as a recovered reply.
+- **Claude Home Sync Checksum Guard**: Claude home sync detects same-size, same-mtime file changes with content hashing; this favors correctness and should be watched for large home-tree startup cost.
 - **Codex Turn Identity Probe**: Codex startup now verifies `payload.turn_id` from the real session log instead of the removed synthetic `task_id` probe path.
 - **Codex Probe Hardening**: Probe discovery now honors `CODEX_INSTALL_PREFIX` and the current user's home directory, accepts top-level or nested `turn_id`, caches prior passing probes, and exposes `CCB_CODEX_PROBE_TIMEOUT_SECONDS` for slow first-run startup.
 - **Emergency Probe Override Renamed**: Use `CCB_CODEX_TURN_ID_PROBE_DISABLED=1` only for emergency bypasses; `CCB_CODEX_TASK_ID_PROBE_DISABLED=1` remains as a one-cycle deprecated alias with a warning.

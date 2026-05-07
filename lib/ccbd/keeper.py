@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import time
+import traceback
 
 from agents.config_identity import project_config_identity_payload
 from agents.config_loader import load_project_config
@@ -98,7 +99,38 @@ def _spawn_daemon(app: ProjectKeeper, *, state: KeeperState, start_timeout_s: fl
         )
         return state.with_success(occurred_at=now)
     except Exception as exc:
-        return state.with_failure(occurred_at=now, reason=str(exc))
+        log_path = _write_spawn_failure_traceback(app, exc)
+        return state.with_failure(occurred_at=now, reason=_exception_failure_reason(exc, log_path=log_path))
+
+
+def _exception_failure_reason(exc: Exception, *, log_path: Path | None = None) -> str:
+    message = str(exc).strip()
+    exc_type = type(exc).__name__
+    if not message:
+        reason = exc_type
+    else:
+        reason = f'{exc_type}: {message}'
+    if log_path is None:
+        return reason
+    return f'{reason}; log: {log_path.as_posix()}'
+
+
+def _write_spawn_failure_traceback(app: ProjectKeeper, exc: Exception) -> Path | None:
+    log_path = app.paths.ccbd_dir / 'keeper.runtime.log'
+    relative_log_path = Path('.ccb') / 'ccbd' / 'keeper.runtime.log'
+    message = '\n'.join(
+        [
+            f'{app.clock()} ERROR ccbd.keeper: keeper spawn daemon failed',
+            ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip(),
+        ]
+    )
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open('a', encoding='utf-8') as handle:
+            handle.write(message.rstrip() + '\n')
+    except Exception:
+        return None
+    return relative_log_path
 
 
 def _project_definition_missing(app: ProjectKeeper) -> bool:

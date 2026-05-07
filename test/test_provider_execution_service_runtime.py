@@ -248,6 +248,114 @@ def test_restore_submission_preserves_applied_terminal_failure_status() -> None:
     assert result.decision.provider_turn_ref == "turn-failed"
 
 
+def test_restore_submission_promotes_terminal_abort_message_when_submission_reply_empty() -> None:
+    submission = _submission(provider="fake")
+    submission = ProviderSubmission(
+        **{
+            **submission.__dict__,
+            "reply": "",
+            "runtime_state": {
+                "reached_terminal": True,
+                "anchor_seen": True,
+                "reply_started": True,
+                "reply_stable": True,
+                "bound_turn_id": "turn-aborted",
+            },
+        }
+    )
+    persisted = PersistedExecutionState(
+        submission=submission,
+        runtime_context=_runtime_context(),
+        resume_capable=False,
+        persisted_at="2026-04-06T00:00:02Z",
+        pending_decision=None,
+        pending_items=(
+            _item(
+                seq=1,
+                kind=CompletionItemKind.TURN_ABORTED,
+                payload={
+                    "reason": "replay_unrecoverable",
+                    "status": "failed",
+                    "last_agent_message": "partial reply before restart",
+                },
+            ),
+        ),
+        applied_event_seqs=(1,),
+    )
+    state_store = SimpleNamespace(load=lambda job_id: persisted, remove=lambda job_id: None)
+    service = SimpleNamespace(
+        _active={},
+        _state_store=state_store,
+        _registry={"fake": SimpleNamespace()},
+        _pending_replays={},
+        _runtime_contexts={},
+        _clock=lambda: "2026-04-06T00:00:03Z",
+    )
+    job = SimpleNamespace(job_id="job_1", agent_name="agent1", provider="fake")
+
+    result = restore_submission(service, job)
+
+    assert result.status == "terminal_pending"
+    assert result.reason == "terminal_state_recovered"
+    assert result.decision is not None
+    assert result.decision.status is CompletionStatus.FAILED
+    assert result.decision.reason == "replay_unrecoverable"
+    assert result.decision.reply == "partial reply before restart"
+
+
+def test_restore_submission_does_not_promote_error_diagnostic_text_when_submission_reply_empty() -> None:
+    submission = _submission(provider="fake")
+    submission = ProviderSubmission(
+        **{
+            **submission.__dict__,
+            "reply": "",
+            "runtime_state": {
+                "reached_terminal": True,
+                "anchor_seen": True,
+                "reply_started": True,
+                "reply_stable": True,
+                "bound_turn_id": "turn-error",
+            },
+        }
+    )
+    persisted = PersistedExecutionState(
+        submission=submission,
+        runtime_context=_runtime_context(),
+        resume_capable=False,
+        persisted_at="2026-04-06T00:00:02Z",
+        pending_decision=None,
+        pending_items=(
+            _item(
+                seq=1,
+                kind=CompletionItemKind.ERROR,
+                payload={
+                    "reason": "provider_error",
+                    "status": "failed",
+                    "text": "diagnostic error text",
+                    "merged_text": "diagnostic merged text",
+                },
+            ),
+        ),
+        applied_event_seqs=(1,),
+    )
+    state_store = SimpleNamespace(load=lambda job_id: persisted, remove=lambda job_id: None)
+    service = SimpleNamespace(
+        _active={},
+        _state_store=state_store,
+        _registry={"fake": SimpleNamespace()},
+        _pending_replays={},
+        _runtime_contexts={},
+        _clock=lambda: "2026-04-06T00:00:03Z",
+    )
+    job = SimpleNamespace(job_id="job_1", agent_name="agent1", provider="fake")
+
+    result = restore_submission(service, job)
+
+    assert result.status == "abandoned"
+    assert result.reason == "provider_resume_unsupported"
+    assert result.decision is None
+
+
 def test_restore_submission_abandons_when_adapter_missing() -> None:
     removed: list[str] = []
     persisted = PersistedExecutionState(

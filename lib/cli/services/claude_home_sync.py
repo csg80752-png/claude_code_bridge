@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -184,8 +185,8 @@ def _physical_entry_matches(source: Path, target: Path) -> bool:
     return False
 
 
-def _tree_snapshot(root: Path, *, source_tree: bool) -> tuple[tuple[str, str, int, int], ...]:
-    snapshot: list[tuple[str, str, int, int]] = []
+def _tree_snapshot(root: Path, *, source_tree: bool) -> tuple[tuple[str, str, int, int, str], ...]:
+    snapshot: list[tuple[str, str, int, int, str]] = []
     _collect_tree_snapshot(root, root, snapshot, source_tree=source_tree)
     return tuple(snapshot)
 
@@ -193,7 +194,7 @@ def _tree_snapshot(root: Path, *, source_tree: bool) -> tuple[tuple[str, str, in
 def _collect_tree_snapshot(
     root: Path,
     current: Path,
-    snapshot: list[tuple[str, str, int, int]],
+    snapshot: list[tuple[str, str, int, int, str]],
     *,
     source_tree: bool,
 ) -> None:
@@ -201,24 +202,32 @@ def _collect_tree_snapshot(
         rel_path = child.relative_to(root).as_posix()
         if child.is_symlink():
             if not source_tree:
-                snapshot.append((rel_path, "symlink", 0, 0))
+                snapshot.append((rel_path, "symlink", 0, 0, ""))
                 continue
             resolved = child.resolve(strict=False)
             if resolved.is_file():
-                size, mtime_ns = _file_signature(resolved)
-                snapshot.append((rel_path, "file", size, mtime_ns))
+                size, mtime_ns, digest = _file_signature(resolved)
+                snapshot.append((rel_path, "file", size, mtime_ns, digest))
             continue
         if child.is_dir():
-            snapshot.append((rel_path, "dir", 0, 0))
+            snapshot.append((rel_path, "dir", 0, 0, ""))
             _collect_tree_snapshot(root, child, snapshot, source_tree=source_tree)
         elif child.is_file():
-            size, mtime_ns = _file_signature(child)
-            snapshot.append((rel_path, "file", size, mtime_ns))
+            size, mtime_ns, digest = _file_signature(child)
+            snapshot.append((rel_path, "file", size, mtime_ns, digest))
 
 
-def _file_signature(path: Path) -> tuple[int, int]:
+def _file_signature(path: Path) -> tuple[int, int, str]:
     stat = path.stat()
-    return stat.st_size, stat.st_mtime_ns
+    return stat.st_size, stat.st_mtime_ns, _sha256_file(path)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _warn_broken_symlink_once(path: Path) -> None:

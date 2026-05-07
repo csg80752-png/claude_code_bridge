@@ -3,7 +3,7 @@ from __future__ import annotations
 from agents.models import RuntimeMode
 from completion.models import CompletionFamily, CompletionSourceKind, SelectorFamily
 from completion.profiles import CompletionManifest
-from provider_core.manifests import ProviderManifest
+from provider_core.manifests import ProviderManifest, ProviderOnboardingContract
 
 
 def build_manifest() -> ProviderManifest:
@@ -14,6 +14,18 @@ def build_manifest() -> ProviderManifest:
         supports_stream_watch=True,
         supports_subagents=False,
         supports_workspace_attach=True,
+        onboarding_contracts={
+            RuntimeMode.PANE_BACKED: ProviderOnboardingContract(
+                schema_version=1,
+                prompt_transport='tmux-paste',
+                readiness='pane-safe-consumer',
+                completion='exact',
+                diagnostics='structured',
+                restart_recovery='resume',
+                home_isolation='managed',
+                credential_lifecycle='user',
+            ),
+        },
         runtime_profiles={
             RuntimeMode.PANE_BACKED: CompletionManifest(
                 provider='codex',

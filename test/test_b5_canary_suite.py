@@ -28,6 +28,11 @@ _CODEX_AUTH_ERROR_MARKERS = (
     "401 Unauthorized",
     "Missing bearer or basic authentication",
 )
+_CODEX_PROBE_TIMEOUT_SKIP_MESSAGE = "B5 canary requires responsive codex-cli/network; startup probe timed out"
+_CODEX_PROBE_TIMEOUT_MARKERS = (
+    "startup turn_id probe did not respond within",
+    "CCB_CODEX_PROBE_TIMEOUT_SECONDS",
+)
 
 
 def _codex_auth_path() -> Path:
@@ -48,6 +53,8 @@ def _skip_if_codex_probe_auth_error(result: object) -> None:
     error = str(getattr(result, "error", "") or "")
     if any(marker in error for marker in _CODEX_AUTH_ERROR_MARKERS):
         pytest.skip(_CODEX_AUTH_SKIP_MESSAGE)
+    if all(marker in error for marker in _CODEX_PROBE_TIMEOUT_MARKERS):
+        pytest.skip(_CODEX_PROBE_TIMEOUT_SKIP_MESSAGE)
 
 
 def test_b5_cmd_readiness_canary_accepts_ready_prompt_and_rejects_modal_wrap() -> None:
