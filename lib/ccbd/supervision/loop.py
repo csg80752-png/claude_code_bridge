@@ -3,10 +3,11 @@ from __future__ import annotations
 from ccbd.system import utc_now
 
 from .cmd_slot import reconcile_cmd_slot
-from .loop_actions import ensure_agent_mounted, recover_agent_runtime
+from .loop_actions import ensure_agent_mounted, fail_unbound_starting_runtime, recover_agent_runtime
 from .loop_context import build_runtime_supervision_context
 from .loop_runtime import (
     resolved_runtime,
+    runtime_is_unbound_starting,
     runtime_requires_mount,
     runtime_requires_mount_from_foreign_pane,
     runtime_requires_recovery,
@@ -53,6 +54,8 @@ class RuntimeSupervisionLoop:
         runtime = resolved_runtime(self._ctx, agent_name)
         if runtime is None:
             return ensure_agent_mounted(self._ctx, agent_name, runtime=None)
+        if runtime_is_unbound_starting(runtime):
+            return fail_unbound_starting_runtime(self._ctx, agent_name, runtime=runtime)
         if runtime_requires_mount(runtime):
             return ensure_agent_mounted(self._ctx, agent_name, runtime=runtime)
         if runtime_requires_mount_from_foreign_pane(self._ctx, runtime):

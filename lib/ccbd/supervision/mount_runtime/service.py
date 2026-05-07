@@ -9,6 +9,7 @@ from .transitions import (
     mount_or_reflow,
     persist_mount_exception,
     persist_mount_success,
+    runtime_requires_binding_and_is_unbound,
     start_mount_attempt,
 )
 
@@ -96,6 +97,15 @@ def ensure_mounted(
             prior_health=prior_health,
             next_restart_count=next_restart_count,
             reason=refreshed_health or 'mount-produced-unhealthy-runtime',
+        )
+    if runtime_requires_binding_and_is_unbound(refreshed):
+        return persist_mount_failure_fn(
+            refreshed,
+            agent_name=agent_name,
+            attempted_at=attempted_at,
+            prior_health=prior_health,
+            next_restart_count=next_restart_count,
+            reason='mount-produced-unbound-runtime',
         )
 
     mounted = persist_mount_success(

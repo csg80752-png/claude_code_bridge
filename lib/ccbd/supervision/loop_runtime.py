@@ -11,6 +11,11 @@ from ccbd.supervision.backoff import same_socket_path as same_socket_path_impl
 from ccbd.supervision.mount import build_starting_runtime as build_starting_runtime_impl
 
 from .loop_context import RuntimeSupervisionContext
+from .runtime_binding import (
+    runtime_binding_missing,
+    runtime_mode_requires_binding,
+    runtime_requires_binding_and_is_unbound,
+)
 
 
 def resolved_runtime(ctx: RuntimeSupervisionContext, agent_name: str):
@@ -77,6 +82,10 @@ def runtime_requires_mount(runtime) -> bool:
     return runtime.state in {AgentState.STOPPED, AgentState.FAILED}
 
 
+def runtime_is_unbound_starting(runtime) -> bool:
+    return runtime.state is AgentState.STARTING and runtime_requires_binding_and_is_unbound(runtime)
+
+
 def runtime_requires_mount_from_foreign_pane(ctx: RuntimeSupervisionContext, runtime) -> bool:
     return runtime_health(runtime) == 'pane-foreign' and not should_reflow_project_namespace(ctx, runtime)
 
@@ -138,7 +147,7 @@ def runtime_in_project_namespace_reflow_health(runtime) -> bool:
 
 
 def recovered_replacement_requires_workspace_reflow(ctx: RuntimeSupervisionContext, runtime, recovered) -> bool:
-    if runtime_health(runtime) not in {'pane-dead', 'pane-missing'}:
+    if runtime_health(runtime) != 'pane-dead':
         return False
     if not project_namespace_reflow_safe(ctx, runtime.agent_name):
         return False
@@ -197,6 +206,9 @@ __all__ = [
     'resolved_runtime',
     'recovered_pane_replaced',
     'runtime_health',
+    'runtime_binding_missing',
+    'runtime_is_unbound_starting',
+    'runtime_mode_requires_binding',
     'runtime_requires_mount',
     'runtime_requires_mount_from_foreign_pane',
     'runtime_requires_recovery',
