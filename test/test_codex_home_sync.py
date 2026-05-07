@@ -19,6 +19,7 @@ from provider_backends.codex.launcher_runtime.codex_namespace_isolation import (
     _POLICY_FILENAME,
     prepare_codex_isolated_home,
     sync_codex_home_from_source,
+    system_codex_home,
 )
 
 
@@ -102,6 +103,26 @@ def test_prepare_codex_isolated_home_does_not_hardlink_auth_json(tmp_path: Path)
 
     assert (isolated_home / "auth.json").read_text(encoding="utf-8") == '{"token":"fresh"}\n'
     assert (isolated_home / "auth.json").stat().st_ino != (source / "auth.json").stat().st_ino
+
+
+def test_system_codex_home_ignores_ccb_isolated_codex_home_env(tmp_path: Path, monkeypatch) -> None:
+    real_home = tmp_path / "home"
+    ccb_home = real_home / "project" / ".ccb" / "agents" / "agent1" / "provider-runtime" / "codex" / "codex-home"
+    ccb_home.mkdir(parents=True)
+    real_codex = real_home / ".codex"
+    real_codex.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(real_home))
+    monkeypatch.setenv("CODEX_HOME", str(ccb_home))
+
+    assert system_codex_home() == real_codex
+
+
+def test_system_codex_home_keeps_explicit_non_ccb_codex_home_env(tmp_path: Path, monkeypatch) -> None:
+    explicit_home = tmp_path / "operator-codex-home"
+    explicit_home.mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", str(explicit_home))
+
+    assert system_codex_home() == explicit_home
 
 
 def test_sync_codex_home_does_not_hardlink_safe_entries(tmp_path: Path) -> None:

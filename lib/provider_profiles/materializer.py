@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agents.models import AgentSpec
+from provider_backends.codex.launcher_runtime.codex_namespace_isolation import system_codex_home
 from provider_profiles.models import ProviderProfileSpec, ResolvedProviderProfile
 from storage.atomic import atomic_write_json
 from storage.paths import PathLayout
@@ -101,7 +101,7 @@ def _materialize_codex_profile(
         runtime_home = profile_root
         runtime_home.mkdir(parents=True, exist_ok=True)
         (runtime_home / 'sessions').mkdir(parents=True, exist_ok=True)
-        source_home = _system_codex_home()
+        source_home = system_codex_home()
         if profile_spec.inherit_config:
             _copy_if_missing(source_home / 'config.toml', runtime_home / 'config.toml')
         elif not (runtime_home / 'config.toml').exists():
@@ -164,10 +164,6 @@ def _write_profile_record(runtime_dir: Path, profile: ResolvedProviderProfile) -
     path = Path(runtime_dir) / 'provider-profile.json'
     atomic_write_json(path, profile.to_record())
     return path
-
-
-def _system_codex_home() -> Path:
-    return Path(os.environ.get('CODEX_HOME') or (Path.home() / '.codex')).expanduser()
 
 
 def _copy_if_missing(source: Path, target: Path) -> None:
