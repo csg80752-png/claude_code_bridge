@@ -40,6 +40,9 @@ def poll_submission(
         return prompt_dispatch
     if isinstance(prompt_dispatch, tuple):
         submission, _ = prompt_dispatch
+    prompt_ready_timeout = _prompt_ready_timeout_if_blocked(submission, now=now)
+    if prompt_ready_timeout is not None:
+        return prompt_ready_timeout
     reply_delivery_timeout = _reply_delivery_ready_timeout_if_blocked(submission, now=now)
     if reply_delivery_timeout is not None:
         return reply_delivery_timeout
@@ -113,7 +116,58 @@ def _prompt_delivery_due(
         return True
     if bool(submission.runtime_state.get("reply_delivery_require_ready", False)):
         return False
-    return _ready_wait_timed_out(submission, now=now)
+    return False
+
+
+def _prompt_ready_timeout_if_blocked(
+    submission: ProviderSubmission,
+    *,
+    now: str,
+) -> ProviderPollResult | None:
+    if "prompt_sent" not in submission.runtime_state:
+        return None
+    if not str(submission.runtime_state.get("prompt_text") or "").strip():
+        return None
+    if bool(submission.runtime_state.get("prompt_sent", False)):
+        return None
+    if bool(submission.runtime_state.get("reply_delivery_complete_on_dispatch", False)):
+        return None
+    ready_wait_started_at = str(submission.runtime_state.get("ready_wait_started_at") or "").strip()
+    if not ready_wait_started_at:
+        submission.runtime_state["ready_wait_started_at"] = now
+        return None
+    if not _ready_wait_timed_out(submission, now=now):
+        return None
+    ready_timeout_s = _ready_timeout_s(submission)
+    elapsed_s = _ready_elapsed_s(ready_wait_started_at, now=now)
+    provider_turn_ref = str(
+        submission.runtime_state.get("request_anchor")
+        or submission.runtime_state.get("pane_id")
+        or submission.job_id
+    ).strip()
+    decision = CompletionDecision(
+        terminal=True,
+        status=CompletionStatus.FAILED,
+        reason="claude_runtime_not_ready",
+        confidence=CompletionConfidence.DEGRADED,
+        reply="",
+        anchor_seen=False,
+        reply_started=False,
+        reply_stable=False,
+        provider_turn_ref=provider_turn_ref or submission.job_id,
+        source_cursor=None,
+        finished_at=now,
+        diagnostics={
+            "delivery_status": "ready_timeout_not_sent",
+            "provider": submission.provider,
+            "submission_mode": "active",
+            "pane_id": str(submission.runtime_state.get("pane_id") or ""),
+            "ready_wait_started_at": ready_wait_started_at,
+            "ready_timeout_s": ready_timeout_s,
+            "ready_wait_elapsed_s": elapsed_s,
+        },
+    )
+    return ProviderPollResult(submission=submission, decision=decision)
 
 
 def _reply_delivery_terminal_if_dispatched(
@@ -196,15 +250,24 @@ def _ready_wait_timed_out(submission: ProviderSubmission, *, now: str) -> bool:
     started_at = str(submission.runtime_state.get("ready_wait_started_at") or "").strip()
     if not started_at:
         return True
-    try:
-        timeout_s = float(submission.runtime_state.get("ready_timeout_s", 8.0))
-    except Exception:
-        timeout_s = 8.0
-    try:
-        elapsed = (parse_utc_timestamp(now) - parse_utc_timestamp(started_at)).total_seconds()
-    except Exception:
+    elapsed = _ready_elapsed_s(started_at, now=now)
+    if elapsed is None:
         return True
-    return elapsed >= max(0.0, timeout_s)
+    return elapsed >= max(0.0, _ready_timeout_s(submission))
+
+
+def _ready_timeout_s(submission: ProviderSubmission) -> float:
+    try:
+        return float(submission.runtime_state.get("ready_timeout_s", 8.0))
+    except Exception:
+        return 8.0
+
+
+def _ready_elapsed_s(started_at: str, *, now: str) -> float | None:
+    try:
+        return (parse_utc_timestamp(now) - parse_utc_timestamp(started_at)).total_seconds()
+    except Exception:
+        return None
 
 
 def _ensure_prepared_pane_alive(submission: ProviderSubmission, *, prepared, now: str):

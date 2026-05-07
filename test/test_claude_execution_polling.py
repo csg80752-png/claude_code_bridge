@@ -479,6 +479,124 @@ def test_poll_submission_does_not_mark_anchor_seen_on_prompt_dispatch_without_lo
     assert sent == [("%3", "CCB_REQ_ID: job_claude\nfresh request", {"extra_enter": True})]
 
 
+def test_poll_submission_fails_agent_task_when_claude_never_becomes_ready(monkeypatch) -> None:
+    submission = ProviderSubmission(
+        job_id="job_claude",
+        agent_name="agent3",
+        provider="claude",
+        accepted_at="2026-04-06T00:00:00Z",
+        ready_at="2026-04-06T00:00:00Z",
+        source_kind=CompletionSourceKind.SESSION_EVENT_LOG,
+        reply="",
+        runtime_state={
+            "state": {},
+            "mode": "active",
+            "pane_id": "%3",
+            "prompt_text": "CCB_REQ_ID: job_claude\nfresh request",
+            "prompt_sent": False,
+            "request_anchor": "job_claude",
+            "anchor_seen": False,
+            "next_seq": 1,
+            "ready_wait_started_at": "2026-04-06T00:00:00Z",
+            "ready_timeout_s": 8.0,
+        },
+    )
+    sent: list[tuple[str, str, dict[str, object]]] = []
+
+    class BusyBackend:
+        def get_pane_content(self, pane_id: str, lines: int = 120) -> str:
+            assert pane_id == "%3"
+            assert lines == 120
+            return "Thinking...\nEsc to interrupt"
+
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
+            sent.append((pane_id, text, dict(kwargs)))
+
+    prepared = SimpleNamespace(reader=object(), backend=BusyBackend(), pane_id="%3")
+
+    monkeypatch.setattr(
+        "provider_backends.claude.execution_runtime.polling.prepare_active_poll_without_liveness",
+        lambda submission, now: prepared,
+    )
+    monkeypatch.setattr(
+        "provider_backends.claude.execution_runtime.polling.poll_exact_hook",
+        lambda submission, now: (_ for _ in ()).throw(AssertionError("hook should not run")),
+    )
+    monkeypatch.setattr(
+        "provider_backends.claude.execution_runtime.polling.ensure_active_pane_alive",
+        lambda submission, backend, pane_id, now: (_ for _ in ()).throw(AssertionError("liveness should not run")),
+    )
+
+    result = poll_submission(None, submission, now="2026-04-06T00:00:10Z")
+
+    assert isinstance(result, ProviderPollResult)
+    assert result.decision is not None
+    assert result.decision.status.value == "failed"
+    assert result.decision.reason == "claude_runtime_not_ready"
+    assert result.decision.diagnostics["delivery_status"] == "ready_timeout_not_sent"
+    assert result.decision.diagnostics["pane_id"] == "%3"
+    assert result.decision.diagnostics["ready_wait_started_at"] == "2026-04-06T00:00:00Z"
+    assert result.decision.diagnostics["ready_timeout_s"] == 8.0
+    assert result.decision.diagnostics["ready_wait_elapsed_s"] == 10.0
+    assert result.submission.runtime_state["prompt_sent"] is False
+    assert sent == []
+
+
+def test_poll_submission_gives_restored_prompt_without_ready_start_a_grace_window(monkeypatch) -> None:
+    submission = ProviderSubmission(
+        job_id="job_claude",
+        agent_name="agent3",
+        provider="claude",
+        accepted_at="2026-04-06T00:00:00Z",
+        ready_at="2026-04-06T00:00:00Z",
+        source_kind=CompletionSourceKind.SESSION_EVENT_LOG,
+        reply="",
+        runtime_state={
+            "state": {},
+            "mode": "active",
+            "pane_id": "%3",
+            "prompt_text": "CCB_REQ_ID: job_claude\nfresh request",
+            "prompt_sent": False,
+            "request_anchor": "job_claude",
+            "anchor_seen": False,
+            "next_seq": 1,
+            "ready_timeout_s": 8.0,
+        },
+    )
+
+    class BusyBackend:
+        def get_pane_content(self, pane_id: str, lines: int = 120) -> str:
+            assert pane_id == "%3"
+            assert lines == 120
+            return "Thinking...\nEsc to interrupt"
+
+    prepared = SimpleNamespace(reader=object(), backend=BusyBackend(), pane_id="%3")
+
+    monkeypatch.setattr(
+        "provider_backends.claude.execution_runtime.polling.prepare_active_poll_without_liveness",
+        lambda submission, now: prepared,
+    )
+    monkeypatch.setattr(
+        "provider_backends.claude.execution_runtime.polling.poll_exact_hook",
+        lambda submission, now: None,
+    )
+    monkeypatch.setattr(
+        "provider_backends.claude.execution_runtime.polling.ensure_active_pane_alive",
+        lambda submission, backend, pane_id, now: None,
+    )
+    monkeypatch.setattr(
+        "provider_backends.claude.execution_runtime.polling.read_events",
+        lambda reader, state: ([], state),
+    )
+
+    result = poll_submission(None, submission, now="2026-04-06T00:00:10Z")
+
+    assert isinstance(result, ProviderPollResult)
+    assert result.decision is None
+    assert result.submission.runtime_state["prompt_sent"] is False
+    assert result.submission.runtime_state["ready_wait_started_at"] == "2026-04-06T00:00:10Z"
+
+
 def test_poll_submission_ignores_assistant_events_until_current_anchor_is_observed(monkeypatch) -> None:
     submission = ProviderSubmission(
         job_id="job_claude",
