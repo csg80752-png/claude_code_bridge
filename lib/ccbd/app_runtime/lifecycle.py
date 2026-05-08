@@ -68,6 +68,8 @@ def start(app):
 
 
 def heartbeat(app):
+    if app.socket_server.is_stop_requested():
+        return app.lease
     app.health_monitor.check_all()
     app.runtime_supervision.reconcile_once()
     app.dispatcher.reconcile_runtime_views()
@@ -97,6 +99,7 @@ def request_shutdown(app) -> None:
 
 
 def shutdown(app) -> None:
+    app.socket_server.signal_stop()
     try:
         app.runtime_supervisor.stop_all(force=True)
     except Exception:
