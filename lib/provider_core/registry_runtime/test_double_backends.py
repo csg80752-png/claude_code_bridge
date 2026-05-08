@@ -9,6 +9,15 @@ from provider_core.contracts import ProviderBackend
 from provider_core.manifests import ProviderManifest, ProviderOnboardingContract
 
 TEST_DOUBLE_PROVIDER_NAMES = ("fake", "fake-codex", "fake-claude", "fake-gemini", "fake-legacy")
+# Ordered by ABI-shape priority for the P0 deterministic gate, not by registry build order.
+# The generic fake remains load-bearing for structured/headless-style defaults and no-credential coverage.
+P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS = (
+    "fake-codex",
+    "fake-claude",
+    "fake-gemini",
+    "fake-legacy",
+    "fake",
+)
 
 
 def _contract(
@@ -89,6 +98,7 @@ def build_test_double_backends() -> list[ProviderBackend]:
                         prompt_transport="tmux-paste",
                         readiness="pane-safe-consumer",
                         completion="exact",
+                        home_isolation="managed",
                         credential_lifecycle="user",
                     ),
                 },
@@ -229,4 +239,8 @@ def build_test_double_backends() -> list[ProviderBackend]:
     ]
 
 
-__all__ = ["TEST_DOUBLE_PROVIDER_NAMES", "build_test_double_backends"]
+__all__ = [
+    "P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS",
+    "TEST_DOUBLE_PROVIDER_NAMES",
+    "build_test_double_backends",
+]

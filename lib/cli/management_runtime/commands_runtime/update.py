@@ -104,8 +104,12 @@ def _update_via_tarball(tmp_base: Path, *, install_dir: Path, target_version: st
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tarball_path = tmp_dir / artifact_name
         if not download_tarball(tarball_url, tarball_path):
-            print("❌ Update failed: unable to download release tarball")
-            return 1
+            source_url = _release_source_archive_url(target_version)
+            extracted_name = f"claude_code_bridge-{target_version}.tar.gz"
+            tarball_path = tmp_dir / extracted_name
+            if not download_tarball(source_url, tarball_path):
+                print("❌ Update failed: unable to download release tarball")
+                return 1
 
         print("📂 Extracting...")
         with tarfile.open(tarball_path, "r:gz") as tar:
@@ -123,6 +127,14 @@ def _update_via_tarball(tmp_base: Path, *, install_dir: Path, target_version: st
         subprocess.run([bash_bin, str(extracted_dir / "install.sh"), "install"], check=True, env=env)
 
         new_info = get_version_info(install_dir)
+        installed_version = str(new_info.get("version") or "").strip().lstrip("v")
+        if installed_version != str(target_version).strip().lstrip("v"):
+            print(f"❌ Update failed: installed version {installed_version or 'unknown'} does not match requested v{target_version}")
+            try:
+                subprocess.run([bash_bin, str(extracted_dir / "install.sh"), "rollback-install"], check=True, env=env)
+            except Exception as rollback_exc:
+                print(f"⚠️ Rollback after failed update did not complete: {rollback_exc}")
+            return 1
         _print_update_outcome(old_info, new_info)
         return 0
     except Exception as exc:
@@ -144,6 +156,10 @@ def _print_update_outcome(old_info: dict[str, object], new_info: dict[str, objec
 
 def _release_artifact_url(version: str, *, artifact_name: str) -> str:
     return f"{REPO_URL}/releases/download/v{version}/{artifact_name}"
+
+
+def _release_source_archive_url(version: str) -> str:
+    return f"{REPO_URL}/archive/refs/tags/v{version}.tar.gz"
 
 
 def _release_artifact_name() -> str | None:

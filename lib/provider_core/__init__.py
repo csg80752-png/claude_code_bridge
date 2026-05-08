@@ -52,6 +52,7 @@ from .protocol import (
     wrap_codex_turn_prompt,
 )
 from .registry import (
+    P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS,
     ProviderBackendRegistry,
     build_default_backend_registry,
     build_default_execution_adapters,
@@ -79,6 +80,7 @@ __all__ = [
     'OPENCODE_CLIENT_SPEC',
     'OPENCODE_RUNTIME_SPEC',
     'OPTIONAL_PROVIDER_NAMES',
+    'P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS',
     'ProviderBackend',
     'ProviderBackendRegistry',
     'ProviderClientSpec',

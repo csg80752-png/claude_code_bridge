@@ -272,8 +272,10 @@ def test_start_agents_does_not_retry_after_start_rpc_deadline_expires(
             )
 
     monkeypatch.setenv('CCB_CCBD_START_CLIENT_TIMEOUT_S', '0.1')
-    monkeypatch.setattr('cli.services.start_runtime.time.time', lambda: next(times))
-    monkeypatch.setattr('cli.services.start_runtime.time.sleep', lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        'cli.services.start_runtime.time',
+        SimpleNamespace(time=lambda: next(times), sleep=lambda seconds: sleeps.append(seconds)),
+    )
     monkeypatch.setattr(
         'cli.services.start.ensure_daemon_started',
         lambda context: SimpleNamespace(client=_FakeClient(), started=True),
