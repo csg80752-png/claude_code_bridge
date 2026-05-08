@@ -719,6 +719,79 @@ def test_ensure_agent_runtime_uses_assigned_tmux_pane(monkeypatch, tmp_path: Pat
     assert ('%43', visual.border_style, visual.active_border_style) in tmux_state['styles']
 
 
+def test_ensure_agent_runtime_respawns_assigned_pane_for_stale_claude_binding(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-assigned-stale-claude'
+    (project_root / '.ccb').mkdir(parents=True)
+    ctx = _context(project_root, ParsedStartCommand(project=None, agent_names=('agent3',), restore=False, auto_permission=False))
+    spec = _spec('agent3', provider='claude')
+    plan = WorkspacePlanner().plan(spec, ctx.project)
+    plan.workspace_path.mkdir(parents=True, exist_ok=True)
+    session_path = project_root / '.ccb' / '.claude-agent3-session'
+
+    tmux_state: dict[str, object] = {'options': []}
+
+    class FakeTmuxBackend:
+        _socket_path = '/tmp/ccb-agent.sock'
+
+        def respawn_pane(self, pane_id: str, *, cmd: str, cwd: str | None = None, remain_on_exit: bool = True) -> None:
+            tmux_state['respawn'] = (pane_id, cmd, cwd, remain_on_exit)
+
+        def set_pane_title(self, pane_id: str, title: str) -> None:
+            tmux_state['title'] = (pane_id, title)
+
+        def set_pane_user_option(self, pane_id: str, name: str, value: str) -> None:
+            tmux_state['options'].append((pane_id, name, value))
+
+        def _tmux_run(self, args, capture=False, timeout=None):
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout='4444\n', stderr='')
+
+    stale_binding = AgentBinding(
+        runtime_ref='tmux:%4',
+        session_ref=str(session_path),
+        provider='claude',
+        terminal='tmux',
+        pane_id='%4',
+        active_pane_id=None,
+        pane_state='missing',
+        tmux_socket_path='/tmp/ccb-agent.sock',
+    )
+    live_binding = AgentBinding(
+        runtime_ref='tmux:%4',
+        session_ref=str(session_path),
+        provider='claude',
+        terminal='tmux',
+        pane_id='%4',
+        active_pane_id='%4',
+        pane_state='alive',
+        tmux_socket_path='/tmp/ccb-agent.sock',
+    )
+
+    monkeypatch.setattr('cli.services.runtime_launch._inside_tmux', lambda: True)
+    monkeypatch.setattr('cli.services.runtime_launch.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr('cli.services.runtime_launch.TmuxBackend', FakeTmuxBackend)
+    monkeypatch.setattr('cli.services.runtime_launch.resolve_agent_binding', lambda **kwargs: live_binding)
+    monkeypatch.setattr(
+        'provider_backends.claude.launcher.write_claude_settings_overlay',
+        lambda runtime_dir, profile=None: None,
+    )
+
+    result = ensure_agent_runtime(
+        ctx,
+        ctx.command,
+        spec,
+        plan,
+        stale_binding,
+        assigned_pane_id='%4',
+        tmux_socket_path='/tmp/ccb-agent.sock',
+    )
+
+    assert result.launched is True
+    assert result.binding == live_binding
+    assert tmux_state['respawn'][0] == '%4'
+    assert tmux_state['respawn'][2] == str(plan.workspace_path)
+    assert ('%4', '@ccb_agent', 'agent3') in tmux_state['options']
+
+
 def test_ensure_agent_runtime_launches_named_droid_session(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-droid'
     (project_root / '.ccb').mkdir(parents=True)
@@ -1074,6 +1147,88 @@ def test_ensure_agent_runtime_raises_when_launch_does_not_produce_usable_binding
     monkeypatch.setattr('cli.services.runtime_launch.TmuxBackend', FakeTmuxBackend)
     monkeypatch.setattr('cli.services.runtime_launch.subprocess.Popen', FakePopen)
     monkeypatch.setattr('cli.services.runtime_launch.resolve_agent_binding', lambda **kwargs: None)
+
+    with pytest.raises(RuntimeError, match='failed to resolve usable binding'):
+        ensure_agent_runtime(ctx, ctx.command, spec, plan, None)
+
+
+def test_ensure_agent_runtime_rejects_partial_binding_after_launch(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-partial-binding'
+    (project_root / '.ccb').mkdir(parents=True)
+    ctx = _context(project_root, ParsedStartCommand(project=None, agent_names=('agent1',), restore=False, auto_permission=False))
+    spec = _spec('agent1')
+    plan = WorkspacePlanner().plan(spec, ctx.project)
+    plan.workspace_path.mkdir(parents=True, exist_ok=True)
+
+    class FakeTmuxBackend:
+        def create_pane(self, cmd: str, cwd: str, direction: str = 'right', percent: int = 50, parent_pane: str | None = None) -> str:
+            return '%42'
+
+        def set_pane_title(self, pane_id: str, title: str) -> None:
+            pass
+
+        def set_pane_user_option(self, pane_id: str, name: str, value: str) -> None:
+            pass
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            self.pid = 9911
+
+    partial_binding = AgentBinding(
+        runtime_ref=None,
+        session_ref=None,
+        provider='codex',
+        terminal='tmux',
+        pane_id='%42',
+        active_pane_id='%42',
+        pane_state='alive',
+    )
+    monkeypatch.setattr('cli.services.runtime_launch._inside_tmux', lambda: True)
+    monkeypatch.setattr('cli.services.runtime_launch.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr('cli.services.runtime_launch.TmuxBackend', FakeTmuxBackend)
+    monkeypatch.setattr('cli.services.runtime_launch.subprocess.Popen', FakePopen)
+    monkeypatch.setattr('cli.services.runtime_launch.resolve_agent_binding', lambda **kwargs: partial_binding)
+
+    with pytest.raises(RuntimeError, match='failed to resolve usable binding'):
+        ensure_agent_runtime(ctx, ctx.command, spec, plan, None)
+
+
+def test_ensure_agent_runtime_rejects_missing_pane_binding_after_launch(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-missing-pane-binding'
+    (project_root / '.ccb').mkdir(parents=True)
+    ctx = _context(project_root, ParsedStartCommand(project=None, agent_names=('agent3',), restore=False, auto_permission=False))
+    spec = _spec('agent3', provider='claude')
+    plan = WorkspacePlanner().plan(spec, ctx.project)
+    plan.workspace_path.mkdir(parents=True, exist_ok=True)
+
+    class FakeTmuxBackend:
+        def create_pane(self, cmd: str, cwd: str, direction: str = 'right', percent: int = 50, parent_pane: str | None = None) -> str:
+            return '%42'
+
+        def set_pane_title(self, pane_id: str, title: str) -> None:
+            pass
+
+        def set_pane_user_option(self, pane_id: str, name: str, value: str) -> None:
+            pass
+
+    stale_binding = AgentBinding(
+        runtime_ref='tmux:%42',
+        session_ref=str(project_root / '.ccb' / '.claude-agent3-session'),
+        provider='claude',
+        terminal='tmux',
+        pane_id='%42',
+        active_pane_id=None,
+        pane_state='missing',
+        tmux_socket_path='/tmp/ccb.sock',
+    )
+    monkeypatch.setattr('cli.services.runtime_launch._inside_tmux', lambda: True)
+    monkeypatch.setattr('cli.services.runtime_launch.shutil.which', lambda name: f'/usr/bin/{name}')
+    monkeypatch.setattr('cli.services.runtime_launch.TmuxBackend', FakeTmuxBackend)
+    monkeypatch.setattr('cli.services.runtime_launch.resolve_agent_binding', lambda **kwargs: stale_binding)
+    monkeypatch.setattr(
+        'provider_backends.claude.launcher.write_claude_settings_overlay',
+        lambda runtime_dir, profile=None: None,
+    )
 
     with pytest.raises(RuntimeError, match='failed to resolve usable binding'):
         ensure_agent_runtime(ctx, ctx.command, spec, plan, None)

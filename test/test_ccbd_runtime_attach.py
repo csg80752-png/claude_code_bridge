@@ -114,6 +114,47 @@ def test_attach_runtime_updates_active_existing_runtime() -> None:
     assert updated.slot_key == 'agent1'
 
 
+def test_attach_runtime_clears_binding_metadata_when_refs_explicitly_cleared() -> None:
+    existing = _runtime(
+        runtime_ref='tmux:%9',
+        session_ref='session-9',
+        terminal_backend='tmux',
+        pane_id='%9',
+        active_pane_id='%9',
+        pane_title_marker='CCB-agent1',
+        pane_state='alive',
+        tmux_socket_path='/tmp/ccb.sock',
+        session_file='/tmp/session.json',
+        session_id='session-9',
+    )
+    registry = _Registry(existing=existing)
+
+    updated = attach_runtime(
+        registry=registry,
+        project_id='proj-new',
+        clock=lambda: '2026-04-06T00:00:00Z',
+        agent_name='agent1',
+        workspace_path='/tmp/ws-next',
+        backend_type='pane-backed',
+        runtime_ref='',
+        session_ref='',
+        health='degraded',
+        lifecycle_state='degraded',
+    )
+
+    assert updated.runtime_ref is None
+    assert updated.session_ref is None
+    assert updated.terminal_backend is None
+    assert updated.pane_id is None
+    assert updated.active_pane_id is None
+    assert updated.pane_title_marker is None
+    assert updated.pane_state is None
+    assert updated.tmux_socket_path is None
+    assert updated.session_file is None
+    assert updated.session_id is None
+    assert updated.health == 'degraded'
+
+
 def test_attach_runtime_creates_new_runtime_with_runtime_ref_derived_fields() -> None:
     registry = _Registry(existing=None)
 

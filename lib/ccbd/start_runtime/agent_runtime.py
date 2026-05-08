@@ -48,6 +48,11 @@ def start_agent_runtime(
         relabel_project_namespace_pane_fn=relabel_project_namespace_pane_fn,
         same_tmux_socket_path_fn=same_tmux_socket_path_fn,
     )
+    actions_taken = list(binding_state.actions_taken)
+    failure_reason = _failure_reason_for_binding_state(
+        action=binding_state.agent_action,
+        actions_taken=actions_taken,
+    )
     runtime = runtime_service.attach(
         agent_name=agent_name,
         workspace_path=str(plan.workspace_path),
@@ -73,9 +78,10 @@ def start_agent_runtime(
         lifecycle_state=binding_state.lifecycle_state,
         managed_by='ccbd',
         binding_source='provider-session',
+        last_failure_reason=failure_reason,
+        clear_failure_reason=failure_reason is None,
     )
 
-    actions_taken = list(binding_state.actions_taken)
     if command.restore and binding_state.agent_action != 'degraded':
         runtime_service.restore(agent_name)
         actions_taken.append(f'restore_runtime:{agent_name}')
@@ -101,13 +107,23 @@ def start_agent_runtime(
             pane_state=runtime.pane_state,
             runtime_pid=runtime.runtime_pid,
             runtime_root=runtime.runtime_root,
-            failure_reason='stale_binding_unresolved' if binding_state.agent_action == 'degraded' else None,
+            failure_reason=failure_reason,
         ),
         actions_taken=tuple(actions_taken),
         socket_name=binding_state.socket_name,
         runtime_pane_id=binding_state.runtime_pane_id,
         project_socket_active_pane_id=binding_state.project_socket_active_pane_id,
     )
+
+
+def _failure_reason_for_binding_state(*, action: str, actions_taken: list[str]) -> str | None:
+    if action != 'degraded':
+        return None
+    if any(item.startswith('degraded_partial_binding:') for item in actions_taken):
+        return 'partial_binding_unresolved'
+    if any(item.startswith('degraded_missing_binding:') for item in actions_taken):
+        return 'binding_missing_after_launch'
+    return 'stale_binding_unresolved'
 
 
 __all__ = ['start_agent_runtime']

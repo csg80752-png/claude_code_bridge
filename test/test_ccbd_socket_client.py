@@ -89,6 +89,8 @@ def test_ccbd_client_dynamic_attach_endpoint_builds_payload(monkeypatch, tmp_pat
                 'lifecycle_state': None,
                 'managed_by': None,
                 'binding_source': 'external-attach',
+                'last_failure_reason': None,
+                'clear_failure_reason': False,
             },
         )
     ]

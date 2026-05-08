@@ -62,6 +62,8 @@ class RuntimeService:
         lifecycle_state: str | None = None,
         managed_by: str | None = None,
         binding_source: str | RuntimeBindingSource | None = None,
+        last_failure_reason: str | None = None,
+        clear_failure_reason: bool = False,
     ) -> AgentRuntime:
         return attach_runtime_impl(
             registry=self._registry,
@@ -92,6 +94,8 @@ class RuntimeService:
             lifecycle_state=lifecycle_state,
             managed_by=managed_by,
             binding_source=binding_source,
+            last_failure_reason=last_failure_reason,
+            clear_failure_reason=clear_failure_reason,
         )
 
     def restore(self, agent_name: str):

@@ -1439,9 +1439,11 @@ ensure_path_configured() {
   fi
 
   # Add to shell rc
-  echo "" >> "$shell_rc"
-  echo "# Added by ccb installer" >> "$shell_rc"
-  echo "$path_line" >> "$shell_rc"
+  {
+    echo ""
+    echo "# Added by ccb installer"
+    echo "$path_line"
+  } >> "$shell_rc"
   echo "OK: Added $BIN_DIR to PATH in $shell_rc"
   echo "   Run: source $shell_rc  (or restart terminal)"
 }
@@ -1482,7 +1484,7 @@ install_claude_skills() {
   local obsolete_skills="bask bpend bping cask cpend cping dask dpend dping gask gpend gping hask hpend hping lask lpend lping mounted oask opend oping qask qpend qping auto"
   for obs_skill in $obsolete_skills; do
     if [[ -d "$skills_dst/$obs_skill" ]]; then
-      rm -rf "$skills_dst/$obs_skill"
+      rm -rf "${skills_dst:?}/$obs_skill"
       echo "  Removed obsolete skill: $obs_skill"
     fi
   done
@@ -1544,7 +1546,7 @@ install_codex_skills() {
   local obsolete_skills="bask bpend bping cask cpend cping dask dpend dping gask gpend gping hask hpend hping lask lpend lping mounted oask opend oping qask qpend qping"
   for obs_skill in $obsolete_skills; do
     if [[ -d "$skills_dst/$obs_skill" ]]; then
-      rm -rf "$skills_dst/$obs_skill"
+      rm -rf "${skills_dst:?}/$obs_skill"
       echo "  Removed obsolete skill: $obs_skill"
     fi
   done
@@ -1601,7 +1603,7 @@ install_droid_skills() {
   local obsolete_skills="bask bpend bping cask cpend cping dask dpend dping gask gpend gping hask hpend hping lask lpend lping mounted oask opend oping qask qpend qping"
   for obs_skill in $obsolete_skills; do
     if [[ -d "$skills_dst/$obs_skill" ]]; then
-      rm -rf "$skills_dst/$obs_skill"
+      rm -rf "${skills_dst:?}/$obs_skill"
       echo "  Removed obsolete skill: $obs_skill"
     fi
   done
@@ -1667,7 +1669,6 @@ install_droid_delegation() {
 }
 
 CCB_START_MARKER="<!-- CCB_CONFIG_START -->"
-CCB_END_MARKER="<!-- CCB_CONFIG_END -->"
 LEGACY_RULE_MARKER="## Codex 协作规则"
 
 remove_codex_mcp() {
@@ -1778,9 +1779,6 @@ install_claude_md_config() {
     echo "Wrote full CCB config to $external_config"
   fi
 
-  local ccb_content
-  ccb_content="$(cat "$template")"
-
   if [[ -f "$claude_md" ]]; then
     if grep -q "$CCB_START_MARKER" "$claude_md" 2>/dev/null; then
       echo "Updating existing CCB config block (mode: $md_mode)..."
@@ -1830,9 +1828,7 @@ with open(sys.argv[1], 'w', encoding='utf-8') as f:
 }
 
 CCB_ROLES_START_MARKER="<!-- CCB_ROLES_START -->"
-CCB_ROLES_END_MARKER="<!-- CCB_ROLES_END -->"
 CCB_RUBRICS_START_MARKER="<!-- REVIEW_RUBRICS_START -->"
-CCB_RUBRICS_END_MARKER="<!-- REVIEW_RUBRICS_END -->"
 
 install_agents_md_config() {
   local agents_md="$INSTALL_PREFIX/AGENTS.md"
@@ -2508,7 +2504,7 @@ uninstall_claude_skills() {
   echo "Removing CCB Claude skills..."
   for skill in $ccb_skills; do
     if [[ -d "$skills_dst/$skill" ]]; then
-      rm -rf "$skills_dst/$skill"
+      rm -rf "${skills_dst:?}/$skill"
       echo "  Removed skill: $skill"
     fi
   done
@@ -2525,7 +2521,7 @@ uninstall_codex_skills() {
   echo "Removing CCB Codex skills..."
   for skill in $ccb_skills; do
     if [[ -d "$skills_dst/$skill" ]]; then
-      rm -rf "$skills_dst/$skill"
+      rm -rf "${skills_dst:?}/$skill"
       echo "  Removed skill: $skill"
     fi
   done
@@ -2542,7 +2538,7 @@ uninstall_droid_skills() {
   echo "Removing CCB Droid skills..."
   for skill in $ccb_skills; do
     if [[ -d "$skills_dst/$skill" ]]; then
-      rm -rf "$skills_dst/$skill"
+      rm -rf "${skills_dst:?}/$skill"
       echo "  Removed skill: $skill"
     fi
   done

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ccbd.runtime_failure_policy import UNBOUND_MOUNT_FAILURE_REASON
+
 from .events import record_mount_started, record_mount_succeeded
 from .transitions import (
     SUCCESS_RUNTIME_HEALTHS,
@@ -88,6 +90,15 @@ def ensure_mounted(
         )
 
     refreshed = align_runtime_authority_fn(refreshed)
+    if runtime_requires_binding_and_is_unbound(refreshed):
+        return persist_mount_failure_fn(
+            refreshed,
+            agent_name=agent_name,
+            attempted_at=attempted_at,
+            prior_health=prior_health,
+            next_restart_count=next_restart_count,
+            reason=UNBOUND_MOUNT_FAILURE_REASON,
+        )
     refreshed_health = normalized_runtime_health_fn(refreshed) or refreshed.health
     if refreshed_health not in SUCCESS_RUNTIME_HEALTHS:
         return persist_mount_failure_fn(
@@ -97,15 +108,6 @@ def ensure_mounted(
             prior_health=prior_health,
             next_restart_count=next_restart_count,
             reason=refreshed_health or 'mount-produced-unhealthy-runtime',
-        )
-    if runtime_requires_binding_and_is_unbound(refreshed):
-        return persist_mount_failure_fn(
-            refreshed,
-            agent_name=agent_name,
-            attempted_at=attempted_at,
-            prior_health=prior_health,
-            next_restart_count=next_restart_count,
-            reason='mount-produced-unbound-runtime',
         )
 
     mounted = persist_mount_success(

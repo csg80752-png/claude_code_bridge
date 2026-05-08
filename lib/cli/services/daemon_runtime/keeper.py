@@ -12,9 +12,11 @@ from ccbd.keeper import (
     ShutdownIntentStore,
     keeper_state_is_running,
 )
-from ccbd.system import utc_now
+from ccbd.system import parse_utc_timestamp, utc_now
 
 from cli.kill_runtime.processes import is_pid_alive
+
+KEEPER_START_READY_GRACE_S = 15.0
 
 
 def ensure_keeper_started(
@@ -28,14 +30,14 @@ def ensure_keeper_started(
 ) -> bool:
     store = KeeperStateStore(context.paths)
     state = store.load()
-    if keeper_state_is_running(state, process_exists_fn=process_exists_fn):
+    if _keeper_state_is_start_ready(state, process_exists_fn=process_exists_fn):
         return True
 
     manager = mount_manager_factory(context.paths)
     guard = ownership_guard_factory(context.paths, manager)
     with guard.startup_lock():
         state = store.load()
-        if keeper_state_is_running(state, process_exists_fn=process_exists_fn):
+        if _keeper_state_is_start_ready(state, process_exists_fn=process_exists_fn):
             return True
         (spawn_keeper_process_fn or spawn_keeper_process)(context)
     return wait_for_keeper_ready(
@@ -69,10 +71,28 @@ def wait_for_keeper_ready(
     deadline = time.time() + max(0.0, float(timeout_s))
     store = KeeperStateStore(context.paths)
     while time.time() < deadline:
-        if keeper_state_is_running(store.load(), process_exists_fn=process_exists_fn):
+        if _keeper_state_is_start_ready(store.load(), process_exists_fn=process_exists_fn):
             return True
         time.sleep(0.05)
-    return keeper_state_is_running(store.load(), process_exists_fn=process_exists_fn)
+    return _keeper_state_is_start_ready(store.load(), process_exists_fn=process_exists_fn)
+
+
+def _keeper_state_is_start_ready(
+    state,
+    *,
+    process_exists_fn=is_pid_alive,
+    clock=utc_now,
+    grace_s: float = KEEPER_START_READY_GRACE_S,
+) -> bool:
+    if not keeper_state_is_running(state, process_exists_fn=process_exists_fn):
+        return False
+    try:
+        current = parse_utc_timestamp(clock())
+        last_check = parse_utc_timestamp(state.last_check_at)
+    except Exception:
+        return False
+    age_s = (current - last_check).total_seconds()
+    return 0.0 <= age_s <= max(0.0, float(grace_s))
 
 
 def wait_for_keeper_exit(

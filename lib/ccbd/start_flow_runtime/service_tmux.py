@@ -36,7 +36,14 @@ def tmux_layout_for_start(
     actions_taken: list[str],
 ) -> TmuxStartLayout:
     if not interactive_tmux_layout:
-        return TmuxStartLayout(cmd_pane_id=None, agent_panes={})
+        return TmuxStartLayout(
+            cmd_pane_id=None,
+            agent_panes=existing_project_slot_panes(
+                tmux_backend,
+                project_id=context.project.project_id,
+                prepared_agents=prepared_agents,
+            ),
+        )
     deps.set_tmux_ui_active_fn(True)
     launch_targets = tuple(item.agent_name for item in prepared_agents if item.binding is None)
     if launch_targets:
@@ -54,6 +61,52 @@ def tmux_layout_for_start(
         tmux_backend=tmux_backend,
         root_pane_id=root_pane_id,
     )
+
+
+def existing_project_slot_panes(tmux_backend, *, project_id: str, prepared_agents) -> dict[str, str]:
+    if tmux_backend is None:
+        return {}
+    panes: dict[str, str] = {}
+    for item in prepared_agents:
+        if item.binding is not None:
+            continue
+        agent_name = str(item.agent_name or '').strip()
+        if not agent_name:
+            continue
+        pane_id = existing_project_slot_pane(
+            tmux_backend,
+            project_id=project_id,
+            agent_name=agent_name,
+        )
+        if pane_id is not None:
+            panes[agent_name] = pane_id
+    return panes
+
+
+def existing_project_slot_pane(tmux_backend, *, project_id: str, agent_name: str) -> str | None:
+    list_fn = getattr(tmux_backend, 'list_panes_by_user_options', None)
+    if not callable(list_fn):
+        return None
+    try:
+        matches = list_fn({'@ccb_project_id': project_id, '@ccb_slot': agent_name})
+    except Exception:
+        return None
+    live_matches: list[str] = []
+    for pane_id in matches or ():
+        pane_text = str(pane_id or '').strip()
+        if not pane_text.startswith('%'):
+            continue
+        is_alive = getattr(tmux_backend, 'is_pane_alive', None)
+        if callable(is_alive):
+            try:
+                if not is_alive(pane_text):
+                    continue
+            except Exception:
+                continue
+        live_matches.append(pane_text)
+    if len(live_matches) != 1:
+        return None
+    return live_matches[0]
 
 
 def project_socket_active_panes(
@@ -142,6 +195,8 @@ def cleanup_tmux_orphans_if_needed(
 __all__ = [
     'bootstrap_cmd_pane_if_needed',
     'cleanup_tmux_orphans_if_needed',
+    'existing_project_slot_pane',
+    'existing_project_slot_panes',
     'project_socket_active_panes',
     'record_active_panes',
     'tmux_layout_for_start',

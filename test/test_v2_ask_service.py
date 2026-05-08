@@ -459,6 +459,73 @@ def test_watch_ask_job_rechecks_watch_once_before_timeout(
     assert client.watch_calls == [0, 7]
 
 
+def test_watch_ask_job_allows_one_poll_tick_for_terminal_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / 'repo-ask-watch-terminal-boundary'
+    project_root.mkdir()
+    context = _build_context(project_root)
+    clock = iter([0.0, 1.1])
+    sleeps: list[float] = []
+
+    class _BoundaryWatchClient:
+        def __init__(self) -> None:
+            self.watch_calls: list[int] = []
+
+        def watch(self, job_id: str, *, cursor: int = 0) -> dict:
+            assert job_id == 'job_1'
+            self.watch_calls.append(cursor)
+            if len(self.watch_calls) < 3:
+                return {
+                    'job_id': 'job_1',
+                    'agent_name': 'agent1',
+                    'target_name': 'agent1',
+                    'cursor': 7,
+                    'generation': 66,
+                    'terminal': False,
+                    'status': 'running',
+                    'reply': '',
+                    'events': [],
+                }
+            return {
+                'job_id': 'job_1',
+                'agent_name': 'agent1',
+                'target_name': 'agent1',
+                'target_kind': 'agent',
+                'provider': 'codex',
+                'provider_instance': 'agent1',
+                'cursor': 9,
+                'generation': 66,
+                'terminal': True,
+                'status': 'completed',
+                'reply': 'done at boundary',
+                'events': [
+                    {'event_id': 'evt_terminal', 'job_id': 'job_1', 'agent_name': 'agent1', 'type': 'job_completed', 'timestamp': '2026-04-06T00:00:02Z'},
+                ],
+            }
+
+    client = _BoundaryWatchClient()
+
+    monkeypatch.setattr(
+        ask_service,
+        'connect_mounted_daemon',
+        lambda context, allow_restart_stale: SimpleNamespace(client=client),
+    )
+    monkeypatch.setattr(ask_service, 'ask_wait_timeout_seconds', lambda: 1.0)
+    monkeypatch.setattr(ask_service, 'ask_wait_poll_interval_seconds', lambda: 0.1)
+    monkeypatch.setattr(ask_service.time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(ask_service.time, 'sleep', lambda seconds: sleeps.append(seconds))
+
+    batch = ask_service.watch_ask_job(context, 'job_1', StringIO(), timeout=None, emit_output=False)
+
+    assert batch.terminal is True
+    assert batch.status == 'completed'
+    assert batch.reply == 'done at boundary'
+    assert client.watch_calls == [0, 7, 7]
+    assert sleeps == [0.1]
+
+
 def test_write_ask_output_appends_newline(tmp_path: Path) -> None:
     path = tmp_path / 'reply.txt'
 

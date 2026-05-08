@@ -32,6 +32,7 @@ class AttachRuntimeValues:
     binding_generation: int
     managed_by: str
     binding_source: RuntimeBindingSource
+    last_failure_reason: str | None
 
 
 __all__ = ['AttachRuntimeValues']

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from agents.models import AgentState, RuntimeMode
+from ccbd.runtime_failure_policy import runtime_has_unbound_mount_failure
 from ccbd.services.runtime_recovery_policy import normalized_runtime_health, should_attempt_background_recovery
 from ccbd.system import parse_utc_timestamp
 from ccbd.supervision.backoff import backoff_delay_seconds as backoff_delay_seconds_impl
@@ -16,7 +17,6 @@ from .runtime_binding import (
     runtime_mode_requires_binding,
     runtime_requires_binding_and_is_unbound,
 )
-
 
 def resolved_runtime(ctx: RuntimeSupervisionContext, agent_name: str):
     runtime = ctx.registry.get(agent_name)
@@ -79,7 +79,13 @@ def is_in_backoff_window(
 
 
 def runtime_requires_mount(runtime) -> bool:
-    return runtime.state in {AgentState.STOPPED, AgentState.FAILED}
+    if runtime_has_unbound_mount_failure(runtime):
+        return False
+    if runtime.state is AgentState.STOPPED:
+        return True
+    if runtime.state is not AgentState.FAILED:
+        return False
+    return True
 
 
 def runtime_is_unbound_starting(runtime) -> bool:

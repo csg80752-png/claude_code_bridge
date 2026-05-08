@@ -99,11 +99,27 @@ def _resolve_refreshed_binding(*, context, spec, plan, resolve_agent_binding_fn)
         workspace_path=plan.workspace_path,
         project_root=context.project.project_root,
     )
-    if refreshed is not None:
+    if _binding_has_required_runtime_refs(refreshed) and _binding_has_live_pane_evidence(refreshed, spec=spec):
         return refreshed
     raise RuntimeError(
         f'failed to resolve usable binding for {spec.name} after {spec.provider} launch'
     )
+
+
+def _binding_has_required_runtime_refs(binding) -> bool:
+    if binding is None:
+        return False
+    return bool(str(getattr(binding, 'runtime_ref', '') or '').strip()) and bool(
+        str(getattr(binding, 'session_ref', '') or '').strip()
+    )
+
+
+def _binding_has_live_pane_evidence(binding, *, spec) -> bool:
+    if str(getattr(spec, 'provider', '') or '').strip().lower() != 'claude':
+        return True
+    pane_state = str(getattr(binding, 'pane_state', '') or '').strip().lower()
+    socket_path = str(getattr(binding, 'tmux_socket_path', '') or '').strip()
+    return not (pane_state == 'missing' and socket_path)
 
 
 __all__ = ['ensure_agent_runtime', 'runtime_launcher']

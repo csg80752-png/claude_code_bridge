@@ -485,6 +485,52 @@ def test_runtime_supervision_loop_fails_mount_that_leaves_starting_runtime_unbou
     assert events[1].details == {'reason': 'mount-produced-unbound-runtime'}
 
 
+def test_runtime_supervision_loop_prefers_unbound_reason_for_unhealthy_unbound_mount(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-supervision-unhealthy-unbound-mount'
+    project_root.mkdir()
+    ctx = bootstrap_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('claude')
+    registry = AgentRegistry(layout, config)
+    runtime_service = RuntimeService(layout, registry, ctx.project_id, clock=lambda: '2026-03-18T00:00:00Z')
+
+    def _mount(agent_name: str) -> None:
+        current = registry.get(agent_name)
+        assert current is not None
+        registry.upsert(
+            AgentRuntime(
+                **{
+                    **current.__dict__,
+                    'health': 'starting',
+                    'runtime_ref': None,
+                    'session_ref': None,
+                    'pane_id': None,
+                    'active_pane_id': None,
+                }
+            )
+        )
+
+    loop = RuntimeSupervisionLoop(
+        project_id=ctx.project_id,
+        layout=layout,
+        config=config,
+        registry=registry,
+        runtime_service=runtime_service,
+        mount_agent_fn=_mount,
+        clock=lambda: '2026-03-18T00:00:10Z',
+        generation_getter=lambda: 27,
+    )
+
+    statuses = loop.reconcile_once()
+
+    assert statuses == {'claude': 'start-failed'}
+    runtime = registry.get('claude')
+    assert runtime is not None
+    assert runtime.last_failure_reason == 'mount-produced-unbound-runtime'
+    events = SupervisionEventStore(layout).read_all()
+    assert events[-1].details == {'reason': 'mount-produced-unbound-runtime'}
+
+
 def test_runtime_supervision_loop_allows_headless_mount_without_pane_binding(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-supervision-headless-unbound-mount'
     project_root.mkdir()
@@ -1291,4 +1337,267 @@ def test_runtime_supervision_loop_applies_mount_failure_backoff(tmp_path: Path, 
     assert persisted.reconcile_state == 'failed'
     assert persisted.restart_count == 2
     assert persisted.last_reconcile_at == '2026-03-18T00:00:09Z'
+    assert SupervisionEventStore(layout).read_all() == []
+
+
+def test_runtime_supervision_loop_does_not_auto_remount_unbound_mount_failure(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-supervision-unbound-mount-failure-stable'
+    project_root.mkdir()
+    ctx = bootstrap_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('claude')
+    registry = AgentRegistry(layout, config)
+    runtime_service = RuntimeService(layout, registry, ctx.project_id, clock=lambda: '2026-03-18T00:00:00Z')
+    registry.upsert(
+        AgentRuntime(
+            **{
+                **_runtime('claude', project_id=ctx.project_id, layout=layout, pid=101, health='pane-dead').__dict__,
+                'state': AgentState.FAILED,
+                'health': 'start-failed',
+                'runtime_ref': None,
+                'session_ref': None,
+                'pane_id': None,
+                'active_pane_id': None,
+                'restart_count': 9,
+                'last_reconcile_at': '2026-03-18T00:00:00Z',
+                'last_failure_reason': 'mount-produced-unbound-runtime',
+            }
+        )
+    )
+    calls: list[str] = []
+
+    def _mount(agent_name: str) -> None:
+        calls.append(agent_name)
+        raise AssertionError('hard unbound mount failures should not auto-remount')
+
+    loop = RuntimeSupervisionLoop(
+        project_id=ctx.project_id,
+        layout=layout,
+        config=config,
+        registry=registry,
+        runtime_service=runtime_service,
+        mount_agent_fn=_mount,
+        clock=lambda: '2026-03-18T00:01:00Z',
+        generation_getter=lambda: 24,
+    )
+
+    statuses = loop.reconcile_once()
+
+    assert statuses == {'claude': 'start-failed'}
+    assert calls == []
+    persisted = registry.get('claude')
+    assert persisted is not None
+    assert persisted.state is AgentState.FAILED
+    assert persisted.health == 'start-failed'
+    assert persisted.daemon_generation == 24
+    assert persisted.reconcile_state == 'failed'
+    assert persisted.restart_count == 9
+    assert persisted.last_reconcile_at == '2026-03-18T00:00:00Z'
+    assert persisted.last_failure_reason == 'mount-produced-unbound-runtime'
+    assert SupervisionEventStore(layout).read_all() == []
+
+
+def test_runtime_supervision_loop_force_mount_retries_stopped_unbound_mount_failure(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-supervision-force-stopped-unbound-mount'
+    project_root.mkdir()
+    ctx = bootstrap_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('claude')
+    registry = AgentRegistry(layout, config)
+    runtime_service = RuntimeService(layout, registry, ctx.project_id, clock=lambda: '2026-03-18T00:00:00Z')
+    registry.upsert(
+        AgentRuntime(
+            **{
+                **_runtime('claude', project_id=ctx.project_id, layout=layout, pid=None, health='stopped').__dict__,
+                'state': AgentState.STOPPED,
+                'health': 'stopped',
+                'runtime_ref': None,
+                'session_ref': None,
+                'pane_id': None,
+                'active_pane_id': None,
+                'restart_count': 9,
+                'last_reconcile_at': '2026-03-18T00:00:00Z',
+                'last_failure_reason': 'mount-produced-unbound-runtime',
+                'lifecycle_state': 'stopped',
+                'desired_state': 'stopped',
+                'reconcile_state': 'stopped',
+            }
+        )
+    )
+    calls: list[str] = []
+
+    def _mount(agent_name: str) -> None:
+        calls.append(agent_name)
+        current = registry.get(agent_name)
+        assert current is not None
+        registry.upsert(
+            AgentRuntime(
+                **{
+                    **current.__dict__,
+                    'state': AgentState.IDLE,
+                    'health': 'healthy',
+                    'runtime_ref': 'tmux:%88',
+                    'session_ref': 'claude-session',
+                    'pane_id': '%88',
+                    'active_pane_id': '%88',
+                    'pane_state': 'alive',
+                }
+            )
+        )
+
+    loop = RuntimeSupervisionLoop(
+        project_id=ctx.project_id,
+        layout=layout,
+        config=config,
+        registry=registry,
+        runtime_service=runtime_service,
+        mount_agent_fn=_mount,
+        clock=lambda: '2026-03-18T00:00:01Z',
+        generation_getter=lambda: 26,
+    )
+
+    status = loop.reconcile_agent('claude', force_mount=True)
+
+    assert status == 'healthy'
+    assert calls == ['claude']
+    persisted = registry.get('claude')
+    assert persisted is not None
+    assert persisted.state is AgentState.IDLE
+    assert persisted.health == 'healthy'
+    assert persisted.runtime_ref == 'tmux:%88'
+    assert persisted.last_failure_reason is None
+
+
+def test_runtime_supervision_loop_force_mount_retries_starting_unbound_mount_failure(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-supervision-force-starting-unbound-mount'
+    project_root.mkdir()
+    ctx = bootstrap_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('claude')
+    registry = AgentRegistry(layout, config)
+    runtime_service = RuntimeService(layout, registry, ctx.project_id, clock=lambda: '2026-03-18T00:00:00Z')
+    registry.upsert(
+        AgentRuntime(
+            **{
+                **_runtime('claude', project_id=ctx.project_id, layout=layout, pid=101, health='healthy').__dict__,
+                'state': AgentState.STARTING,
+                'health': 'starting',
+                'runtime_ref': None,
+                'session_ref': None,
+                'pane_id': None,
+                'active_pane_id': None,
+                'restart_count': 9,
+                'last_reconcile_at': '2026-03-18T00:00:00Z',
+                'last_failure_reason': 'mount-produced-unbound-runtime',
+                'lifecycle_state': 'starting',
+                'desired_state': 'running',
+                'reconcile_state': 'starting',
+            }
+        )
+    )
+    calls: list[str] = []
+
+    def _mount(agent_name: str) -> None:
+        calls.append(agent_name)
+        current = registry.get(agent_name)
+        assert current is not None
+        registry.upsert(
+            AgentRuntime(
+                **{
+                    **current.__dict__,
+                    'state': AgentState.IDLE,
+                    'health': 'healthy',
+                    'runtime_ref': 'tmux:%88',
+                    'session_ref': 'claude-session',
+                    'pane_id': '%88',
+                    'active_pane_id': '%88',
+                    'pane_state': 'alive',
+                    'last_failure_reason': None,
+                    'lifecycle_state': 'running',
+                    'desired_state': 'running',
+                    'reconcile_state': 'steady',
+                }
+            )
+        )
+
+    loop = RuntimeSupervisionLoop(
+        project_id=ctx.project_id,
+        layout=layout,
+        config=config,
+        registry=registry,
+        runtime_service=runtime_service,
+        mount_agent_fn=_mount,
+        clock=lambda: '2026-03-18T00:00:01Z',
+        generation_getter=lambda: 27,
+    )
+
+    status = loop.reconcile_agent('claude', force_mount=True)
+
+    assert status == 'healthy'
+    assert calls == ['claude']
+    persisted = registry.get('claude')
+    assert persisted is not None
+    assert persisted.state is AgentState.IDLE
+    assert persisted.health == 'healthy'
+    assert persisted.runtime_ref == 'tmux:%88'
+    assert persisted.last_failure_reason is None
+
+
+def test_runtime_supervision_loop_does_not_auto_remount_stopped_unbound_mount_failure(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-supervision-stopped-unbound-mount-failure-stable'
+    project_root.mkdir()
+    ctx = bootstrap_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('claude')
+    registry = AgentRegistry(layout, config)
+    runtime_service = RuntimeService(layout, registry, ctx.project_id, clock=lambda: '2026-03-18T00:00:00Z')
+    registry.upsert(
+        AgentRuntime(
+            **{
+                **_runtime('claude', project_id=ctx.project_id, layout=layout, pid=None, health='stopped').__dict__,
+                'state': AgentState.STOPPED,
+                'health': 'stopped',
+                'runtime_ref': None,
+                'session_ref': None,
+                'pane_id': None,
+                'active_pane_id': None,
+                'restart_count': 9,
+                'last_reconcile_at': '2026-03-18T00:00:00Z',
+                'last_failure_reason': 'mount-produced-unbound-runtime',
+                'lifecycle_state': 'stopped',
+                'desired_state': 'stopped',
+                'reconcile_state': 'stopped',
+            }
+        )
+    )
+    calls: list[str] = []
+
+    def _mount(agent_name: str) -> None:
+        calls.append(agent_name)
+        raise AssertionError('stopped hard unbound mount failures should not auto-remount')
+
+    loop = RuntimeSupervisionLoop(
+        project_id=ctx.project_id,
+        layout=layout,
+        config=config,
+        registry=registry,
+        runtime_service=runtime_service,
+        mount_agent_fn=_mount,
+        clock=lambda: '2026-03-18T00:01:00Z',
+        generation_getter=lambda: 25,
+    )
+
+    statuses = loop.reconcile_once()
+
+    assert statuses == {'claude': 'stopped'}
+    assert calls == []
+    persisted = registry.get('claude')
+    assert persisted is not None
+    assert persisted.state is AgentState.STOPPED
+    assert persisted.health == 'stopped'
+    assert persisted.daemon_generation == 25
+    assert persisted.reconcile_state == 'stopped'
+    assert persisted.restart_count == 9
+    assert persisted.last_reconcile_at == '2026-03-18T00:00:00Z'
+    assert persisted.last_failure_reason == 'mount-produced-unbound-runtime'
     assert SupervisionEventStore(layout).read_all() == []

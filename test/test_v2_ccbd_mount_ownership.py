@@ -359,6 +359,36 @@ def test_health_monitor_marks_orphaned_runtime(tmp_path: Path) -> None:
     assert runtime.health == 'orphaned'
 
 
+def test_health_monitor_marks_active_unbound_pane_runtime_failed(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-unbound-runtime'
+    project_root.mkdir()
+    ctx = bootstrap_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex')
+    registry = AgentRegistry(layout, config)
+    runtime = _runtime('codex', project_id=ctx.project_id, layout=layout, pid=None)
+    registry.upsert(
+        replace(
+            runtime,
+            runtime_ref=None,
+            session_ref=None,
+            pane_id=None,
+            active_pane_id=None,
+            health='healthy',
+        )
+    )
+    manager = MountManager(layout, clock=lambda: '2026-03-18T00:00:00Z', uid_getter=lambda: 1000, boot_id_getter=lambda: 'boot-1')
+    guard = OwnershipGuard(layout, manager, clock=lambda: '2026-03-18T00:00:00Z', pid_exists=lambda pid: True, socket_probe=lambda path: True)
+    monitor = HealthMonitor(registry, guard, clock=lambda: '2026-03-18T00:00:10Z', pid_exists=lambda pid: True)
+
+    assert monitor.check_all()['codex'] == 'start-failed'
+    refreshed = registry.get('codex')
+    assert refreshed is not None
+    assert refreshed.state is AgentState.FAILED
+    assert refreshed.health == 'start-failed'
+    assert refreshed.last_failure_reason == 'mount-produced-unbound-runtime'
+
+
 def test_health_monitor_marks_dead_tmux_pane_degraded_without_rebinding(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo'
     project_root.mkdir()
@@ -1127,7 +1157,7 @@ def test_ccbd_foreign_pane_reflow_uses_persisted_start_policy(tmp_path: Path, mo
     ctx = bootstrap_project(project_root)
     app = CcbdApp(project_root)
     app.persist_start_policy(auto_permission=True)
-    seen: list[tuple[tuple[str, ...], bool, bool, bool, bool, bool, bool, str | None]] = []
+    seen: list[tuple[tuple[str, ...], bool, bool, bool, bool, bool, bool, str | None, bool]] = []
 
     degraded = replace(
         _runtime('codex', project_id=ctx.project_id, layout=app.paths, pid=1234),
@@ -1156,6 +1186,7 @@ def test_ccbd_foreign_pane_reflow_uses_persisted_start_policy(tmp_path: Path, mo
         recreate_namespace: bool = False,
         reflow_workspace: bool = False,
         recreate_reason: str | None = None,
+        skip_auto_start_blocked: bool = False,
     ):
         seen.append(
             (
@@ -1167,6 +1198,7 @@ def test_ccbd_foreign_pane_reflow_uses_persisted_start_policy(tmp_path: Path, mo
                 recreate_namespace,
                 reflow_workspace,
                 recreate_reason,
+                skip_auto_start_blocked,
             )
         )
         refreshed = app.registry.get('codex')
@@ -1198,4 +1230,5 @@ def test_ccbd_foreign_pane_reflow_uses_persisted_start_policy(tmp_path: Path, mo
         False,
         True,
         'pane_recovery:codex',
+        True,
     )]

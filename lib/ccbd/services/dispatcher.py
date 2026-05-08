@@ -23,7 +23,7 @@ from ccbd.api_models import (
     MessageEnvelope,
     SubmitReceipt,
 )
-from ccbd.models import CcbdRestoreEntry, CcbdRestoreReport
+from ccbd.models import CcbdRestoreReport
 from ccbd.system import utc_now
 from completion.models import CompletionDecision
 from completion.tracker import CompletionTrackerService
@@ -59,6 +59,7 @@ class JobDispatcher(DispatcherRuntimeStateMixin, DispatcherFacadeMixin):
         registry: AgentRegistry,
         *,
         runtime_service=None,
+        runtime_reconciler=None,
         execution_service=None,
         auto_reply_delivery_on_complete: bool = False,
         require_actionable_runtime_binding_for_execution: bool = False,
@@ -77,6 +78,7 @@ class JobDispatcher(DispatcherRuntimeStateMixin, DispatcherFacadeMixin):
             config=config,
             registry=registry,
             runtime_service=runtime_service,
+            runtime_reconciler=runtime_reconciler,
             execution_service=execution_service,
             auto_reply_delivery_on_complete=bool(auto_reply_delivery_on_complete),
             require_actionable_runtime_binding_for_execution=bool(

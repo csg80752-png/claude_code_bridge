@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import partial
 
+from ccbd.runtime_failure_policy import UNBOUND_MOUNT_FAILURE_REASON
 from ccbd.services.runtime_recovery_policy import normalized_runtime_health
 from ccbd.supervision.mount import ensure_mounted as ensure_mounted_impl
 from ccbd.supervision.mount import persist_mount_failure as persist_mount_failure_impl
@@ -18,7 +19,7 @@ from .loop_runtime import (
 )
 
 
-def ensure_agent_mounted(ctx: RuntimeSupervisionContext, agent_name: str, *, runtime):
+def ensure_agent_mounted(ctx: RuntimeSupervisionContext, agent_name: str, *, runtime, force: bool = False):
     return ensure_mounted_impl(
         project_id=ctx.project_id,
         agent_name=agent_name,
@@ -32,7 +33,7 @@ def ensure_agent_mounted(ctx: RuntimeSupervisionContext, agent_name: str, *, run
         upsert_if_changed_fn=partial(upsert_if_changed, ctx),
         build_starting_runtime_fn=partial(build_starting_runtime, ctx),
         persist_mount_failure_fn=partial(persist_mount_failure, ctx),
-        is_in_backoff_window_fn=partial(is_in_backoff_window, ctx),
+        is_in_backoff_window_fn=(lambda runtime, *, now: False) if force else partial(is_in_backoff_window, ctx),
         should_reflow_project_mount_fn=partial(should_reflow_project_mount, ctx),
         align_runtime_authority_fn=partial(align_runtime_authority, ctx),
         normalized_runtime_health_fn=normalized_runtime_health,
@@ -49,7 +50,7 @@ def fail_unbound_starting_runtime(ctx: RuntimeSupervisionContext, agent_name: st
         attempted_at=attempted_at,
         prior_health=prior_health,
         next_restart_count=int(getattr(runtime, 'restart_count', 0) or 0) + 1,
-        reason='mount-produced-unbound-runtime',
+        reason=UNBOUND_MOUNT_FAILURE_REASON,
     )
 
 

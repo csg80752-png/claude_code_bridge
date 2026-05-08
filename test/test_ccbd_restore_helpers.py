@@ -6,6 +6,7 @@ import pytest
 
 from agents.models import (
     AgentRestoreState,
+    AgentRuntime,
     AgentState,
     AgentValidationError,
     RestoreMode,
@@ -119,6 +120,71 @@ def test_ensure_runtime_ready_raises_without_runtime_or_restore_state() -> None:
     restore_store = SimpleNamespace(load=lambda agent_name: None)
 
     with pytest.raises(AgentValidationError, match="start it first"):
+        ensure_runtime_ready(
+            layout=SimpleNamespace(workspace_path=lambda agent_name: f"/tmp/{agent_name}"),
+            registry=registry,
+            restore_store=restore_store,
+            attach_runtime_fn=lambda **kwargs: None,
+            restore_runtime_fn=lambda agent_name: None,
+            clock=lambda: "2026-04-06T00:00:00Z",
+            agent_name="agent1",
+        )
+
+
+def test_ensure_runtime_ready_raises_when_restore_state_has_no_runtime_binding() -> None:
+    attached: list[dict] = []
+    registry = SimpleNamespace(
+        spec_for=lambda agent_name: SimpleNamespace(name=agent_name, runtime_mode=SimpleNamespace(value="pane-backed")),
+        get=lambda agent_name: None,
+    )
+    restore_store = SimpleNamespace(
+        load=lambda agent_name: AgentRestoreState(
+            restore_mode=RestoreMode.AUTO,
+            last_checkpoint=None,
+            conversation_summary="resume me",
+        )
+    )
+
+    with pytest.raises(AgentValidationError, match="no runtime binding"):
+        ensure_runtime_ready(
+            layout=SimpleNamespace(workspace_path=lambda agent_name: f"/tmp/{agent_name}"),
+            registry=registry,
+            restore_store=restore_store,
+            attach_runtime_fn=lambda **kwargs: attached.append(kwargs),
+            restore_runtime_fn=lambda agent_name: None,
+            clock=lambda: "2026-04-06T00:00:00Z",
+            agent_name="agent1",
+        )
+
+    assert attached == []
+
+
+def test_ensure_runtime_ready_raises_when_active_runtime_has_no_binding() -> None:
+    runtime = AgentRuntime(
+        agent_name="agent1",
+        state=AgentState.IDLE,
+        pid=None,
+        started_at="2026-04-06T00:00:00Z",
+        last_seen_at="2026-04-06T00:00:00Z",
+        runtime_ref=None,
+        session_ref=None,
+        workspace_path="/tmp/agent1",
+        project_id="project-1",
+        backend_type="pane-backed",
+        queue_depth=0,
+        socket_path=None,
+        health="restored",
+        pane_id=None,
+        active_pane_id=None,
+    )
+    registry = SimpleNamespace(
+        spec_for=lambda agent_name: SimpleNamespace(name=agent_name, runtime_mode=SimpleNamespace(value="pane-backed")),
+        get=lambda agent_name: runtime,
+        upsert=lambda updated_runtime: updated_runtime,
+    )
+    restore_store = SimpleNamespace(load=lambda agent_name: None)
+
+    with pytest.raises(AgentValidationError, match="no runtime binding"):
         ensure_runtime_ready(
             layout=SimpleNamespace(workspace_path=lambda agent_name: f"/tmp/{agent_name}"),
             registry=registry,

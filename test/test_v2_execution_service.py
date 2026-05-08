@@ -1249,6 +1249,85 @@ def test_execution_service_claude_persists_before_ready_wait_and_resumes_prompt_
     assert persisted_after_send.submission.runtime_state['prompt_sent'] is True
 
 
+def test_execution_service_claude_restore_terminalizes_prompt_sent_ready_without_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from provider_execution import claude as claude_adapter_module
+
+    fixed_req_id = '20260318-000000-000-3-interrupted'
+    pane_text = {'value': """
+───────────────────────────────────────────
+❯
+───────────────────────────────────────────
+  ? for shortcuts
+"""}
+    sent: list[tuple[str, str]] = []
+
+    class FakeBackend:
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
+            sent.append((pane_id, text))
+
+        def is_alive(self, pane_id: str) -> bool:
+            return pane_id == '%2'
+
+        def get_pane_content(self, pane_id: str, lines: int = 120) -> str:
+            del lines
+            assert pane_id == '%2'
+            return pane_text['value']
+
+    class FakeSession:
+        data = {}
+        claude_session_path = str(tmp_path / 'claude-session.jsonl')
+        work_dir = str(tmp_path)
+
+        def ensure_pane(self):
+            return True, '%2'
+
+    class EmptyReader:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        def set_preferred_session(self, session_path) -> None:
+            del session_path
+
+        def capture_state(self):
+            return {'session_path': tmp_path / 'claude-session.jsonl', 'offset': 0, 'carry': b''}
+
+        def try_get_entries(self, state):
+            return [], state
+
+    backend = FakeBackend()
+    monkeypatch.setattr(claude_adapter_module, 'load_project_session', lambda work_dir, instance=None: FakeSession())
+    monkeypatch.setattr(claude_adapter_module, 'get_backend_for_session', lambda data: backend)
+    monkeypatch.setattr(claude_adapter_module, 'ClaudeLogReader', EmptyReader)
+
+    layout = PathLayout(tmp_path / 'claude-interrupted-restore')
+    state_store = ExecutionStateStore(layout)
+    service = ExecutionService(build_default_execution_registry(), clock=lambda: '2026-03-18T00:00:00Z', state_store=state_store)
+    job = _anchored_job_for_provider('claude', fixed_req_id, body='interrupted by restart')
+    service.start(job, runtime_context=_runtime_context(tmp_path))
+    assert service.poll() == ()
+    assert sent and fixed_req_id in sent[0][1]
+
+    persisted_after_send = state_store.load(job.job_id)
+    assert persisted_after_send is not None
+    assert persisted_after_send.submission.runtime_state['prompt_sent'] is True
+    assert persisted_after_send.submission.runtime_state['anchor_seen'] is False
+
+    restarted = ExecutionService(
+        build_default_execution_registry(),
+        clock=lambda: '2026-03-18T00:00:05Z',
+        state_store=state_store,
+    )
+    restored = restarted.restore(job, runtime_context=_runtime_context(tmp_path))
+    assert restored.status == 'terminal_pending'
+    assert restored.reason == 'interrupted_by_restart'
+    assert restored.decision is not None
+    assert restored.decision.status is CompletionStatus.FAILED
+    assert restored.decision.reason == 'interrupted_by_restart'
+
+
 def test_execution_service_codex_adapter_fails_without_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from provider_execution import codex as codex_adapter_module
 

@@ -57,6 +57,9 @@ def watch_ask_job(
             return batch
         if _deadline_exceeded(deadline, monotonic_fn=monotonic_fn):
             terminal_batch = _terminal_batch_from_watch(client, job_id, cursor=cursor, reconnect_error_classes=reconnect_error_classes)
+            if terminal_batch is None and poll_interval > 0:
+                sleep_fn(poll_interval)
+                terminal_batch = _terminal_batch_from_watch(client, job_id, cursor=cursor, reconnect_error_classes=reconnect_error_classes)
             if terminal_batch is not None:
                 if emit_output:
                     write_lines_fn(out, render_watch_batch_fn(terminal_batch))

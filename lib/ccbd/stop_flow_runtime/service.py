@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agents.models import AgentState
 from agents.store import AgentRuntimeStore
+from ccbd.runtime_failure_policy import preserved_stop_failure_reason
 from cli.services.tmux_cleanup_history import TmuxCleanupHistoryStore
 from cli.services.tmux_project_cleanup import cleanup_project_tmux_orphans_by_socket
 from terminal_runtime.tmux import normalize_socket_name
@@ -89,7 +90,7 @@ def stop_all_project(
                 lifecycle_state='stopped',
                 desired_state='stopped',
                 reconcile_state='stopped',
-                last_failure_reason=None,
+                last_failure_reason=preserved_stop_failure_reason(runtime),
             )
         )
         stopped_agents.append(agent_name)

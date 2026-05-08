@@ -9,6 +9,7 @@ class DispatcherRuntimeState:
     config: object
     registry: object
     runtime_service: object
+    runtime_reconciler: object
     execution_service: object
     auto_reply_delivery_on_complete: bool
     require_actionable_runtime_binding_for_execution: bool
@@ -46,6 +47,10 @@ class DispatcherRuntimeStateMixin:
     @property
     def _runtime_service(self):
         return self._runtime_state.runtime_service
+
+    @property
+    def _runtime_reconciler(self):
+        return self._runtime_state.runtime_reconciler
 
     @property
     def _execution_service(self):

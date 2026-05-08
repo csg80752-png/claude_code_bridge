@@ -363,6 +363,58 @@ def test_kill_project_terminates_runtime_pid_files(tmp_path: Path, monkeypatch) 
     assert runtime.reconcile_state == 'stopped'
 
 
+def test_kill_project_fallback_preserves_unbound_mount_failure_reason(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-kill-preserve-hard-failure'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('agent3:claude\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    command = ParsedKillCommand(project=None, force=True)
+    context = CliContextBuilder().build(command, cwd=project_root, bootstrap_if_missing=False)
+    AgentRuntimeStore(context.paths).save(
+        AgentRuntime(
+            agent_name='agent3',
+            state=AgentState.FAILED,
+            pid=None,
+            started_at='2026-04-01T00:00:00Z',
+            last_seen_at='2026-04-01T00:00:00Z',
+            runtime_ref=None,
+            session_ref=None,
+            workspace_path=str(context.paths.workspace_path('agent3')),
+            project_id=context.project.project_id,
+            backend_type='pane-backed',
+            queue_depth=0,
+            socket_path=None,
+            health='start-failed',
+            last_failure_reason='mount-produced-unbound-runtime',
+        )
+    )
+
+    monkeypatch.setattr(
+        'cli.services.kill.shutdown_daemon',
+        lambda context, force: KillSummary(
+            project_id=context.project.project_id,
+            state='unmounted',
+            socket_path=str(context.paths.ccbd_socket_path),
+            forced=force,
+        ),
+    )
+    monkeypatch.setattr('cli.services.kill.set_tmux_ui_active', lambda active: None)
+    monkeypatch.setattr('cli.services.kill.ProjectNamespaceController', _namespace_controller(destroyed=False))
+    monkeypatch.setattr('cli.services.kill.cleanup_project_tmux_orphans_by_socket', lambda **kwargs: ())
+    monkeypatch.setattr(
+        'cli.services.kill.TmuxCleanupHistoryStore',
+        lambda paths: type('Store', (), {'append': staticmethod(lambda event: None)})(),
+    )
+
+    kill_project(context, command)
+
+    runtime = AgentRuntimeStore(context.paths).load('agent3')
+    assert runtime is not None
+    assert runtime.state is AgentState.STOPPED
+    assert runtime.health == 'stopped'
+    assert runtime.last_failure_reason == 'mount-produced-unbound-runtime'
+
+
 def test_shutdown_daemon_terminates_lingering_ccbd_pid(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / 'repo-kill-daemon-pid'
     project_root.mkdir(parents=True, exist_ok=True)

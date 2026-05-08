@@ -42,7 +42,13 @@ def resolve_attach_runtime_values(
     lifecycle_state: str | None,
     managed_by: str | None,
     binding_source: str | RuntimeBindingSource | None,
+    last_failure_reason: str | None,
+    clear_failure_reason: bool,
 ) -> AttachRuntimeValues:
+    clear_runtime_binding_fields = binding_fields_explicitly_cleared(
+        runtime_ref=runtime_ref,
+        session_ref=session_ref,
+    )
     merged_binding = merge_runtime_binding(
         runtime_binding_from_runtime(existing),
         runtime_ref=runtime_ref,
@@ -61,7 +67,12 @@ def resolve_attach_runtime_values(
     runtime_ref_value = merged_binding.runtime_ref
     next_health = health or (existing.health if existing is not None else 'healthy')
     next_state = state_for_attach(existing.state if existing is not None else None, next_health)
-    pane_id_value = preferred_pane_id(existing, pane_id=pane_id, runtime_ref_value=runtime_ref_value)
+    pane_id_value = preferred_pane_id(
+        existing,
+        pane_id=pane_id,
+        runtime_ref_value=runtime_ref_value,
+        clear_runtime_binding_fields=clear_runtime_binding_fields,
+    )
     return AttachRuntimeValues(
         backend_type=backend_type,
         runtime_ref=runtime_ref_value,
@@ -72,13 +83,29 @@ def resolve_attach_runtime_values(
         provider=next_provider(existing, spec, provider),
         runtime_root=preferred_text(existing, 'runtime_root', runtime_root),
         runtime_pid=next_runtime_pid(existing, runtime_pid=runtime_pid, pid=pid),
-        terminal_backend=preferred_terminal_backend(existing, terminal_backend=terminal_backend, runtime_ref_value=runtime_ref_value),
+        terminal_backend=preferred_terminal_backend(
+            existing,
+            terminal_backend=terminal_backend,
+            runtime_ref_value=runtime_ref_value,
+            clear_runtime_binding_fields=clear_runtime_binding_fields,
+        ),
         pane_id=pane_id_value,
-        active_pane_id=preferred_active_pane_id(existing, active_pane_id=active_pane_id, pane_id_value=pane_id_value),
-        pane_title_marker=preferred_text(existing, 'pane_title_marker', pane_title_marker),
-        pane_state=preferred_text(existing, 'pane_state', pane_state),
-        tmux_socket_name=preferred_text(existing, 'tmux_socket_name', tmux_socket_name),
-        tmux_socket_path=preferred_text(existing, 'tmux_socket_path', tmux_socket_path),
+        active_pane_id=preferred_active_pane_id(
+            existing,
+            active_pane_id=active_pane_id,
+            pane_id_value=pane_id_value,
+            clear_runtime_binding_fields=clear_runtime_binding_fields,
+        ),
+        pane_title_marker=preferred_text(
+            existing, 'pane_title_marker', pane_title_marker, clear_existing=clear_runtime_binding_fields
+        ),
+        pane_state=preferred_text(existing, 'pane_state', pane_state, clear_existing=clear_runtime_binding_fields),
+        tmux_socket_name=preferred_text(
+            existing, 'tmux_socket_name', tmux_socket_name, clear_existing=clear_runtime_binding_fields
+        ),
+        tmux_socket_path=preferred_text(
+            existing, 'tmux_socket_path', tmux_socket_path, clear_existing=clear_runtime_binding_fields
+        ),
         session_file=session_file_value,
         session_id=session_id_value,
         slot_key=preferred_slot_key(existing, spec_name=spec.name, slot_key=slot_key),
@@ -88,6 +115,11 @@ def resolve_attach_runtime_values(
         binding_generation=(existing.binding_generation + 1) if existing is not None else 1,
         managed_by=preferred_text(existing, 'managed_by', managed_by, default='ccbd') or 'ccbd',
         binding_source=binding_source_for_attach(existing, explicit=binding_source),
+        last_failure_reason=next_failure_reason(
+            existing,
+            last_failure_reason=last_failure_reason,
+            clear_failure_reason=clear_failure_reason,
+        ),
     )
 
 
@@ -96,36 +128,76 @@ def next_provider(existing, spec, provider: str | None) -> str:
     return str(provider or current or spec.provider).strip() or spec.provider
 
 
-def preferred_text(existing, field_name: str, explicit_value: str | None, *, default: str | None = None) -> str | None:
+def binding_fields_explicitly_cleared(*, runtime_ref: str | None, session_ref: str | None) -> bool:
+    return runtime_ref is not None and session_ref is not None and normalized_text(runtime_ref) is None and normalized_text(session_ref) is None
+
+
+def preferred_text(
+    existing,
+    field_name: str,
+    explicit_value: str | None,
+    *,
+    default: str | None = None,
+    clear_existing: bool = False,
+) -> str | None:
     normalized = normalized_text(explicit_value)
     if normalized is not None:
         return normalized
+    if clear_existing:
+        return None
     if existing is not None:
         return getattr(existing, field_name)
     return default
 
 
-def preferred_terminal_backend(existing, *, terminal_backend: str | None, runtime_ref_value: str | None) -> str | None:
+def next_failure_reason(existing, *, last_failure_reason: str | None, clear_failure_reason: bool) -> str | None:
+    normalized = normalized_text(last_failure_reason)
+    if normalized is not None:
+        return normalized
+    if clear_failure_reason:
+        return None
+    return existing.last_failure_reason if existing is not None else None
+
+
+def preferred_terminal_backend(
+    existing,
+    *,
+    terminal_backend: str | None,
+    runtime_ref_value: str | None,
+    clear_runtime_binding_fields: bool = False,
+) -> str | None:
     return (
         normalized_text(terminal_backend)
         or terminal_backend_from_runtime_ref(runtime_ref_value)
-        or (existing.terminal_backend if existing is not None else None)
+        or (None if clear_runtime_binding_fields else (existing.terminal_backend if existing is not None else None))
     )
 
 
-def preferred_pane_id(existing, *, pane_id: str | None, runtime_ref_value: str | None) -> str | None:
+def preferred_pane_id(
+    existing,
+    *,
+    pane_id: str | None,
+    runtime_ref_value: str | None,
+    clear_runtime_binding_fields: bool = False,
+) -> str | None:
     return (
         normalized_text(pane_id)
         or pane_id_from_runtime_ref(runtime_ref_value)
-        or (existing.pane_id if existing is not None else None)
+        or (None if clear_runtime_binding_fields else (existing.pane_id if existing is not None else None))
     )
 
 
-def preferred_active_pane_id(existing, *, active_pane_id: str | None, pane_id_value: str | None) -> str | None:
+def preferred_active_pane_id(
+    existing,
+    *,
+    active_pane_id: str | None,
+    pane_id_value: str | None,
+    clear_runtime_binding_fields: bool = False,
+) -> str | None:
     return (
         normalized_text(active_pane_id)
         or pane_id_value
-        or (existing.active_pane_id if existing is not None else None)
+        or (None if clear_runtime_binding_fields else (existing.active_pane_id if existing is not None else None))
     )
 
 

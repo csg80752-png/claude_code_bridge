@@ -35,6 +35,8 @@ def run_start_flow(
     namespace_epoch: int | None,
     workspace_window_id: str | None,
     workspace_epoch: int | None,
+    target_agent_names: tuple[str, ...] | None,
+    skipped_agent_results: tuple[object, ...],
     fresh_namespace: bool,
     fresh_workspace: bool,
     clock,
@@ -48,10 +50,25 @@ def run_start_flow(
         restore=restore,
         auto_permission=auto_permission,
     )
-    layout_plan = deps.build_project_layout_plan_fn(config, requested_agents=command.agent_names)
-    targets = layout_plan.target_agent_names
+    skipped_results = tuple(skipped_agent_results)
     actions_taken: list[str] = []
     agent_results: list[object] = []
+    actions_taken.extend(f'skip_auto_start:{item.agent_name}:{item.failure_reason}' for item in skipped_results)
+    if target_agent_names == () and not bool(getattr(config, 'cmd_enabled', False)):
+        return StartFlowSummary(
+            project_root=str(project_root),
+            project_id=project_id,
+            started=(),
+            socket_path=str(paths.ccbd_socket_path),
+            actions_taken=tuple(actions_taken),
+            agent_results=skipped_results,
+        )
+    layout_plan = deps.build_project_layout_plan_fn(
+        config,
+        requested_agents=command.agent_names,
+        target_agent_names=target_agent_names,
+    )
+    targets = layout_plan.target_agent_names
     tmux_backend, root_pane_id = tmux_namespace_runtime(
         deps,
         tmux_socket_path=tmux_socket_path,
@@ -147,6 +164,7 @@ def run_start_flow(
             execution=execution,
         )
         agent_results.append(execution.agent_result)
+    agent_results.extend(skipped_results)
 
     cleanup_summaries = cleanup_tmux_orphans_if_needed(
         deps,

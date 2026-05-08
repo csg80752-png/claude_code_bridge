@@ -7,6 +7,7 @@ from pathlib import Path
 from agents.config_loader import load_project_config
 from agents.models import AgentState
 from agents.store import AgentRuntimeStore
+from ccbd.runtime_failure_policy import preserved_stop_failure_reason
 from terminal_runtime.tmux import normalize_socket_name, socket_name_from_tmux_env
 
 
@@ -111,7 +112,7 @@ def _stopped_runtime(runtime):
         lifecycle_state="stopped",
         desired_state="stopped",
         reconcile_state="stopped",
-        last_failure_reason=None,
+        last_failure_reason=preserved_stop_failure_reason(runtime),
     )
 
 

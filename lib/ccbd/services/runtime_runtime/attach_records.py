@@ -43,6 +43,7 @@ def updated_runtime(existing, *, values: AttachRuntimeValues, timestamp: str, pr
         binding_generation=values.binding_generation,
         managed_by=values.managed_by,
         binding_source=values.binding_source,
+        last_failure_reason=values.last_failure_reason,
     )
 
 
@@ -87,6 +88,7 @@ def new_runtime(
         binding_generation=values.binding_generation,
         managed_by=values.managed_by,
         binding_source=values.binding_source,
+        last_failure_reason=values.last_failure_reason,
     )
 
 
