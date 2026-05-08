@@ -103,6 +103,7 @@ def _update_via_tarball(tmp_base: Path, *, install_dir: Path, target_version: st
             shutil.rmtree(tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
         tarball_path = tmp_dir / artifact_name
+        used_source_archive = False
         if not download_tarball(tarball_url, tarball_path):
             source_url = _release_source_archive_url(target_version)
             extracted_name = f"claude_code_bridge-{target_version}.tar.gz"
@@ -110,6 +111,7 @@ def _update_via_tarball(tmp_base: Path, *, install_dir: Path, target_version: st
             if not download_tarball(source_url, tarball_path):
                 print("❌ Update failed: unable to download release tarball")
                 return 1
+            used_source_archive = True
 
         print("📂 Extracting...")
         with tarfile.open(tarball_path, "r:gz") as tar:
@@ -120,6 +122,10 @@ def _update_via_tarball(tmp_base: Path, *, install_dir: Path, target_version: st
         env = os.environ.copy()
         env["CODEX_INSTALL_PREFIX"] = str(install_dir)
         env["CCB_CLEAN_INSTALL"] = "1"
+        if used_source_archive:
+            env["CCB_BUILD_VERSION"] = str(target_version)
+            env["CCB_SOURCE_KIND"] = "release"
+            env["CCB_BUILD_CHANNEL"] = "stable"
         bash_bin = shutil.which("bash")
         if not bash_bin:
             print("❌ Update failed: required shell 'bash' is not available")

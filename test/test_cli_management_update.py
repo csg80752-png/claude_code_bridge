@@ -75,6 +75,48 @@ def test_release_artifact_url_points_to_release_download() -> None:
     assert url == "https://github.com/bfly123/claude_code_bridge/releases/download/v6.0.0/ccb-linux-x86_64.tar.gz"
 
 
+def test_update_via_tarball_uses_release_artifact_identity(monkeypatch, tmp_path: Path) -> None:
+    tmp_base = tmp_path / "tmp"
+    install_dir = tmp_path / "install"
+    installed: dict[str, object] = {}
+
+    def fake_download(url: str, destination: Path) -> bool:
+        assert url == "https://github.com/bfly123/claude_code_bridge/releases/download/v6.0.29/ccb-linux-x86_64.tar.gz"
+        destination.write_bytes(b"archive")
+        return True
+
+    def fake_extract(tar, destination: Path) -> None:
+        del tar
+        extracted = destination / "ccb-linux-x86_64"
+        extracted.mkdir(parents=True)
+        (extracted / "install.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    def fake_run(command, *, check, env):
+        installed["command"] = command
+        installed["env"] = env
+
+    monkeypatch.setattr(update_runtime.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(update_runtime, "download_tarball", fake_download)
+    monkeypatch.setattr(update_runtime, "safe_extract_tar", fake_extract)
+    monkeypatch.setattr(update_runtime.tarfile, "open", lambda *args, **kwargs: _NullTar())
+    monkeypatch.setattr(update_runtime.shutil, "which", lambda name: "/bin/bash" if name == "bash" else None)
+    monkeypatch.setattr(update_runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(update_runtime, "get_version_info", lambda _install_dir: {"version": "6.0.29"})
+
+    code = update_runtime._update_via_tarball(
+        tmp_base,
+        install_dir=install_dir,
+        target_version="6.0.29",
+        old_info={"version": "6.0.28"},
+    )
+
+    assert code == 0
+    assert installed["command"] == ["/bin/bash", str(tmp_base / "ccb_update" / "ccb-linux-x86_64" / "install.sh"), "install"]
+    assert "CCB_BUILD_VERSION" not in installed["env"]
+    assert "CCB_SOURCE_KIND" not in installed["env"]
+    assert "CCB_BUILD_CHANNEL" not in installed["env"]
+
+
 def test_update_via_tarball_falls_back_to_github_source_archive(monkeypatch, tmp_path: Path) -> None:
     tmp_base = tmp_path / "tmp"
     install_dir = tmp_path / "install"
@@ -121,6 +163,9 @@ def test_update_via_tarball_falls_back_to_github_source_archive(monkeypatch, tmp
     ]
     assert installed["command"] == ["/bin/bash", str(tmp_base / "ccb_update" / "claude_code_bridge-6.0.29" / "install.sh"), "install"]
     assert installed["env"]["CODEX_INSTALL_PREFIX"] == str(install_dir)
+    assert installed["env"]["CCB_BUILD_VERSION"] == "6.0.29"
+    assert installed["env"]["CCB_SOURCE_KIND"] == "release"
+    assert installed["env"]["CCB_BUILD_CHANNEL"] == "stable"
 
 
 def test_update_via_tarball_rejects_source_archive_version_mismatch(monkeypatch, tmp_path: Path, capsys) -> None:
