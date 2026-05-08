@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from provider_core.pane_command import is_shell_command, normalized_command_name
+
 
 def _missing_pane_state(*, pane_id: str | None, pane_title_marker: str | None) -> str | None:
     if pane_id:
@@ -48,12 +50,12 @@ def _tmux_pane_shell_state(backend, pane_id: str) -> str:
     if not callable(command_reader):
         return 'not_shell'
     try:
-        current_command = str(command_reader(pane_id) or '').strip().lower()
+        current_command = normalized_command_name(command_reader(pane_id))
     except Exception:
         return 'unknown'
     if not current_command:
         return 'unknown'
-    return 'shell' if current_command in {'sh', 'bash', 'zsh', 'fish', 'dash'} else 'not_shell'
+    return 'shell' if is_shell_command(current_command) else 'not_shell'
 
 
 def _generic_pane_state(backend, pane_id: str, *, backend_pane_alive_fn: Callable[[object, str], bool]) -> str:

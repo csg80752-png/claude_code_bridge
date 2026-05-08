@@ -6,6 +6,10 @@ from provider_core.registry import TEST_DOUBLE_PROVIDER_NAMES
 from .agent_runtime_models import RuntimeBindingState
 
 
+class LaunchBindingError(RuntimeError):
+    pass
+
+
 def resolve_runtime_binding_state(
     *,
     context,
@@ -98,22 +102,26 @@ def launch_or_reuse_binding(
     if binding is not None:
         return binding, 'attached'
 
-    launch = ensure_agent_runtime_fn(
-        context,
-        command,
-        spec,
-        plan,
-        launch_binding_hint_fn(
-            binding=binding,
-            raw_binding=raw_binding,
-            stale_binding=stale_binding,
-            assigned_pane_id=assigned_pane_id,
-            tmux_socket_path=tmux_socket_path,
-        ),
+    launch_binding_hint = launch_binding_hint_fn(
+        binding=binding,
+        raw_binding=raw_binding,
+        stale_binding=stale_binding,
         assigned_pane_id=assigned_pane_id,
-        style_index=style_index,
         tmux_socket_path=tmux_socket_path,
     )
+    try:
+        launch = ensure_agent_runtime_fn(
+            context,
+            command,
+            spec,
+            plan,
+            launch_binding_hint,
+            assigned_pane_id=assigned_pane_id,
+            style_index=style_index,
+            tmux_socket_path=tmux_socket_path,
+        )
+    except Exception as exc:
+        raise LaunchBindingError(f'{type(exc).__name__}: {exc}') from exc
     binding = launch.binding
     if stale_binding and launch.launched:
         return binding, 'relaunched'
@@ -216,4 +224,4 @@ def runtime_pane_facts(
     return socket_name, runtime_pane_id, project_socket_active_pane_id
 
 
-__all__ = ['resolve_runtime_binding_state']
+__all__ = ['LaunchBindingError', 'resolve_runtime_binding_state']

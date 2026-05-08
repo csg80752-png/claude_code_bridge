@@ -118,8 +118,9 @@ def _binding_has_live_pane_evidence(binding, *, spec) -> bool:
     if str(getattr(spec, 'provider', '') or '').strip().lower() != 'claude':
         return True
     pane_state = str(getattr(binding, 'pane_state', '') or '').strip().lower()
-    socket_path = str(getattr(binding, 'tmux_socket_path', '') or '').strip()
-    return not (pane_state == 'missing' and socket_path)
+    if not str(getattr(binding, 'tmux_socket_path', '') or '').strip():
+        return True
+    return pane_state == 'alive'
 
 
 __all__ = ['ensure_agent_runtime', 'runtime_launcher']

@@ -30,15 +30,40 @@ class _FakeBackend:
     def __init__(self) -> None:
         self._socket_path = '/tmp/project.sock'
         self.created: list[dict[str, object]] = []
+        self.respawned: list[dict[str, object]] = []
         self.titles: list[tuple[str, str]] = []
         self.options: list[tuple[str, str, str]] = []
         self.styles: list[tuple[str, str | None, str | None]] = []
+        self.commands: dict[str, str] = {}
+        self.live_panes: set[str] = {'%root', '%55'}
 
     def pane_exists(self, pane_id: str) -> bool:
-        return pane_id in {'%root', '%55'}
+        return pane_id in self.live_panes
 
     def is_alive(self, pane_id: str) -> bool:
-        return pane_id in {'%root', '%55'}
+        return pane_id in self.live_panes
+
+    def pane_current_command(self, pane_id: str) -> str | None:
+        return self.commands.get(pane_id)
+
+    def respawn_pane(
+        self,
+        pane_id: str,
+        *,
+        cmd: str,
+        cwd: str | None = None,
+        remain_on_exit: bool = True,
+    ) -> None:
+        self.respawned.append(
+            {
+                'pane_id': pane_id,
+                'cmd': cmd,
+                'cwd': cwd,
+                'remain_on_exit': remain_on_exit,
+            }
+        )
+        self.live_panes.add(pane_id)
+        self.commands[pane_id] = 'node'
 
     def create_pane(
         self,
@@ -200,3 +225,78 @@ def test_refresh_provider_binding_replaces_missing_project_pane_inside_workspace
     assert ('%55', 'cmd') not in backend.titles
     assert ('%55', 'agent1') in backend.titles
 
+
+def test_refresh_provider_binding_respawns_owned_shell_pane_instead_of_reusing_it(monkeypatch, tmp_path: Path) -> None:
+    layout = PathLayout(tmp_path / 'repo-refresh-shell')
+    runtime = _runtime(layout)
+    registry = _Registry(runtime)
+    backend = _FakeBackend()
+    backend.live_panes.add('%41')
+    backend.commands['%41'] = 'bash'
+    session_file = layout.ccb_dir / 'agent1.session.json'
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_text('{}\n', encoding='utf-8')
+    session = _Session(
+        session_file=session_file,
+        data={
+            'terminal': 'tmux',
+            'pane_id': '%41',
+            'agent_name': 'agent1',
+            'ccb_project_id': 'proj-1',
+            'work_dir': str(layout.workspace_path('agent1')),
+            'start_cmd': 'codex --continue',
+            'fake_session_id': 'session-new',
+        },
+        _backend=backend,
+    )
+    replacement_context = ProjectSlotRecoveryContext(
+        project_id='proj-1',
+        slot_key='agent1',
+        tmux_socket_path='/tmp/project.sock',
+        tmux_session_name='ccb-demo',
+        namespace_epoch=4,
+        workspace_window_name='ccb',
+        workspace_window_id='@2',
+        workspace_epoch=3,
+        workspace_root_pane_id='%root',
+        style_index=0,
+    )
+    binding = ProviderSessionBinding(
+        provider='codex',
+        load_session=lambda workspace_path, instance: session,
+        session_id_attr='fake_session_id',
+        session_path_attr='fake_session_path',
+    )
+    attached: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        'ccbd.services.runtime_runtime.refresh.resolve_project_slot_recovery_context',
+        lambda **kwargs: replacement_context,
+    )
+    monkeypatch.setattr(
+        'ccbd.services.project_namespace_runtime.slot_replacement.TmuxBackend',
+        lambda socket_path=None: backend,
+    )
+
+    refreshed = refresh_provider_binding(
+        layout=layout,
+        registry=registry,
+        session_bindings={'codex': binding},
+        attach_runtime_fn=lambda **kwargs: attached.append(kwargs) or SimpleNamespace(**kwargs),
+        agent_name='agent1',
+        recover=True,
+    )
+
+    assert refreshed is not None
+    assert backend.created == []
+    assert backend.respawned == [
+        {
+            'pane_id': '%41',
+            'cmd': 'codex --continue',
+            'cwd': str(layout.workspace_path('agent1')),
+            'remain_on_exit': True,
+        }
+    ]
+    assert attached[0]['pane_id'] == '%41'
+    assert attached[0]['active_pane_id'] == '%41'
+    assert backend.commands['%41'] == 'node'

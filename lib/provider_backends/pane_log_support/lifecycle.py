@@ -8,7 +8,7 @@ from provider_core.tmux_ownership import (
     ownership_error_text,
 )
 
-from .lifecycle_common import attach_pane_log, live_owned_pane
+from .lifecycle_common import attach_pane_log, live_owned_pane, pane_is_shell
 from .lifecycle_recovery import tmux_rebound_pane
 
 
@@ -29,9 +29,12 @@ def ensure_pane(
         attach_pane_log_fn(session, backend, live_pane)
         return True, live_pane
 
+    shell_pane = False
     if pane_id and backend.is_alive(pane_id):
         ownership = inspect_tmux_pane_ownership(session, backend, str(pane_id))
-        return False, ownership_error_text(ownership, pane_id=str(pane_id))
+        if not ownership.is_owned:
+            return False, ownership_error_text(ownership, pane_id=str(pane_id))
+        shell_pane = pane_is_shell(backend, str(pane_id))
 
     if session.terminal == 'tmux':
         rebound = tmux_rebound_pane(
@@ -44,6 +47,8 @@ def ensure_pane(
         if rebound is not None:
             return rebound
 
+    if shell_pane:
+        return False, f'Pane exited to shell: {pane_id}'
     return False, f'Pane not alive: {pane_id}'
 
 
