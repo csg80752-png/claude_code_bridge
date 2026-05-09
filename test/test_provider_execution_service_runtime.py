@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from agents.models import AgentRuntime, AgentState
+from ccbd.api_models import DeliveryScope, JobRecord, JobStatus, MessageEnvelope, TargetKind
+from ccbd.services.dispatcher_runtime.restore_runtime.execution import _mark_restored
+from ccbd.services.dispatcher_runtime.runtime_state import _classify_binding
 from completion.models import (
     CompletionConfidence,
     CompletionCursor,
@@ -71,6 +75,131 @@ def _runtime_context() -> ProviderRuntimeContext:
         runtime_ref="ref",
         session_ref="session",
     )
+
+
+def _agent_runtime() -> AgentRuntime:
+    return AgentRuntime(
+        agent_name="agent1",
+        state=AgentState.IDLE,
+        pid=101,
+        started_at="2026-04-06T00:00:00Z",
+        last_seen_at="2026-04-06T00:00:00Z",
+        runtime_ref="tmux:%1",
+        session_ref="session",
+        workspace_path="/tmp/demo",
+        project_id="proj-1",
+        backend_type="pane-backed",
+        queue_depth=0,
+        socket_path=None,
+        health="healthy",
+        provider="codex",
+        terminal_backend="tmux",
+        pane_id=None,
+        active_pane_id=None,
+        pane_state=None,
+    )
+
+
+def _dispatcher_for_runtime(stored: dict[str, AgentRuntime]):
+    class Registry:
+        def get(self, agent_name: str):
+            assert agent_name == "agent1"
+            return stored["runtime"]
+
+        def upsert(self, runtime):
+            stored["runtime"] = runtime
+            return runtime
+
+    return SimpleNamespace(
+        _completion_tracker=None,
+        _registry=Registry(),
+        _clock=lambda: "2026-04-06T00:00:01Z",
+    )
+
+
+def _job_record() -> JobRecord:
+    return JobRecord(
+        job_id="job_1",
+        submission_id="sub_1",
+        agent_name="agent1",
+        target_kind=TargetKind.AGENT,
+        target_name="agent1",
+        provider="codex",
+        request=MessageEnvelope(
+            project_id="proj-1",
+            to_agent="agent1",
+            from_actor="cmd",
+            body="restore me",
+            task_id=None,
+            reply_to=None,
+            message_type="ask",
+            delivery_scope=DeliveryScope.SINGLE,
+        ),
+        status=JobStatus.RUNNING,
+        terminal_decision=None,
+        cancel_requested_at=None,
+        created_at="2026-04-06T00:00:00Z",
+        updated_at="2026-04-06T00:00:00Z",
+    )
+
+
+def test_mark_restored_refuses_busy_promotion_without_pane_binding() -> None:
+    stored = {"runtime": _agent_runtime()}
+    stored["runtime"].pane_state = "missing"
+
+    restored = _mark_restored(_dispatcher_for_runtime(stored), _job_record(), target_kind=TargetKind.AGENT)
+
+    assert restored.job_id == "job_1"
+    assert stored["runtime"].state is AgentState.DEGRADED
+    assert stored["runtime"].last_failure_reason == "restore-without-binding"
+
+
+def test_mark_restored_allows_non_pane_backed_runtime_busy_promotion() -> None:
+    stored = {
+        "runtime": AgentRuntime(
+            agent_name="agent1",
+            state=AgentState.IDLE,
+            pid=101,
+            started_at="2026-04-06T00:00:00Z",
+            last_seen_at="2026-04-06T00:00:00Z",
+            runtime_ref="socket:agent1",
+            session_ref="session",
+            workspace_path="/tmp/demo",
+            project_id="proj-1",
+            backend_type="headless",
+            queue_depth=0,
+            socket_path="/tmp/agent1.sock",
+            health="healthy",
+            provider="codex",
+            terminal_backend=None,
+            pane_id=None,
+            active_pane_id=None,
+            pane_state=None,
+        )
+    }
+    dispatcher = _dispatcher_for_runtime(stored)
+    dispatcher._state = SimpleNamespace(
+        active_job=lambda _agent_name: "job_1",
+        queue_depth=lambda _agent_name: 1,
+    )
+
+    restored = _mark_restored(dispatcher, _job_record(), target_kind=TargetKind.AGENT)
+
+    assert restored.job_id == "job_1"
+    assert stored["runtime"].state is AgentState.BUSY
+    assert stored["runtime"].last_failure_reason is None
+
+
+def test_classify_binding_prefers_confirmed_pane_state_over_active_pane_id() -> None:
+    missing = _agent_runtime()
+    missing.active_pane_id = "%1"
+    missing.pane_state = "missing"
+    dead = _agent_runtime()
+    dead.active_pane_id = "%1"
+    dead.pane_state = "dead"
+
+    assert _classify_binding(missing) == "pane-missing"
+    assert _classify_binding(dead) == "pane-dead"
 
 
 def test_poll_updates_processes_terminal_result_and_cleans_active_state(monkeypatch) -> None:
