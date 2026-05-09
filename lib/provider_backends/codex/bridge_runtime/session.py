@@ -15,9 +15,10 @@ class TerminalCodexSession:
         if command:
             strict_send = getattr(self.backend, 'send_text_to_pane', None)
             if callable(strict_send):
-                strict_send(self.pane_id, command)
+                # Codex CLI bracketed paste needs a 2nd Enter to submit.
+                strict_send(self.pane_id, command, extra_enter=True)
             else:
-                self.backend.send_text(self.pane_id, command)
+                self.backend.send_text(self.pane_id, command, extra_enter=True)
 
 
 __all__ = ['TerminalCodexSession']
