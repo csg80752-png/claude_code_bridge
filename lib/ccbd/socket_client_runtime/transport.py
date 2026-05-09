@@ -18,19 +18,37 @@ _RETRY_DELAYS_S = (0.05, 0.075, 0.1125, 0.16875)
 def connect_socket(socket_path: Path, *, timeout_s: float):
     if not hasattr(socket, 'AF_UNIX'):
         raise CcbdClientError('unix domain sockets are not supported on this platform')
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(timeout_s)
-    try:
-        _retry_transient(lambda: sock.connect(str(socket_path)))
-    except CcbdClientError:
-        sock.close()
-        raise
-    return sock
+    last_exc = None
+    for attempt in range(len(_RETRY_DELAYS_S) + 1):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(timeout_s)
+        try:
+            sock.connect(str(socket_path))
+            return sock
+        except OSError as exc:
+            sock.close()
+            last_exc = exc
+            if exc.errno not in _TRANSIENT_ERRNOS or attempt == len(_RETRY_DELAYS_S):
+                raise CcbdClientError(exc, errno=exc.errno) from exc
+            time.sleep(_RETRY_DELAYS_S[attempt])
+    raise CcbdClientError(last_exc, errno=getattr(last_exc, 'errno', None))
 
 
 def send_request(sock, request: RpcRequest) -> None:
-    payload = json.dumps(request.to_record(), ensure_ascii=False) + '\n'
-    _retry_transient(lambda: sock.sendall(payload.encode('utf-8')))
+    payload = (json.dumps(request.to_record(), ensure_ascii=False) + '\n').encode('utf-8')
+    sent = 0
+    for attempt in range(len(_RETRY_DELAYS_S) + 1):
+        try:
+            while sent < len(payload):
+                count = sock.send(payload[sent:])
+                if count == 0:
+                    raise CcbdClientError('socket closed mid-send')
+                sent += count
+            return
+        except OSError as exc:
+            if exc.errno not in _TRANSIENT_ERRNOS or attempt == len(_RETRY_DELAYS_S):
+                raise CcbdClientError(exc, errno=exc.errno) from exc
+            time.sleep(_RETRY_DELAYS_S[attempt])
 
 
 def recv_response_line(sock) -> bytes:
