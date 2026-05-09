@@ -94,7 +94,8 @@ class CodexCommunicator:
     def _send_via_terminal(self, content: str) -> None:
         if not self.backend or not self.pane_id:
             raise RuntimeError("Terminal session not configured")
-        self.backend.send_text(self.pane_id, content)
+        # Codex CLI bracketed paste needs a 2nd Enter to submit (same as Claude CLI).
+        self.backend.send_text(self.pane_id, content, extra_enter=True)
 
     def _send_message(self, content: str) -> tuple[str, dict[str, Any]]:
         return _send_message_impl(self, content)

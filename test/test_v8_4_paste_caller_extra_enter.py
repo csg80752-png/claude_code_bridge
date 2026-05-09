@@ -2,7 +2,7 @@
 
 Verifies the per-provider toggle of extra_enter:
   - claude communicator + claude execution start → extra_enter=True
-  - codex communicator + codex execution start → extra_enter=False (default)
+  - codex communicator + codex bridge session → extra_enter=True
 
 Test design: a recording backend implements both send_text and
 send_text_to_pane, capturing the kwarg actually passed. This pins the
@@ -49,8 +49,8 @@ def test_claude_communicator_send_via_terminal_passes_extra_enter_true() -> None
     }]
 
 
-def test_codex_communicator_send_via_terminal_does_not_pass_extra_enter() -> None:
-    """CodexCommunicator._send_via_terminal calls backend.send_text WITHOUT extra_enter (default False)."""
+def test_codex_communicator_send_via_terminal_passes_extra_enter_true() -> None:
+    """CodexCommunicator._send_via_terminal calls backend.send_text with extra_enter=True."""
     from provider_backends.codex.comm_runtime.communicator_facade import CodexCommunicator
 
     backend = RecordingBackend()
@@ -60,13 +60,12 @@ def test_codex_communicator_send_via_terminal_does_not_pass_extra_enter() -> Non
 
     comm._send_via_terminal('hello from codex')
 
-    assert len(backend.calls) == 1
-    call = backend.calls[0]
-    assert call['method'] == 'send_text'
-    assert call['pane_id'] == '%2'
-    assert call['text'] == 'hello from codex'
-    # codex must NOT pass extra_enter (would erroneously double-Enter the codex CLI).
-    assert 'extra_enter' not in call
+    assert backend.calls == [{
+        'method': 'send_text',
+        'pane_id': '%2',
+        'text': 'hello from codex',
+        'extra_enter': True,
+    }]
 
 
 def test_claude_send_prompt_passes_extra_enter_true_via_runtime_helper() -> None:
@@ -97,6 +96,51 @@ def test_codex_send_prompt_does_not_pass_extra_enter() -> None:
     call = backend.calls[0]
     assert call['method'] == 'send_text_to_pane'
     assert 'extra_enter' not in call
+
+
+def test_codex_bridge_session_send_passes_extra_enter_true_for_strict_send() -> None:
+    """TerminalCodexSession.send calls send_text_to_pane with extra_enter=True."""
+    from provider_backends.codex.bridge_runtime.session import TerminalCodexSession
+
+    backend = RecordingBackend()
+    session = TerminalCodexSession.__new__(TerminalCodexSession)
+    session.pane_id = '%7'
+    session.backend = backend
+
+    session.send('bridge\ncommand')
+
+    assert backend.calls == [{
+        'method': 'send_text_to_pane',
+        'pane_id': '%7',
+        'text': 'bridge command',
+        'extra_enter': True,
+    }]
+
+
+def test_codex_bridge_session_send_passes_extra_enter_true_for_fallback_send_text() -> None:
+    """TerminalCodexSession.send calls send_text fallback with extra_enter=True."""
+    from provider_backends.codex.bridge_runtime.session import TerminalCodexSession
+
+    class FallbackBackend:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def send_text(self, pane_id: str, text: str, **kwargs) -> None:
+            self.calls.append({'method': 'send_text', 'pane_id': pane_id, 'text': text, **kwargs})
+
+    backend = FallbackBackend()
+    session = TerminalCodexSession.__new__(TerminalCodexSession)
+    session.pane_id = '%8'
+    session.backend = backend
+
+    session.send('bridge\rcommand')
+
+    assert backend.calls == [{
+        'method': 'send_text',
+        'pane_id': '%8',
+        'text': 'bridge command',
+        'extra_enter': True,
+    }]
 
 
 def test_send_prompt_to_runtime_target_falls_back_to_send_text_when_no_strict_send() -> None:
