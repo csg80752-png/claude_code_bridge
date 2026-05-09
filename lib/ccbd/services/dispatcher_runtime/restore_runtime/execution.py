@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from agents.models import AgentState
 from ccbd.api_models import TargetKind
 from ccbd.models import CcbdRestoreEntry
@@ -9,7 +11,7 @@ from ..context import build_job_runtime_context
 from ..records import append_event, get_job
 from ..reply_delivery import is_reply_delivery_job
 from ..reply_delivery_runtime.decisions import reply_delivery_failed_decision
-from ..runtime_state import sync_runtime
+from ..runtime_state import _classify_binding, _is_pane_backed, sync_runtime
 
 
 def _restore_entry(current, restored) -> CcbdRestoreEntry:
@@ -37,6 +39,21 @@ def _complete_terminal_pending(dispatcher, current, restored):
 def _mark_restored(dispatcher, current, *, target_kind: TargetKind):
     _ensure_completion_tracker(dispatcher, current)
     if target_kind is TargetKind.AGENT:
+        runtime = dispatcher._registry.get(current.agent_name)
+        if (
+            runtime is not None
+            and _is_pane_backed(runtime)
+            and _classify_binding(runtime) in {'pane-dead', 'pane-missing'}
+        ):
+            dispatcher._registry.upsert(
+                replace(
+                    runtime,
+                    state=AgentState.DEGRADED,
+                    last_seen_at=dispatcher._clock(),
+                    last_failure_reason='restore-without-binding',
+                )
+            )
+            return current
         sync_runtime(dispatcher, current.agent_name, state=AgentState.BUSY)
     return current
 

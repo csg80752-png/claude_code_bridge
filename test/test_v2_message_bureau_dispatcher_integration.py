@@ -14,6 +14,7 @@ from agents.models import (
     ProjectConfig,
     QueuePolicy,
     RestoreMode,
+    RuntimeBindingSource,
     RuntimeMode,
     WorkspaceMode,
 )
@@ -1864,6 +1865,124 @@ def test_dispatcher_tick_keeps_recoverable_agent_queued_without_runtime_service(
     assert accepted is not None
     assert accepted.status.value == 'accepted'
     assert started_jobs == []
+
+
+def _pane_runtime(runtime: AgentRuntime, *, state: AgentState, pane_state: str | None, active_pane_id: str | None = None) -> AgentRuntime:
+    return replace(
+        runtime,
+        state=state,
+        terminal_backend='tmux',
+        pane_id='%1' if pane_state is not None else None,
+        active_pane_id=active_pane_id,
+        pane_state=pane_state,
+        binding_source=RuntimeBindingSource.PROVIDER_SESSION,
+    )
+
+
+def test_reconcile_runtime_views_demotes_busy_unbound_pane_runtime_without_active_job(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-stale-busy-missing-queued'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex', 'claude', 'gemini')
+    registry = AgentRegistry(layout, config)
+    registry.upsert(_pane_runtime(_runtime('codex', project_id=ctx.project_id, layout=layout, pid=101), state=AgentState.BUSY, pane_state='missing'))
+    dispatcher = JobDispatcher(layout, config, registry, clock=lambda: '2026-03-30T00:00:00Z')
+
+    dispatcher.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='codex',
+            from_actor='user',
+            body='queued while stale busy',
+            task_id='task-stale-busy',
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+    dispatcher.reconcile_runtime_views()
+
+    runtime = registry.get('codex')
+    assert runtime is not None
+    assert runtime.state is AgentState.DEGRADED
+    assert runtime.last_failure_reason == 'stale-busy-demoted'
+
+
+def test_reconcile_runtime_views_keeps_busy_when_pane_alive(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-stale-busy-alive'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex', 'claude', 'gemini')
+    registry = AgentRegistry(layout, config)
+    registry.upsert(
+        _pane_runtime(
+            _runtime('codex', project_id=ctx.project_id, layout=layout, pid=101),
+            state=AgentState.BUSY,
+            pane_state='alive',
+            active_pane_id='%1',
+        )
+    )
+    dispatcher = JobDispatcher(layout, config, registry, clock=lambda: '2026-03-30T00:00:00Z')
+    dispatcher._state.mark_active('codex', 'job-active')
+
+    dispatcher.reconcile_runtime_views()
+
+    runtime = registry.get('codex')
+    assert runtime is not None
+    assert runtime.state is AgentState.BUSY
+
+
+def test_reconcile_runtime_views_skips_demotion_during_transient_probe_failure(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-stale-busy-unknown'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex', 'claude', 'gemini')
+    registry = AgentRegistry(layout, config)
+    registry.upsert(_pane_runtime(_runtime('codex', project_id=ctx.project_id, layout=layout, pid=101), state=AgentState.BUSY, pane_state='unknown'))
+    dispatcher = JobDispatcher(layout, config, registry, clock=lambda: '2026-03-30T00:00:00Z')
+
+    dispatcher.reconcile_runtime_views()
+
+    runtime = registry.get('codex')
+    assert runtime is not None
+    assert runtime.state is AgentState.BUSY
+
+
+def test_reconcile_runtime_views_skips_demotion_during_starting_transition(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-stale-busy-starting'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex', 'claude', 'gemini')
+    registry = AgentRegistry(layout, config)
+    runtime = replace(
+        _pane_runtime(_runtime('codex', project_id=ctx.project_id, layout=layout, pid=101), state=AgentState.STARTING, pane_state=None),
+        reconcile_state='starting',
+    )
+    registry.upsert(runtime)
+    dispatcher = JobDispatcher(layout, config, registry, clock=lambda: '2026-03-30T00:00:00Z')
+
+    dispatcher.reconcile_runtime_views()
+
+    runtime = registry.get('codex')
+    assert runtime is not None
+    assert runtime.state is AgentState.STARTING
+
+
+def test_reconcile_runtime_views_demotes_busy_to_idle_when_queue_empty(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-stale-busy-missing-empty'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex', 'claude', 'gemini')
+    registry = AgentRegistry(layout, config)
+    registry.upsert(_pane_runtime(_runtime('codex', project_id=ctx.project_id, layout=layout, pid=101), state=AgentState.BUSY, pane_state='missing'))
+    dispatcher = JobDispatcher(layout, config, registry, clock=lambda: '2026-03-30T00:00:00Z')
+
+    dispatcher.reconcile_runtime_views()
+
+    runtime = registry.get('codex')
+    assert runtime is not None
+    assert runtime.state is AgentState.IDLE
+    assert runtime.last_failure_reason == 'stale-busy-demoted'
 
 
 def test_dispatcher_tick_uses_mailbox_claimable_requests_as_start_source(tmp_path: Path) -> None:
