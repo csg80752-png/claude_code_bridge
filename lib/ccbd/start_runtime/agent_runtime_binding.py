@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+from agents.models import RuntimeMode
+from provider_core.registry import TEST_DOUBLE_PROVIDER_NAMES
+
 from .agent_runtime_models import RuntimeBindingState
+
+
+class LaunchBindingError(RuntimeError):
+    pass
 
 
 def resolve_runtime_binding_state(
@@ -53,6 +60,7 @@ def resolve_runtime_binding_state(
         binding=binding,
         stale_binding=stale_binding,
         agent_name=agent_name,
+        spec=spec,
         agent_action=agent_action,
         actions_taken=actions_taken,
     )
@@ -94,22 +102,26 @@ def launch_or_reuse_binding(
     if binding is not None:
         return binding, 'attached'
 
-    launch = ensure_agent_runtime_fn(
-        context,
-        command,
-        spec,
-        plan,
-        launch_binding_hint_fn(
-            binding=binding,
-            raw_binding=raw_binding,
-            stale_binding=stale_binding,
-            assigned_pane_id=assigned_pane_id,
-            tmux_socket_path=tmux_socket_path,
-        ),
+    launch_binding_hint = launch_binding_hint_fn(
+        binding=binding,
+        raw_binding=raw_binding,
+        stale_binding=stale_binding,
         assigned_pane_id=assigned_pane_id,
-        style_index=style_index,
         tmux_socket_path=tmux_socket_path,
     )
+    try:
+        launch = ensure_agent_runtime_fn(
+            context,
+            command,
+            spec,
+            plan,
+            launch_binding_hint,
+            assigned_pane_id=assigned_pane_id,
+            style_index=style_index,
+            tmux_socket_path=tmux_socket_path,
+        )
+    except Exception as exc:
+        raise LaunchBindingError(f'{type(exc).__name__}: {exc}') from exc
     binding = launch.binding
     if stale_binding and launch.launched:
         return binding, 'relaunched'
@@ -148,17 +160,41 @@ def runtime_status(
     binding,
     stale_binding: bool,
     agent_name: str,
+    spec,
     agent_action: str,
     actions_taken: list[str],
 ) -> tuple[str | None, str | None, str, str, str]:
-    if binding is None and stale_binding:
-        actions_taken.append(f'degraded_stale_binding:{agent_name}')
+    if not _spec_requires_runtime_binding(spec):
+        actions_taken.extend(runtime_action_markers(agent_name=agent_name, agent_action=agent_action))
+        return None, None, 'healthy', 'idle', agent_action
+
+    if binding is None:
+        reason = 'degraded_stale_binding' if stale_binding else 'degraded_missing_binding'
+        actions_taken.append(f'{reason}:{agent_name}')
         return '', '', 'degraded', 'degraded', 'degraded'
 
-    runtime_ref = binding.runtime_ref if binding else None
-    session_ref = binding.session_ref if binding else None
+    if _binding_missing_required_refs(binding):
+        actions_taken.append(f'degraded_partial_binding:{agent_name}')
+        return '', '', 'degraded', 'degraded', 'degraded'
+
+    runtime_ref = binding.runtime_ref
+    session_ref = binding.session_ref
     actions_taken.extend(runtime_action_markers(agent_name=agent_name, agent_action=agent_action))
     return runtime_ref, session_ref, 'healthy', 'idle', agent_action
+
+
+def _binding_missing_required_refs(binding) -> bool:
+    return not str(getattr(binding, 'runtime_ref', '') or '').strip() or not str(
+        getattr(binding, 'session_ref', '') or ''
+    ).strip()
+
+
+def _spec_requires_runtime_binding(spec) -> bool:
+    provider = str(getattr(spec, 'provider', '') or '').strip().lower()
+    if provider in TEST_DOUBLE_PROVIDER_NAMES:
+        return False
+    runtime_mode = getattr(getattr(spec, 'runtime_mode', None), 'value', getattr(spec, 'runtime_mode', None))
+    return str(runtime_mode or '').strip() not in {RuntimeMode.HEADLESS.value, RuntimeMode.PTY_BACKED.value}
 
 
 def runtime_action_markers(*, agent_name: str, agent_action: str) -> tuple[str, ...]:
@@ -188,4 +224,4 @@ def runtime_pane_facts(
     return socket_name, runtime_pane_id, project_socket_active_pane_id
 
 
-__all__ = ['resolve_runtime_binding_state']
+__all__ = ['LaunchBindingError', 'resolve_runtime_binding_state']

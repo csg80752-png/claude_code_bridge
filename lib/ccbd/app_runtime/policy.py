@@ -46,6 +46,7 @@ def remount_project_from_policy(app, reason: str) -> None:
         recreate_namespace=not reason_text.startswith('pane_recovery:'),
         reflow_workspace=reason_text.startswith('pane_recovery:'),
         recreate_reason=reason_text,
+        skip_auto_start_blocked=reason_text.startswith('pane_recovery:'),
     )
 
 

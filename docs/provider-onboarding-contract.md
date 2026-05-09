@@ -92,6 +92,24 @@ Evidence required: tests must prove auth/config/cache paths do not unintentional
 
 Evidence required: blocked, expired, or missing credentials must surface a reason that operators can act on.
 
+## P0 ABI Freeze Gate
+
+P0 freezes the provider ABI with deterministic test doubles before any new public provider or runtime backend is added. The gate is intentionally credential-free and must not require real Gemini availability.
+
+The deterministic 5+ agent provider set is exported as `P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS` and must contain only names from `TEST_DOUBLE_PROVIDER_NAMES`. The initial set is fake Codex, fake Claude, fake Gemini-shaped, fake legacy terminal-text, and generic fake. `fake-gemini` covers the Gemini-shaped stability-window contract; it is not the real `gemini` provider and must not depend on Gemini login, binaries, network access, or provider credentials.
+
+The P0 gate must cover these ABI fields through manifests, not live provider behavior:
+
+- `prompt_transport`
+- `readiness`
+- `completion`
+- `diagnostics`
+- `restart_recovery`
+- `home_isolation`
+- `credential_lifecycle`
+
+The P0 gate is a contract freeze, not a provider launch. Passing it proves that CCB can validate the provider ABI shape with deterministic fixtures. It does not prove that a real provider is installed, authenticated, or operational.
+
 ## Live Canary
 
 Every new provider needs a live canary matrix before merge/install is considered complete.

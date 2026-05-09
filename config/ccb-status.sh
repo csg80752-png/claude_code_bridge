@@ -3,7 +3,6 @@
 # Shows project ccbd mount state for the current pane path.
 
 CCB_DIR="${CCB_DIR:-$HOME/.local/share/ccb}"
-CCB_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ccb"
 TMP_DIR="${TMPDIR:-/tmp}"
 
 # Color codes for tmux status bar (Tokyo Night palette)

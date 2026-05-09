@@ -25,6 +25,8 @@ def build_attach_handler(runtime_service):
             lifecycle_state=payload.get('lifecycle_state'),
             managed_by=payload.get('managed_by'),
             binding_source=payload.get('binding_source'),
+            last_failure_reason=payload.get('last_failure_reason'),
+            clear_failure_reason=bool(payload.get('clear_failure_reason', False)),
         )
         return runtime.to_record()
 

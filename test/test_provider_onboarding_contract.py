@@ -6,7 +6,12 @@ import pytest
 
 from agents.models import RuntimeMode
 from provider_core.manifests import ProviderManifest, ProviderOnboardingContract
-from provider_core.registry import build_default_backend_registry
+from provider_core.registry import (
+    P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS,
+    TEST_DOUBLE_PROVIDER_NAMES,
+    build_default_backend_registry,
+)
+from provider_core.registry_runtime import build_test_double_backends
 
 
 EXPECTED_BUILTIN_CONTRACTS = {
@@ -180,9 +185,50 @@ def test_provider_onboarding_contract_document_covers_required_sections() -> Non
         "Restart Recovery",
         "Home Isolation",
         "Credential Lifecycle",
+        "P0 ABI Freeze Gate",
         "Live Canary",
     ):
         assert f"## {heading}" in text
+    p0_section = text.split("## P0 ABI Freeze Gate", 1)[1].split("## Live Canary", 1)[0]
+    for field_name in (
+        "prompt_transport",
+        "readiness",
+        "completion",
+        "diagnostics",
+        "restart_recovery",
+        "home_isolation",
+        "credential_lifecycle",
+    ):
+        assert f"`{field_name}`" in p0_section
+
+
+def test_p0_deterministic_canary_uses_only_test_double_providers() -> None:
+    assert len(P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS) >= 5
+    assert "gemini" not in P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS
+    assert set(P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS) <= set(TEST_DOUBLE_PROVIDER_NAMES)
+
+
+def test_p0_deterministic_canary_covers_provider_abi_shapes_without_real_gemini() -> None:
+    backends = {backend.provider: backend for backend in build_test_double_backends()}
+    assert set(backends) <= set(TEST_DOUBLE_PROVIDER_NAMES)
+
+    contracts = [
+        backends[provider].manifest.onboarding_contract_for(RuntimeMode.PANE_BACKED)
+        for provider in P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS
+    ]
+
+    assert {contract.prompt_transport for contract in contracts} >= {"structured", "tmux-paste", "terminal-text"}
+    assert {contract.readiness for contract in contracts} >= {"structured", "pane-safe-consumer", "best-effort"}
+    assert {contract.completion for contract in contracts} >= {
+        "exact",
+        "observed-boundary",
+        "stability-window",
+        "terminal-quiet",
+    }
+    assert {contract.diagnostics for contract in contracts} >= {"structured", "degraded", "minimal"}
+    assert {contract.restart_recovery for contract in contracts} >= {"resume", "none"}
+    assert {contract.home_isolation for contract in contracts} >= {"managed", "none"}
+    assert {contract.credential_lifecycle for contract in contracts} >= {"none", "user"}
 
 
 def test_provider_onboarding_contract_rejects_unknown_values() -> None:

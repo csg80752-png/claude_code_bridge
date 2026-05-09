@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from agents.models import AgentState, QueuePolicy, normalize_agent_name
+from agents.models import QueuePolicy, normalize_agent_name
 from ccbd.api_models import DeliveryScope
 from mailbox_runtime.targets import CMD_ACTOR, NON_AGENT_ACTORS
 
 from .records import get_job, latest_for_agent
+from .runtime_guard import ensure_dispatch_target_ready, ensure_runtime_deliverable
 
 
 def validate_sender(dispatcher, sender: str) -> None:
@@ -24,15 +25,14 @@ def validate_sender(dispatcher, sender: str) -> None:
 
 def resolve_targets(dispatcher, request) -> tuple[str, ...]:
     if request.delivery_scope is DeliveryScope.SINGLE:
-        dispatcher._registry.spec_for(request.to_agent)
-        runtime = dispatcher._registry.get(request.to_agent)
-        if runtime is None or runtime.state in {AgentState.STOPPED, AgentState.FAILED}:
-            if dispatcher._runtime_service is None:
-                raise dispatcher._dispatch_error(f'agent {request.to_agent} is not running')
-            dispatcher._runtime_service.ensure_ready(request.to_agent)
+        ensure_dispatch_target_ready(dispatcher, request.to_agent)
         return (request.to_agent,)
 
-    alive = [runtime.agent_name for runtime in dispatcher._registry.list_alive()]
+    alive = [
+        runtime.agent_name
+        for runtime in dispatcher._registry.list_alive()
+        if not _runtime_unbound(dispatcher, runtime)
+    ]
     if request.from_actor not in NON_AGENT_ACTORS:
         alive = [name for name in alive if name != request.from_actor]
     return tuple(sorted(alive))
@@ -90,3 +90,11 @@ def build_watch_payload(dispatcher, target: str, *, start_line: int = 0) -> dict
         'reply': snapshot.latest_decision.reply if snapshot is not None else '',
         'events': [event.to_record() for event in filtered],
     }
+
+
+def _runtime_unbound(dispatcher, runtime) -> bool:
+    try:
+        ensure_runtime_deliverable(dispatcher, runtime.agent_name, runtime)
+    except dispatcher._dispatch_error:
+        return True
+    return False

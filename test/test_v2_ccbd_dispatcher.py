@@ -15,7 +15,7 @@ from agents.models import (
     RuntimeMode,
     WorkspaceMode,
 )
-from ccbd.api_models import DeliveryScope, JobStatus, MessageEnvelope, TargetKind
+from ccbd.api_models import DeliveryScope, JobStatus, MessageEnvelope
 from ccbd.services.dispatcher import JobDispatcher
 from ccbd.services.runtime import RuntimeService
 from ccbd.services.registry import AgentRegistry
@@ -177,6 +177,33 @@ class FailingRestoreExecutionService(RecordingExecutionService):
             status='abandoned',
             reason='provider_resume_unsupported',
             resume_capable=False,
+        )
+
+
+class TerminalRestoreExecutionService(RecordingExecutionService):
+    def restore(self, job, *, runtime_context=None):
+        del runtime_context
+        return ExecutionRestoreResult(
+            job_id=job.job_id,
+            agent_name=job.agent_name,
+            provider=job.provider,
+            status='terminal_pending',
+            reason='interrupted_by_restart',
+            resume_capable=True,
+            decision=CompletionDecision(
+                terminal=True,
+                status=CompletionStatus.FAILED,
+                reason='interrupted_by_restart',
+                confidence=CompletionConfidence.DEGRADED,
+                reply='',
+                anchor_seen=False,
+                reply_started=False,
+                reply_stable=False,
+                provider_turn_ref=job.job_id,
+                source_cursor=None,
+                finished_at='2026-03-18T00:00:05Z',
+                diagnostics={'restore_reason': 'interrupted_by_restart'},
+            ),
         )
 
 
@@ -1108,6 +1135,227 @@ def test_dispatcher_single_target_lazy_restores_stopped_agent(tmp_path: Path) ->
     assert runtime.health == 'restored'
 
 
+def test_dispatcher_single_target_reconciles_stopped_unbound_agent_before_ready(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-stopped-unbound-reconcile'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('codex')
+    registry = AgentRegistry(layout, config)
+    runtime = _runtime('codex', project_id=ctx.project_id, layout=layout, pid=101)
+    runtime.state = AgentState.STOPPED
+    runtime.health = 'stopped'
+    runtime.runtime_ref = None
+    runtime.session_ref = None
+    runtime.pane_id = None
+    runtime.active_pane_id = None
+    registry.upsert(runtime)
+    reconciled: list[str] = []
+
+    def _reconcile(agent_name: str, *, force_mount: bool = False) -> str:
+        assert force_mount is True
+        reconciled.append(agent_name)
+        current = registry.get(agent_name)
+        assert current is not None
+        registry.upsert(
+            AgentRuntime(
+                **{
+                    **current.__dict__,
+                    'state': AgentState.IDLE,
+                    'health': 'healthy',
+                    'runtime_ref': 'tmux:%8',
+                    'session_ref': 'session-8',
+                    'pane_id': '%8',
+                    'active_pane_id': '%8',
+                    'pane_state': 'alive',
+                }
+            )
+        )
+        return 'healthy'
+
+    dispatcher = JobDispatcher(
+        layout,
+        config,
+        registry,
+        runtime_reconciler=_reconcile,
+        clock=lambda: '2026-03-18T00:00:00Z',
+    )
+
+    receipt = dispatcher.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='codex',
+            from_actor='user',
+            body='hello',
+            task_id=None,
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+
+    assert receipt.jobs[0].agent_name == 'codex'
+    assert reconciled == ['codex']
+    runtime = registry.get('codex')
+    assert runtime is not None
+    assert runtime.state is AgentState.IDLE
+    assert runtime.health == 'healthy'
+    assert runtime.runtime_ref == 'tmux:%8'
+
+
+def test_dispatcher_single_target_reconciles_starting_unbound_agent_before_ready(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-starting-unbound-reconcile'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('claude')
+    registry = AgentRegistry(layout, config)
+    runtime = _runtime('claude', project_id=ctx.project_id, layout=layout, pid=101)
+    runtime.state = AgentState.STARTING
+    runtime.health = 'starting'
+    runtime.runtime_ref = None
+    runtime.session_ref = None
+    runtime.pane_id = None
+    runtime.active_pane_id = None
+    runtime.backend_type = 'pane-backed'
+    runtime.provider = 'claude'
+    registry.upsert(runtime)
+    reconciled: list[str] = []
+
+    def _reconcile(agent_name: str, *, force_mount: bool = False) -> str:
+        assert force_mount is True
+        reconciled.append(agent_name)
+        current = registry.get(agent_name)
+        assert current is not None
+        registry.upsert(
+            AgentRuntime(
+                **{
+                    **current.__dict__,
+                    'state': AgentState.IDLE,
+                    'health': 'healthy',
+                    'runtime_ref': 'tmux:%4',
+                    'session_ref': 'session-4',
+                    'pane_id': '%4',
+                    'active_pane_id': '%4',
+                    'pane_state': 'alive',
+                }
+            )
+        )
+        return 'healthy'
+
+    dispatcher = JobDispatcher(
+        layout,
+        config,
+        registry,
+        runtime_reconciler=_reconcile,
+        clock=lambda: '2026-03-18T00:00:00Z',
+    )
+
+    receipt = dispatcher.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='claude',
+            from_actor='user',
+            body='hello',
+            task_id=None,
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    )
+
+    assert receipt.jobs[0].agent_name == 'claude'
+    assert reconciled == ['claude']
+    runtime = registry.get('claude')
+    assert runtime is not None
+    assert runtime.state is AgentState.IDLE
+    assert runtime.health == 'healthy'
+    assert runtime.runtime_ref == 'tmux:%4'
+
+
+def test_dispatcher_single_target_rejects_active_unbound_pane_runtime(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-unbound-active'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('claude')
+    registry = AgentRegistry(layout, config)
+    registry.upsert(
+        AgentRuntime(
+            agent_name='claude',
+            state=AgentState.IDLE,
+            pid=None,
+            started_at='2026-03-18T00:00:00Z',
+            last_seen_at='2026-03-18T00:00:00Z',
+            runtime_ref=None,
+            session_ref=None,
+            workspace_path=str(layout.workspace_path('claude')),
+            project_id=ctx.project_id,
+            backend_type='pane-backed',
+            queue_depth=0,
+            socket_path=None,
+            health='restored',
+            provider='claude',
+            terminal_backend='tmux',
+        )
+    )
+    dispatcher = JobDispatcher(layout, config, registry, clock=lambda: '2026-03-18T00:00:00Z')
+
+    with pytest.raises(Exception, match="no runtime binding"):
+        dispatcher.submit(
+            MessageEnvelope(
+                project_id=ctx.project_id,
+                to_agent='claude',
+                from_actor='user',
+                body='hello',
+                task_id=None,
+                reply_to=None,
+                message_type='ask',
+                delivery_scope=DeliveryScope.SINGLE,
+            )
+        )
+
+
+def test_dispatcher_single_target_rejects_degraded_unbound_pane_runtime(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-unbound-degraded'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _provider_config('claude')
+    registry = AgentRegistry(layout, config)
+    registry.upsert(
+        AgentRuntime(
+            agent_name='claude',
+            state=AgentState.DEGRADED,
+            pid=None,
+            started_at='2026-03-18T00:00:00Z',
+            last_seen_at='2026-03-18T00:00:00Z',
+            runtime_ref=None,
+            session_ref=None,
+            workspace_path=str(layout.workspace_path('claude')),
+            project_id=ctx.project_id,
+            backend_type='pane-backed',
+            queue_depth=0,
+            socket_path=None,
+            health='degraded',
+            provider='claude',
+            terminal_backend='tmux',
+            last_failure_reason='binding_missing_after_launch',
+        )
+    )
+    dispatcher = JobDispatcher(layout, config, registry, clock=lambda: '2026-03-18T00:00:00Z')
+
+    with pytest.raises(Exception, match="no runtime binding"):
+        dispatcher.submit(
+            MessageEnvelope(
+                project_id=ctx.project_id,
+                to_agent='claude',
+                from_actor='user',
+                body='hello',
+                task_id=None,
+                reply_to=None,
+                message_type='ask',
+                delivery_scope=DeliveryScope.SINGLE,
+            )
+        )
+
+
 def test_dispatcher_restore_running_jobs_marks_unrecoverable_execution_incomplete(tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-restore-fail'
     ctx = _bootstrap_test_project(project_root)
@@ -1168,6 +1416,76 @@ def test_dispatcher_restore_running_jobs_marks_unrecoverable_execution_incomplet
     event_types = [event['type'] for event in watched['events']]
     assert 'execution_restore_failed' in event_types
     assert watched['terminal'] is True
+
+
+def test_dispatcher_restore_terminalizes_interrupted_job_and_unblocks_agent_queue(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-restore-terminal-unblocks'
+    ctx = _bootstrap_test_project(project_root)
+    layout = PathLayout(project_root)
+    config = _fake_config()
+    registry = AgentRegistry(layout, config)
+    registry.upsert(_runtime('demo', project_id=ctx.project_id, layout=layout, pid=201))
+    clock = StepClock(
+        '2026-03-18T00:00:00Z',
+        '2026-03-18T00:00:00Z',
+        '2026-03-18T00:00:00Z',
+        '2026-03-18T00:00:01Z',
+        '2026-03-18T00:00:01Z',
+        '2026-03-18T00:00:02Z',
+        '2026-03-18T00:00:02Z',
+        '2026-03-18T00:00:03Z',
+    )
+    dispatcher = JobDispatcher(
+        layout,
+        config,
+        registry,
+        execution_service=RecordingExecutionService(),
+        clock=clock,
+    )
+
+    first = dispatcher.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='demo',
+            from_actor='user',
+            body='first',
+            task_id='fake;latency_ms=1500',
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    ).jobs[0].job_id
+    dispatcher.tick()
+    assert dispatcher.get(first).status is JobStatus.RUNNING
+
+    second = dispatcher.submit(
+        MessageEnvelope(
+            project_id=ctx.project_id,
+            to_agent='demo',
+            from_actor='user',
+            body='second',
+            task_id='fake;latency_ms=1500',
+            reply_to=None,
+            message_type='ask',
+            delivery_scope=DeliveryScope.SINGLE,
+        )
+    ).jobs[0].job_id
+    assert dispatcher.get(second).status is JobStatus.QUEUED
+
+    restarted = JobDispatcher(
+        layout,
+        config,
+        registry,
+        execution_service=TerminalRestoreExecutionService(),
+        clock=lambda: '2026-03-18T00:00:05Z',
+    )
+    restored = restarted.restore_running_jobs()
+    assert len(restored) == 1
+    assert restarted.get(first).status is JobStatus.FAILED
+    assert restarted.get(first).terminal_decision['reason'] == 'interrupted_by_restart'
+
+    restarted.tick()
+    assert restarted.get(second).status is JobStatus.RUNNING
 
 
 def test_dispatcher_broadcast_does_not_lazy_restore_offline_agents(tmp_path: Path) -> None:

@@ -71,6 +71,33 @@ def test_wait_for_ccbd_ready_rejects_old_socket_when_spawned_process_exits(
     assert pings == ['ccbd']
 
 
+def test_wait_for_ccbd_ready_includes_stderr_tail_when_process_exits(tmp_path: Path) -> None:
+    socket_path = tmp_path / 'ccbd.sock'
+    lease_path = tmp_path / 'lease.json'
+    stderr_path = tmp_path / 'ccbd.stderr.log'
+    stderr_path.write_text(
+        'Traceback (most recent call last):\n'
+        '  File "main.py", line 24, in main\n'
+        'PermissionError: [Errno 1] Operation not permitted\n',
+        encoding='utf-8',
+    )
+    process = _FakeProcess(pid=222, polls=[1], returncode=1)
+
+    with pytest.raises(CcbdProcessError) as exc_info:
+        _wait_for_ccbd_ready(
+            process=process,  # type: ignore[arg-type]
+            socket_path=socket_path,
+            lease_path=lease_path,
+            stderr_path=stderr_path,
+            timeout_s=0.01,
+        )
+
+    message = str(exc_info.value)
+    assert 'ccbd exited before ready with code 1' in message
+    assert 'stderr: .ccb/ccbd/ccbd.stderr.log' in message
+    assert 'PermissionError: [Errno 1] Operation not permitted' in message
+
+
 def test_wait_for_ccbd_ready_accepts_socket_owned_by_spawned_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -115,6 +115,103 @@ def test_prepare_tmux_start_layout_assigns_slot_stable_styles(monkeypatch, tmp_p
     assert styles['%3'] == (agent3_visual.border_style, agent3_visual.active_border_style)
 
 
+def test_prepare_tmux_start_layout_materializes_configured_cmd_plus_eight_agents(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-layout-nine-slots'
+    project_root.mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    agent_names = tuple(f'agent{index}' for index in range(1, 9))
+    # Provider names are rendered into layout_spec only; this test does not launch runtimes.
+    providers_by_agent = {
+        'agent1': 'codex',
+        'agent2': 'claude',
+        'agent3': 'fake-codex',
+        'agent4': 'fake-claude',
+        'agent5': 'fake-gemini',
+        'agent6': 'fake-legacy',
+        'agent7': 'fake',
+        'agent8': 'codex',
+    }
+    (project_root / '.ccb' / 'ccb.config').write_text(
+        'version = 2\n'
+        f'default_agents = [{", ".join(f"{name!r}" for name in agent_names)}]\n'
+        'cmd_enabled = true\n'
+        + ''.join(
+            f'\n[agents.{name}]\n'
+            f'provider = "{providers_by_agent[name]}"\n'
+            'target = "."\n'
+            'workspace_mode = "inplace"\n'
+            'restore = "auto"\n'
+            'permission = "manual"\n'
+            for name in agent_names
+        ),
+        encoding='utf-8',
+    )
+    ctx = _context(project_root)
+    config = load_project_config(project_root).config
+    split_ids = iter(f'%{index}' for index in range(1, 9))
+    create_calls: list[tuple[str | None, str, int]] = []
+
+    class FakeTmuxBackend:
+        def get_current_pane_id(self) -> str:
+            return '%0'
+
+        def set_pane_title(self, pane_id: str, title: str) -> None:
+            pass
+
+        def set_pane_user_option(self, pane_id: str, name: str, value: str) -> None:
+            pass
+
+        def set_pane_style(
+            self,
+            pane_id: str,
+            *,
+            border_style: str | None = None,
+            active_border_style: str | None = None,
+        ) -> None:
+            pass
+
+        def create_pane(self, cmd: str, cwd: str, direction: str = 'right', percent: int = 50, parent_pane: str | None = None) -> str:
+            del cmd, cwd
+            create_calls.append((parent_pane, direction, percent))
+            return next(split_ids)
+
+    monkeypatch.setattr(tmux_start_layout, 'TmuxBackend', FakeTmuxBackend)
+
+    layout = tmux_start_layout.prepare_tmux_start_layout(
+        ctx,
+        config=config,
+        targets=agent_names,
+    )
+
+    assert layout.cmd_pane_id == '%0'
+    # Split ids are assigned in materialization order; left-branch leaves are labeled
+    # after their descendant panes have already been created.
+    assert config.layout_spec == (
+        'cmd, agent1:codex, agent2:claude, agent3:fake-codex, agent4:fake-claude; '
+        'agent5:fake-gemini, agent6:fake-legacy, agent7:fake, agent8:codex'
+    )
+    assert layout.agent_panes == {
+        'agent1': '%5',
+        'agent2': '%4',
+        'agent3': '%3',
+        'agent4': '%2',
+        'agent5': '%1',
+        'agent6': '%8',
+        'agent7': '%7',
+        'agent8': '%6',
+    }
+    assert create_calls == [
+        ('%0', 'right', 44),
+        ('%0', 'bottom', 20),
+        ('%0', 'bottom', 25),
+        ('%0', 'bottom', 33),
+        ('%0', 'bottom', 50),
+        ('%1', 'bottom', 25),
+        ('%1', 'bottom', 33),
+        ('%1', 'bottom', 50),
+    ]
+
+
 def test_prepare_tmux_start_layout_uses_root_pane_for_first_agent_when_cmd_disabled(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / 'repo-layout-no-cmd'
     project_root.mkdir(parents=True, exist_ok=True)

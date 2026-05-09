@@ -36,6 +36,12 @@ class CcbdSocketServer:
     def shutdown(self) -> None:
         shutdown_server(self)
 
+    def signal_stop(self) -> None:
+        self._stop_event.set()
+
+    def is_stop_requested(self) -> bool:
+        return self._stop_event.is_set()
+
     def _handle_connection(self, conn) -> str | None:
         return handle_connection(self, conn)
 

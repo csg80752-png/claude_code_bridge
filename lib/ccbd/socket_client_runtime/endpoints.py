@@ -94,6 +94,8 @@ def _payload_attach(
     lifecycle_state: str | None = None,
     managed_by: str | None = None,
     binding_source: str | None = 'external-attach',
+    last_failure_reason: str | None = None,
+    clear_failure_reason: bool = False,
 ) -> dict:
     return {
         'agent_name': agent_name,
@@ -117,6 +119,8 @@ def _payload_attach(
         'lifecycle_state': lifecycle_state,
         'managed_by': managed_by,
         'binding_source': binding_source,
+        'last_failure_reason': last_failure_reason,
+        'clear_failure_reason': bool(clear_failure_reason),
     }
 
 

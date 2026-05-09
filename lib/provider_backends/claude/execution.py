@@ -4,12 +4,14 @@ from pathlib import Path
 
 from ccbd.api_models import JobRecord
 from provider_core.protocol import request_anchor_for_job
+from completion.models import CompletionConfidence, CompletionStatus
 from provider_execution.base import ProviderPollResult, ProviderRuntimeContext, ProviderSubmission
 from provider_execution.common import request_anchor_from_runtime_state
 from terminal_runtime import get_backend_for_session
 
 from .comm import ClaudeLogReader
 from .execution_runtime import poll_submission as _poll_submission
+from .execution_runtime import looks_ready
 from .execution_runtime import resume_submission as _resume_submission
 from .execution_runtime import start_active_submission as _start_active_submission
 from .session import load_project_session
@@ -68,7 +70,7 @@ class ClaudeProviderAdapter:
         del persisted_state, now
         if context is None or not context.workspace_path:
             return None
-        return _resume_submission(
+        resumed = _resume_submission(
             job,
             submission,
             context=context,
@@ -76,6 +78,9 @@ class ClaudeProviderAdapter:
             backend_for_session_fn=get_backend_for_session,
             reader_factory=_reader_factory,
         )
+        if resumed is None:
+            return None
+        return _terminal_if_restart_interrupted_before_anchor(resumed) or resumed
 
 
 def _reader_factory(session):
@@ -107,6 +112,49 @@ def _legacy_session_projects_root(session) -> Path:
     if runtime_raw:
         return Path(runtime_raw).expanduser() / 'claude-home' / '.claude' / 'projects'
     return Path(session.work_dir).expanduser() / '.ccb' / 'claude-home' / '.claude' / 'projects'
+
+
+def _terminal_if_restart_interrupted_before_anchor(submission: ProviderSubmission) -> ProviderSubmission | None:
+    state = submission.runtime_state
+    if not bool(state.get("prompt_sent", False)):
+        return None
+    if bool(state.get("anchor_seen", False)):
+        return None
+    if str(state.get("reply_buffer") or "").strip() or str(submission.reply or "").strip():
+        return None
+    backend = state.get("backend")
+    pane_id = str(state.get("pane_id") or "").strip()
+    get_pane_content = getattr(backend, "get_pane_content", None)
+    if not pane_id or not callable(get_pane_content):
+        return None
+    try:
+        pane_text = str(get_pane_content(pane_id, lines=120) or "")
+    except Exception:
+        return None
+    if not looks_ready(pane_text):
+        return None
+    return ProviderSubmission(
+        job_id=submission.job_id,
+        agent_name=submission.agent_name,
+        provider=submission.provider,
+        accepted_at=submission.accepted_at,
+        ready_at=submission.ready_at,
+        source_kind=submission.source_kind,
+        reply="",
+        status=CompletionStatus.FAILED,
+        reason="interrupted_by_restart",
+        confidence=CompletionConfidence.DEGRADED,
+        diagnostics={
+            **dict(submission.diagnostics or {}),
+            "restore_status": "terminal_pending",
+            "restore_reason": "interrupted_by_restart",
+            "pane_id": pane_id,
+        },
+        runtime_state={
+            **state,
+            "restore_terminal_reason": "interrupted_by_restart",
+        },
+    )
 
 
 def _load_session(work_dir: Path, *, agent_name: str):

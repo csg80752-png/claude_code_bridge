@@ -4,6 +4,7 @@ from ccbd.api_models import JobRecord
 
 from provider_execution.base import ProviderRuntimeContext
 
+from .models import ExecutionRestoreResult
 from .restore_helpers import (
     adapter_or_result,
     persist_restored_submission,
@@ -13,6 +14,7 @@ from .restore_helpers import (
     restore_preflight_result,
     resume_or_result,
     terminal_pending_result,
+    terminal_submission_result,
 )
 
 
@@ -50,6 +52,10 @@ def restore_submission(
     )
     if resume_result is not None:
         return resume_result
+
+    terminal_result = terminal_submission_result(service, job, submission)
+    if terminal_result is not None:
+        return terminal_result
 
     persist_restored_submission(
         service,

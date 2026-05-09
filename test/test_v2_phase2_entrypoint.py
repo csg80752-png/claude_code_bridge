@@ -82,6 +82,10 @@ def _dual_named_agent_config_text(agent1: str, provider1: str, agent2: str, prov
     return f'{agent1}:{provider1},{agent2}:{provider2}\n'
 
 
+def _multi_named_agent_config_text(pairs: tuple[tuple[str, str], ...]) -> str:
+    return ','.join(f'{agent}:{provider}' for agent, provider in pairs) + '\n'
+
+
 def _wait_for_status(cwd: Path, target: str, expected: str, *, timeout: float = 3.0) -> subprocess.CompletedProcess[str]:
     deadline = time.time() + timeout
     last = None
@@ -1893,6 +1897,66 @@ def test_ccb_fake_provider_auto_completes(tmp_path: Path) -> None:
     assert 'reply: FAKE[demo] auto complete' in watch.stdout
     assert 'completion_item' in watch.stdout
     assert 'completion_state_updated' in watch.stdout
+
+    kill = _run_ccb(['kill'], cwd=project_root)
+    assert kill.returncode == 0, kill.stderr
+
+
+def test_ccb_p0_deterministic_five_provider_canary(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-p0-five-provider-canary'
+    providers = (
+        ('agent1', 'fake-codex'),
+        ('agent2', 'fake-claude'),
+        ('agent3', 'fake-gemini'),
+        ('agent4', 'fake-legacy'),
+        ('agent5', 'fake'),
+    )
+    _write(project_root / '.ccb' / 'ccb.config', _multi_named_agent_config_text(providers))
+
+    start = _run_ccb([], cwd=project_root)
+    assert start.returncode == 0, start.stderr
+    assert 'agents: agent1, agent2, agent3, agent4, agent5' in start.stdout
+
+    task_ids = {
+        'agent3': (
+            'fake;script=['
+            '{"t":0,"type":"anchor_seen"},'
+            '{"t":60,"type":"session_snapshot","reply":"p0 canary agent3"}'
+            ']'
+        ),
+        'agent4': 'fake;script=[{"t":80,"type":"assistant_final","text":"p0 canary agent4","done_marker":true}]',
+    }
+    job_ids: dict[str, str] = {}
+    for index, (agent, _provider) in enumerate(providers, start=1):
+        ask = _run_ccb(
+            [
+                'ask',
+                '--task-id',
+                task_ids.get(agent, f'fake;latency_ms={index * 20}'),
+                agent,
+                'from',
+                'user',
+                f'p0 canary {agent}',
+            ],
+            cwd=project_root,
+        )
+        assert ask.returncode == 0, ask.stderr
+        job_ids[agent] = _extract_accepted_job_id(ask.stdout, target=agent)
+
+    expected_replies = {
+        'agent3': 'p0 canary agent3',
+        'agent4': 'p0 canary agent4',
+    }
+    for agent, _provider in providers:
+        completed = _wait_for_status(project_root, job_ids[agent], 'completed', timeout=6.0)
+        assert f'agent_name: {agent}' in completed.stdout
+        expected_reply = expected_replies.get(agent, f'FAKE[{agent}] p0 canary {agent}')
+        assert f'reply: {expected_reply}' in completed.stdout
+
+    doctor = _run_ccb(['doctor'], cwd=project_root)
+    assert doctor.returncode == 0, doctor.stderr
+    for agent, provider in providers:
+        assert f'agent: name={agent} health=restored provider={provider}' in doctor.stdout
 
     kill = _run_ccb(['kill'], cwd=project_root)
     assert kill.returncode == 0, kill.stderr

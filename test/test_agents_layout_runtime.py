@@ -61,6 +61,28 @@ def test_build_balanced_layout_cmd_plus_four_agents_uses_general_balancing() -> 
     assert layout.render() == 'cmd, agent1, agent2; agent3, agent4'
 
 
+def test_build_balanced_layout_supports_configured_cmd_plus_eight_agents() -> None:
+    layout = build_balanced_layout(
+        tuple(f'agent{index}' for index in range(1, 9)),
+        providers_by_agent={},
+        workspace_modes_by_agent={},
+        cmd_enabled=True,
+    )
+
+    assert iter_layout_names(layout) == (
+        'cmd',
+        'agent1',
+        'agent2',
+        'agent3',
+        'agent4',
+        'agent5',
+        'agent6',
+        'agent7',
+        'agent8',
+    )
+    assert layout.render() == 'cmd, agent1, agent2, agent3, agent4; agent5, agent6, agent7, agent8'
+
+
 def test_parse_layout_spec_rejects_invalid_leaf_token() -> None:
     with pytest.raises(Exception, match='invalid layout token'):
         parse_layout_spec('cmd; ???')

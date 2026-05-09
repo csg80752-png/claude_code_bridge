@@ -39,6 +39,7 @@ def spawn_ccbd_process(
         process=process,
         socket_path=socket_path,
         lease_path=ccbd_dir / 'lease.json',
+        stderr_path=ccbd_dir / 'ccbd.stderr.log',
         timeout_s=timeout_s,
     )
 
@@ -48,6 +49,7 @@ def _wait_for_ccbd_ready(
     process: subprocess.Popen[bytes],
     socket_path: Path,
     lease_path: Path,
+    stderr_path: Path | None = None,
     timeout_s: float,
 ) -> None:
     deadline = time.time() + max(0.0, float(timeout_s))
@@ -62,9 +64,27 @@ def _wait_for_ccbd_ready(
             except CcbdClientError as exc:
                 last_error = str(exc)
         if process.poll() is not None:
-            raise CcbdProcessError(f'ccbd exited before ready with code {process.returncode}')
+            raise CcbdProcessError(_process_exit_message(process.returncode, stderr_path=stderr_path))
         time.sleep(0.05)
     raise CcbdProcessError(last_error or 'timed out waiting for ccbd to become ready')
+
+
+def _process_exit_message(returncode: int | None, *, stderr_path: Path | None) -> str:
+    message = f'ccbd exited before ready with code {returncode}'
+    stderr_tail = _stderr_tail(stderr_path)
+    if not stderr_tail:
+        return message
+    return f'{message}; stderr: .ccb/ccbd/ccbd.stderr.log; tail: {stderr_tail}'
+
+
+def _stderr_tail(stderr_path: Path | None, *, max_chars: int = 1000) -> str:
+    if stderr_path is None:
+        return ''
+    try:
+        text = stderr_path.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return ''
+    return ' | '.join(line.strip() for line in text[-max_chars:].splitlines() if line.strip())
 
 
 def _lease_belongs_to_process(*, lease_path: Path, process_pid: int) -> bool:

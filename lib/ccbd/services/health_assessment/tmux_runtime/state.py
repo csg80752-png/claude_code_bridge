@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from provider_core.pane_command import is_shell_command, read_pane_current_command
+
 from .ownership import inspect_tmux_pane_ownership
 
 
@@ -36,11 +38,18 @@ def pane_existence_state(backend, pane_id: str) -> str | None:
 def pane_alive_state(backend, pane_id: str) -> str | None:
     tmux_alive = bool_backend_call(backend, 'is_tmux_pane_alive', pane_id)
     if tmux_alive is not None:
-        return 'alive' if tmux_alive else 'dead'
+        return pane_shell_state(backend, pane_id) if tmux_alive else 'dead'
     alive = bool_backend_call(backend, 'is_alive', pane_id)
     if alive is not None:
-        return 'alive' if alive else 'dead'
+        return pane_shell_state(backend, pane_id) if alive else 'dead'
     return None
+
+
+def pane_shell_state(backend, pane_id: str) -> str:
+    current_command = read_pane_current_command(backend, pane_id)
+    if current_command is None:
+        return 'alive'
+    return 'shell' if is_shell_command(current_command) else 'alive'
 
 
 def bool_backend_call(backend, method_name: str, pane_id: str) -> bool | None:

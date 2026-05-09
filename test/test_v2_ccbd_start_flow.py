@@ -5,6 +5,7 @@ import threading
 import time
 from types import SimpleNamespace
 
+from agents.models import AgentRuntime, AgentState
 from ccbd.app import CcbdApp
 from ccbd.lifecycle_report_store import CcbdStartupReportStore
 from ccbd.start_flow import StartFlowSummary
@@ -276,6 +277,658 @@ def test_runtime_supervisor_start_persists_startup_report(tmp_path: Path, monkey
     assert len(report.agent_results) == 1
     assert report.agent_results[0].agent_name == 'demo'
     assert report.agent_results[0].action == 'launched'
+
+
+def test_runtime_supervisor_default_start_skips_unbound_mount_failure(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-ccbd-start-skip-hard-failed-default'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text(
+        'cmd; agent1:codex, agent2:codex, agent3:claude\n',
+        encoding='utf-8',
+    )
+    bootstrap_project(project_root)
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        AgentRuntime(
+            agent_name='agent3',
+            state=AgentState.STOPPED,
+            pid=None,
+            started_at='2026-03-18T00:00:00Z',
+            last_seen_at='2026-03-18T00:00:00Z',
+            runtime_ref=None,
+            session_ref=None,
+            workspace_path=str(app.paths.workspace_path('agent3')),
+            project_id=app.project_id,
+            backend_type='tmux',
+            queue_depth=0,
+            socket_path=None,
+            health='stopped',
+            last_failure_reason='mount-produced-unbound-runtime',
+        )
+    )
+    monkeypatch.setattr(
+        app.project_namespace,
+        'ensure',
+        lambda: SimpleNamespace(
+            tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+            tmux_session_name=app.paths.ccbd_tmux_session_name,
+            namespace_epoch=8,
+        ),
+    )
+    monkeypatch.setattr('ccbd.start_flow.TmuxBackend', _FakeNamespaceTmuxBackend)
+    monkeypatch.setattr('ccbd.start_preparation.prepare_provider_workspace', lambda **kwargs: None)
+    monkeypatch.setattr('ccbd.start_flow.set_tmux_ui_active', lambda active: None)
+    monkeypatch.setattr(
+        'ccbd.start_flow.prepare_tmux_start_layout',
+        lambda context, config, targets, **kwargs: SimpleNamespace(
+            cmd_pane_id=None,
+            agent_panes={agent_name: f'%{index + 10}' for index, agent_name in enumerate(targets)},
+        ),
+    )
+    monkeypatch.setattr('ccbd.start_flow.cleanup_project_tmux_orphans_by_socket', lambda **kwargs: ())
+    monkeypatch.setattr(
+        'ccbd.start_flow.TmuxCleanupHistoryStore',
+        lambda paths: SimpleNamespace(append=lambda event: None),
+    )
+    monkeypatch.setattr('ccbd.start_flow.resolve_agent_binding', lambda **kwargs: None)
+    launched: list[str] = []
+
+    def _ensure_agent_runtime(context, command, spec, plan, launch_hint, **kwargs):
+        del context, command, plan, launch_hint
+        launched.append(spec.name)
+        pane_id = kwargs.get('assigned_pane_id') or '%900'
+        return RuntimeLaunchResult(
+            launched=True,
+            binding=AgentBinding(
+                runtime_ref=f'tmux:{pane_id}',
+                session_ref=f'{spec.name}-session',
+                provider=spec.provider,
+                runtime_root=str(app.paths.agent_provider_runtime_dir(spec.name, spec.provider)),
+                runtime_pid=900 + len(launched),
+                session_file=str(project_root / '.ccb' / f'.{spec.provider}-{spec.name}-session'),
+                session_id=f'{spec.name}-session',
+                tmux_socket_name='sock-a',
+                tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+                terminal='tmux',
+                pane_id=pane_id,
+                active_pane_id=pane_id,
+                pane_title_marker=f'CCB-{spec.name}',
+                pane_state='alive',
+            ),
+        )
+
+    monkeypatch.setattr('ccbd.start_flow.ensure_agent_runtime', _ensure_agent_runtime)
+
+    summary = app.runtime_supervisor.start(
+        agent_names=(),
+        restore=False,
+        auto_permission=False,
+        cleanup_tmux_orphans=False,
+        interactive_tmux_layout=False,
+        skip_auto_start_blocked=True,
+    )
+
+    assert summary.started == ('agent1', 'agent2')
+    assert launched == ['agent1', 'agent2']
+    assert summary.agent_results[-1].agent_name == 'agent3'
+    assert summary.agent_results[-1].action == 'skipped'
+    assert summary.agent_results[-1].failure_reason == 'mount-produced-unbound-runtime'
+    assert 'skip_auto_start:agent3:mount-produced-unbound-runtime' in summary.actions_taken
+    agent3 = app.registry.get('agent3')
+    assert agent3 is not None
+    assert agent3.state is AgentState.STOPPED
+    assert agent3.health == 'stopped'
+    assert agent3.last_failure_reason == 'mount-produced-unbound-runtime'
+
+
+def test_runtime_supervisor_explicit_start_retries_unbound_mount_failure(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-ccbd-start-explicit-hard-failed'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('cmd; agent3:claude\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        AgentRuntime(
+            agent_name='agent3',
+            state=AgentState.STOPPED,
+            pid=None,
+            started_at='2026-03-18T00:00:00Z',
+            last_seen_at='2026-03-18T00:00:00Z',
+            runtime_ref=None,
+            session_ref=None,
+            workspace_path=str(app.paths.workspace_path('agent3')),
+            project_id=app.project_id,
+            backend_type='tmux',
+            queue_depth=0,
+            socket_path=None,
+            health='stopped',
+            last_failure_reason='mount-produced-unbound-runtime',
+        )
+    )
+    monkeypatch.setattr(
+        app.project_namespace,
+        'ensure',
+        lambda: SimpleNamespace(
+            tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+            tmux_session_name=app.paths.ccbd_tmux_session_name,
+            namespace_epoch=9,
+        ),
+    )
+    monkeypatch.setattr('ccbd.start_flow.TmuxBackend', _FakeNamespaceTmuxBackend)
+    monkeypatch.setattr('ccbd.start_preparation.prepare_provider_workspace', lambda **kwargs: None)
+    monkeypatch.setattr('ccbd.start_flow.set_tmux_ui_active', lambda active: None)
+    monkeypatch.setattr(
+        'ccbd.start_flow.prepare_tmux_start_layout',
+        lambda context, config, targets, **kwargs: SimpleNamespace(cmd_pane_id=None, agent_panes={'agent3': '%33'}),
+    )
+    monkeypatch.setattr('ccbd.start_flow.cleanup_project_tmux_orphans_by_socket', lambda **kwargs: ())
+    monkeypatch.setattr(
+        'ccbd.start_flow.TmuxCleanupHistoryStore',
+        lambda paths: SimpleNamespace(append=lambda event: None),
+    )
+    monkeypatch.setattr('ccbd.start_flow.resolve_agent_binding', lambda **kwargs: None)
+    launched: list[str] = []
+
+    def _ensure_agent_runtime(context, command, spec, plan, launch_hint, **kwargs):
+        del context, command, plan, launch_hint
+        launched.append(spec.name)
+        pane_id = kwargs.get('assigned_pane_id') or '%33'
+        return RuntimeLaunchResult(
+            launched=True,
+            binding=AgentBinding(
+                runtime_ref=f'tmux:{pane_id}',
+                session_ref='agent3-session',
+                provider=spec.provider,
+                runtime_root=str(app.paths.agent_provider_runtime_dir(spec.name, spec.provider)),
+                runtime_pid=933,
+                session_file=str(project_root / '.ccb' / '.claude-agent3-session'),
+                session_id='agent3-session',
+                tmux_socket_name='sock-a',
+                tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+                terminal='tmux',
+                pane_id=pane_id,
+                active_pane_id=pane_id,
+                pane_title_marker='CCB-agent3',
+                pane_state='alive',
+            ),
+        )
+
+    monkeypatch.setattr('ccbd.start_flow.ensure_agent_runtime', _ensure_agent_runtime)
+
+    summary = app.runtime_supervisor.start(
+        agent_names=('agent3',),
+        restore=False,
+        auto_permission=False,
+        cleanup_tmux_orphans=False,
+        interactive_tmux_layout=False,
+    )
+
+    assert summary.started == ('agent3',)
+    assert launched == ['agent3']
+    agent3 = app.registry.get('agent3')
+    assert agent3 is not None
+    assert agent3.state is AgentState.IDLE
+    assert agent3.health == 'healthy'
+
+
+def test_runtime_supervisor_noninteractive_start_uses_existing_project_slot_pane(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-ccbd-start-existing-slot'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('cmd; agent3:claude\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        AgentRuntime(
+            agent_name='agent3',
+            state=AgentState.FAILED,
+            pid=None,
+            started_at='2026-03-18T00:00:00Z',
+            last_seen_at='2026-03-18T00:00:00Z',
+            runtime_ref=None,
+            session_ref=None,
+            workspace_path=str(app.paths.workspace_path('agent3')),
+            project_id=app.project_id,
+            backend_type='pane-backed',
+            queue_depth=0,
+            socket_path=None,
+            health='start-failed',
+            terminal_backend='tmux',
+            pane_id=None,
+            active_pane_id=None,
+            tmux_socket_path=None,
+            slot_key='agent3',
+            window_id='@1',
+            workspace_epoch=1,
+            last_failure_reason='mount-produced-unbound-runtime',
+        )
+    )
+    monkeypatch.setattr(
+        app.project_namespace,
+        'ensure',
+        lambda: SimpleNamespace(
+            tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+            tmux_session_name=app.paths.ccbd_tmux_session_name,
+            workspace_window_name='ccb',
+            workspace_window_id='@1',
+            workspace_epoch=1,
+            namespace_epoch=17,
+        ),
+    )
+
+    class FakeProjectSlotBackend(_FakeNamespaceTmuxBackend):
+        def list_panes_by_user_options(self, expected):
+            if expected == {'@ccb_project_id': app.project_id, '@ccb_slot': 'agent3'}:
+                return ['%4']
+            return []
+
+        def is_pane_alive(self, pane_id):
+            return pane_id == '%4'
+
+    monkeypatch.setattr('ccbd.start_flow.TmuxBackend', FakeProjectSlotBackend)
+    monkeypatch.setattr('ccbd.start_preparation.prepare_provider_workspace', lambda **kwargs: None)
+    monkeypatch.setattr('ccbd.start_flow.set_tmux_ui_active', lambda active: None)
+    monkeypatch.setattr(
+        'ccbd.start_flow.prepare_tmux_start_layout',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('noninteractive start should not reflow layout')),
+    )
+    monkeypatch.setattr('ccbd.start_flow.cleanup_project_tmux_orphans_by_socket', lambda **kwargs: ())
+    monkeypatch.setattr(
+        'ccbd.start_flow.TmuxCleanupHistoryStore',
+        lambda paths: SimpleNamespace(append=lambda event: None),
+    )
+    monkeypatch.setattr('ccbd.start_flow.resolve_agent_binding', lambda **kwargs: None)
+    assigned_panes: list[str | None] = []
+
+    def _ensure_agent_runtime(context, command, spec, plan, launch_hint, **kwargs):
+        del context, command, plan, launch_hint
+        pane_id = kwargs.get('assigned_pane_id')
+        assigned_panes.append(pane_id)
+        return RuntimeLaunchResult(
+            launched=True,
+            binding=AgentBinding(
+                runtime_ref=f'tmux:{pane_id}',
+                session_ref='agent3-session',
+                provider=spec.provider,
+                runtime_root=str(app.paths.agent_provider_runtime_dir(spec.name, spec.provider)),
+                runtime_pid=933,
+                session_file=str(project_root / '.ccb' / '.claude-agent3-session'),
+                session_id='agent3-session',
+                tmux_socket_name='sock-a',
+                tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+                terminal='tmux',
+                pane_id=pane_id,
+                active_pane_id=pane_id,
+                pane_title_marker='CCB-agent3',
+                pane_state='alive',
+            ),
+        )
+
+    monkeypatch.setattr('ccbd.start_flow.ensure_agent_runtime', _ensure_agent_runtime)
+
+    summary = app.runtime_supervisor.start(
+        agent_names=('agent3',),
+        restore=False,
+        auto_permission=False,
+        cleanup_tmux_orphans=False,
+        interactive_tmux_layout=False,
+    )
+
+    assert summary.started == ('agent3',)
+    assert assigned_panes == ['%4']
+    agent3 = app.registry.get('agent3')
+    assert agent3 is not None
+    assert agent3.health == 'healthy'
+    assert agent3.runtime_ref == 'tmux:%4'
+
+
+def test_runtime_supervisor_plain_default_start_retries_unbound_mount_failure(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-ccbd-start-default-retries-hard-failed'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('cmd; agent3:claude\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        AgentRuntime(
+            agent_name='agent3',
+            state=AgentState.FAILED,
+            pid=None,
+            started_at='2026-03-18T00:00:00Z',
+            last_seen_at='2026-03-18T00:00:00Z',
+            runtime_ref=None,
+            session_ref=None,
+            workspace_path=str(app.paths.workspace_path('agent3')),
+            project_id=app.project_id,
+            backend_type='tmux',
+            queue_depth=0,
+            socket_path=None,
+            health='start-failed',
+            last_failure_reason='mount-produced-unbound-runtime',
+        )
+    )
+    monkeypatch.setattr(
+        app.project_namespace,
+        'ensure',
+        lambda: SimpleNamespace(
+            tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+            tmux_session_name=app.paths.ccbd_tmux_session_name,
+            namespace_epoch=12,
+        ),
+    )
+    monkeypatch.setattr('ccbd.start_flow.TmuxBackend', _FakeNamespaceTmuxBackend)
+    monkeypatch.setattr('ccbd.start_preparation.prepare_provider_workspace', lambda **kwargs: None)
+    monkeypatch.setattr('ccbd.start_flow.set_tmux_ui_active', lambda active: None)
+    monkeypatch.setattr(
+        'ccbd.start_flow.prepare_tmux_start_layout',
+        lambda context, config, targets, **kwargs: SimpleNamespace(cmd_pane_id=None, agent_panes={'agent3': '%43'}),
+    )
+    monkeypatch.setattr('ccbd.start_flow.cleanup_project_tmux_orphans_by_socket', lambda **kwargs: ())
+    monkeypatch.setattr(
+        'ccbd.start_flow.TmuxCleanupHistoryStore',
+        lambda paths: SimpleNamespace(append=lambda event: None),
+    )
+    monkeypatch.setattr('ccbd.start_flow.resolve_agent_binding', lambda **kwargs: None)
+    launched: list[str] = []
+
+    def _ensure_agent_runtime(context, command, spec, plan, launch_hint, **kwargs):
+        del context, command, plan, launch_hint
+        launched.append(spec.name)
+        pane_id = kwargs.get('assigned_pane_id') or '%43'
+        return RuntimeLaunchResult(
+            launched=True,
+            binding=AgentBinding(
+                runtime_ref=f'tmux:{pane_id}',
+                session_ref='agent3-session',
+                provider=spec.provider,
+                runtime_root=str(app.paths.agent_provider_runtime_dir(spec.name, spec.provider)),
+                runtime_pid=943,
+                session_file=str(project_root / '.ccb' / '.claude-agent3-session'),
+                session_id='agent3-session',
+                tmux_socket_name='sock-a',
+                tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+                terminal='tmux',
+                pane_id=pane_id,
+                active_pane_id=pane_id,
+                pane_title_marker='CCB-agent3',
+                pane_state='alive',
+            ),
+        )
+
+    monkeypatch.setattr('ccbd.start_flow.ensure_agent_runtime', _ensure_agent_runtime)
+
+    summary = app.runtime_supervisor.start(
+        agent_names=(),
+        restore=False,
+        auto_permission=False,
+        cleanup_tmux_orphans=False,
+        interactive_tmux_layout=False,
+    )
+
+    assert summary.started == ('agent3',)
+    assert launched == ['agent3']
+    assert 'skip_auto_start:agent3:mount-produced-unbound-runtime' not in summary.actions_taken
+
+
+def test_runtime_supervisor_policy_reflow_skips_unbound_mount_failure(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-ccbd-start-reflow-skips-hard-failed'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text(
+        'cmd; agent1:codex, agent3:claude\n',
+        encoding='utf-8',
+    )
+    bootstrap_project(project_root)
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        AgentRuntime(
+            agent_name='agent3',
+            state=AgentState.FAILED,
+            pid=None,
+            started_at='2026-03-18T00:00:00Z',
+            last_seen_at='2026-03-18T00:00:00Z',
+            runtime_ref=None,
+            session_ref=None,
+            workspace_path=str(app.paths.workspace_path('agent3')),
+            project_id=app.project_id,
+            backend_type='tmux',
+            queue_depth=0,
+            socket_path=None,
+            health='start-failed',
+            last_failure_reason='mount-produced-unbound-runtime',
+        )
+    )
+    ensure_calls: list[dict[str, object]] = []
+
+    def _ensure_namespace(**kwargs):
+        ensure_calls.append(kwargs)
+        return SimpleNamespace(
+            tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+            tmux_session_name=app.paths.ccbd_tmux_session_name,
+            namespace_epoch=10,
+            created_this_call=False,
+            workspace_recreated_this_call=False,
+        )
+
+    monkeypatch.setattr(app.project_namespace, 'ensure', _ensure_namespace)
+    monkeypatch.setattr('ccbd.start_flow.TmuxBackend', _FakeNamespaceTmuxBackend)
+    monkeypatch.setattr('ccbd.start_preparation.prepare_provider_workspace', lambda **kwargs: None)
+    monkeypatch.setattr('ccbd.start_flow.set_tmux_ui_active', lambda active: None)
+    monkeypatch.setattr(
+        'ccbd.start_flow.prepare_tmux_start_layout',
+        lambda context, config, targets, **kwargs: SimpleNamespace(
+            cmd_pane_id=None,
+            agent_panes={agent_name: f'%{index + 40}' for index, agent_name in enumerate(targets)},
+        ),
+    )
+    monkeypatch.setattr('ccbd.start_flow.cleanup_project_tmux_orphans_by_socket', lambda **kwargs: ())
+    monkeypatch.setattr(
+        'ccbd.start_flow.TmuxCleanupHistoryStore',
+        lambda paths: SimpleNamespace(append=lambda event: None),
+    )
+    monkeypatch.setattr('ccbd.start_flow.resolve_agent_binding', lambda **kwargs: None)
+    launched: list[str] = []
+
+    def _ensure_agent_runtime(context, command, spec, plan, launch_hint, **kwargs):
+        del context, command, plan, launch_hint
+        if spec.name == 'agent3':
+            raise AssertionError('policy reflow should not relaunch hard unbound agent3')
+        launched.append(spec.name)
+        pane_id = kwargs.get('assigned_pane_id') or '%40'
+        return RuntimeLaunchResult(
+            launched=True,
+            binding=AgentBinding(
+                runtime_ref=f'tmux:{pane_id}',
+                session_ref=f'{spec.name}-session',
+                provider=spec.provider,
+                runtime_root=str(app.paths.agent_provider_runtime_dir(spec.name, spec.provider)),
+                runtime_pid=940 + len(launched),
+                session_file=str(project_root / '.ccb' / f'.{spec.provider}-{spec.name}-session'),
+                session_id=f'{spec.name}-session',
+                tmux_socket_name='sock-a',
+                tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+                terminal='tmux',
+                pane_id=pane_id,
+                active_pane_id=pane_id,
+                pane_title_marker=f'CCB-{spec.name}',
+                pane_state='alive',
+            ),
+        )
+
+    monkeypatch.setattr('ccbd.start_flow.ensure_agent_runtime', _ensure_agent_runtime)
+
+    summary = app.runtime_supervisor.start(
+        agent_names=('agent1', 'agent3'),
+        restore=False,
+        auto_permission=False,
+        cleanup_tmux_orphans=False,
+        interactive_tmux_layout=True,
+        recreate_namespace=False,
+        reflow_workspace=True,
+        recreate_reason='pane_recovery:agent1',
+        skip_auto_start_blocked=True,
+    )
+
+    assert summary.started == ('agent1',)
+    assert launched == ['agent1']
+    assert summary.agent_results[-1].agent_name == 'agent3'
+    assert summary.agent_results[-1].action == 'skipped'
+    assert summary.agent_results[-1].failure_reason == 'mount-produced-unbound-runtime'
+    assert 'skip_auto_start:agent3:mount-produced-unbound-runtime' in summary.actions_taken
+    assert ensure_calls
+    assert 'agent1' in str(ensure_calls[-1].get('layout_signature'))
+    assert 'agent3' in str(ensure_calls[-1].get('layout_signature'))
+
+
+def test_runtime_supervisor_default_start_can_skip_all_unbound_mount_failures(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-ccbd-start-skip-all-hard-failed-default'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('agent3:claude\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        AgentRuntime(
+            agent_name='agent3',
+            state=AgentState.FAILED,
+            pid=None,
+            started_at='2026-03-18T00:00:00Z',
+            last_seen_at='2026-03-18T00:00:00Z',
+            runtime_ref=None,
+            session_ref=None,
+            workspace_path=str(app.paths.workspace_path('agent3')),
+            project_id=app.project_id,
+            backend_type='tmux',
+            queue_depth=0,
+            socket_path=None,
+            health='start-failed',
+            last_failure_reason='mount-produced-unbound-runtime',
+        )
+    )
+    monkeypatch.setattr(
+        app.project_namespace,
+        'ensure',
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError('no-op start should not ensure namespace')),
+    )
+    monkeypatch.setattr(
+        'ccbd.start_flow.TmuxBackend',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('no-op start should not create tmux backend')),
+    )
+    monkeypatch.setattr(
+        'ccbd.start_preparation.prepare_provider_workspace',
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError('skipped agent should not prepare workspace')),
+    )
+    monkeypatch.setattr(
+        'ccbd.start_flow.set_tmux_ui_active',
+        lambda active: (_ for _ in ()).throw(AssertionError('no-op start should not touch tmux UI')),
+    )
+    monkeypatch.setattr(
+        'ccbd.start_flow.prepare_tmux_start_layout',
+        lambda context, config, targets, **kwargs: (_ for _ in ()).throw(AssertionError('no-op start should not plan tmux layout')),
+    )
+    monkeypatch.setattr('ccbd.start_flow.cleanup_project_tmux_orphans_by_socket', lambda **kwargs: ())
+    monkeypatch.setattr(
+        'ccbd.start_flow.TmuxCleanupHistoryStore',
+        lambda paths: SimpleNamespace(append=lambda event: None),
+    )
+    monkeypatch.setattr('ccbd.start_flow.resolve_agent_binding', lambda **kwargs: None)
+    launched: list[str] = []
+
+    def _ensure_agent_runtime(context, command, spec, plan, launch_hint, **kwargs):
+        del context, command, spec, plan, launch_hint, kwargs
+        launched.append('agent3')
+        raise AssertionError('all hard-failed defaults should stay skipped')
+
+    monkeypatch.setattr('ccbd.start_flow.ensure_agent_runtime', _ensure_agent_runtime)
+
+    summary = app.runtime_supervisor.start(
+        agent_names=(),
+        restore=False,
+        auto_permission=False,
+        cleanup_tmux_orphans=False,
+        interactive_tmux_layout=True,
+        skip_auto_start_blocked=True,
+    )
+
+    assert summary.started == ()
+    assert launched == []
+    assert summary.agent_results[-1].agent_name == 'agent3'
+    assert summary.agent_results[-1].action == 'skipped'
+    assert summary.agent_results[-1].failure_reason == 'mount-produced-unbound-runtime'
+    assert 'skip_auto_start:agent3:mount-produced-unbound-runtime' in summary.actions_taken
+
+
+def test_runtime_supervisor_all_skipped_default_start_keeps_cmd_bootstrap(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / 'repo-ccbd-start-skip-all-keeps-cmd'
+    (project_root / '.ccb').mkdir(parents=True, exist_ok=True)
+    (project_root / '.ccb' / 'ccb.config').write_text('cmd; agent3:claude\n', encoding='utf-8')
+    bootstrap_project(project_root)
+    app = CcbdApp(project_root)
+    app.registry.upsert(
+        AgentRuntime(
+            agent_name='agent3',
+            state=AgentState.STOPPED,
+            pid=None,
+            started_at='2026-03-18T00:00:00Z',
+            last_seen_at='2026-03-18T00:00:00Z',
+            runtime_ref=None,
+            session_ref=None,
+            workspace_path=str(app.paths.workspace_path('agent3')),
+            project_id=app.project_id,
+            backend_type='tmux',
+            queue_depth=0,
+            socket_path=None,
+            health='stopped',
+            last_failure_reason='mount-produced-unbound-runtime',
+        )
+    )
+    monkeypatch.setattr(
+        app.project_namespace,
+        'ensure',
+        lambda **kwargs: SimpleNamespace(
+            tmux_socket_path=str(app.paths.ccbd_tmux_socket_path),
+            tmux_session_name=app.paths.ccbd_tmux_session_name,
+            namespace_epoch=11,
+        ),
+    )
+    monkeypatch.setattr('ccbd.start_flow.TmuxBackend', _FakeNamespaceTmuxBackend)
+    monkeypatch.setattr('ccbd.start_preparation.prepare_provider_workspace', lambda **kwargs: None)
+    monkeypatch.setattr('ccbd.start_flow.set_tmux_ui_active', lambda active: None)
+    monkeypatch.setattr(
+        'ccbd.start_flow.prepare_tmux_start_layout',
+        lambda context, config, targets, **kwargs: SimpleNamespace(cmd_pane_id='%1', agent_panes={}),
+    )
+    monkeypatch.setattr('ccbd.start_flow.cleanup_project_tmux_orphans_by_socket', lambda **kwargs: ())
+    monkeypatch.setattr(
+        'ccbd.start_flow.TmuxCleanupHistoryStore',
+        lambda paths: SimpleNamespace(append=lambda event: None),
+    )
+    monkeypatch.setattr('ccbd.start_flow.resolve_agent_binding', lambda **kwargs: None)
+    bootstrapped: list[str | None] = []
+
+    def _bootstrap_cmd_pane_if_needed(deps, *, fresh_namespace, cmd_pane_id, project_root, project_id, tmux_socket_path, namespace_epoch, actions_taken):
+        del deps, fresh_namespace, project_root, project_id, tmux_socket_path, namespace_epoch
+        bootstrapped.append(cmd_pane_id)
+        actions_taken.append(f'bootstrap_cmd_pane:{cmd_pane_id}')
+
+    monkeypatch.setattr('ccbd.start_flow_runtime.service.bootstrap_cmd_pane_if_needed', _bootstrap_cmd_pane_if_needed)
+    monkeypatch.setattr(
+        'ccbd.start_flow.ensure_agent_runtime',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('skipped agent should not launch')),
+    )
+
+    summary = app.runtime_supervisor.start(
+        agent_names=(),
+        restore=False,
+        auto_permission=False,
+        cleanup_tmux_orphans=False,
+        interactive_tmux_layout=True,
+        skip_auto_start_blocked=True,
+    )
+
+    assert summary.started == ()
+    assert bootstrapped == ['%1']
+    assert summary.agent_results[-1].agent_name == 'agent3'
+    assert summary.agent_results[-1].action == 'skipped'
+    assert summary.agent_results[-1].failure_reason == 'mount-produced-unbound-runtime'
+    assert 'skip_auto_start:agent3:mount-produced-unbound-runtime' in summary.actions_taken
+    assert any(action.startswith('ensure_namespace:') for action in summary.actions_taken)
 
 
 def test_runtime_supervisor_start_passes_visible_layout_signature_to_namespace(tmp_path: Path, monkeypatch) -> None:

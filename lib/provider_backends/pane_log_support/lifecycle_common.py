@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Callable
 
+from provider_core.pane_command import is_shell_command, read_pane_current_command
 from provider_core.tmux_ownership import (
     apply_session_tmux_identity,
     inspect_tmux_pane_ownership,
@@ -24,7 +25,13 @@ def live_owned_pane(session, backend: object, pane_id: str) -> str | None:
     ownership = inspect_tmux_pane_ownership(session, backend, str(pane_id))
     if not ownership.is_owned:
         return None
+    if pane_is_shell(backend, str(pane_id)):
+        return None
     return str(pane_id)
+
+
+def pane_is_shell(backend: object, pane_id: str) -> bool:
+    return is_shell_command(read_pane_current_command(backend, pane_id))
 
 
 def activate_rebound_pane(
@@ -81,6 +88,7 @@ __all__ = [
     'attach_pane_log',
     'bind_session_to_pane',
     'live_owned_pane',
+    'pane_is_shell',
     'pane_exists',
     'persist_crash_log',
 ]

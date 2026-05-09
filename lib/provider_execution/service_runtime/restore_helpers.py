@@ -3,8 +3,6 @@ from __future__ import annotations
 from ccbd.api_models import JobRecord
 from completion.models import CompletionConfidence, CompletionDecision, CompletionItemKind, CompletionStatus
 
-from provider_execution.base import ProviderRuntimeContext
-
 from .models import ExecutionRestoreResult
 from .persistence import filter_pending_items, persist_submission
 
@@ -90,6 +88,52 @@ def persist_restored_submission(service, job_id: str, submission, *, restored_co
         pending_items=pending_items,
         applied_event_seqs=persisted.applied_event_seqs,
     )
+
+
+def terminal_submission_result(service, job: JobRecord, submission) -> ExecutionRestoreResult | None:
+    if submission.status is CompletionStatus.INCOMPLETE:
+        return None
+    if not _submission_declares_restore_terminal(submission):
+        return None
+    reason = str(submission.reason or "provider_restore_terminal").strip() or "provider_restore_terminal"
+    diagnostics = {
+        "restore_status": "terminal_pending",
+        "restore_reason": reason,
+        "provider": submission.provider,
+        **dict(submission.diagnostics or {}),
+    }
+    decision = CompletionDecision(
+        terminal=True,
+        status=submission.status,
+        reason=reason,
+        confidence=submission.confidence,
+        reply=str(submission.reply or ""),
+        anchor_seen=bool(submission.runtime_state.get("anchor_seen", False)),
+        reply_started=bool(submission.runtime_state.get("reply_started", False)) or bool(submission.reply),
+        reply_stable=False,
+        provider_turn_ref=str(
+            submission.runtime_state.get("request_anchor")
+            or submission.runtime_state.get("pane_id")
+            or submission.job_id
+        ).strip() or submission.job_id,
+        source_cursor=None,
+        finished_at=service._clock(),
+        diagnostics=diagnostics,
+    )
+    return result(
+        job,
+        status="terminal_pending",
+        reason=reason,
+        resume_capable=True,
+        decision=decision,
+    )
+
+
+def _submission_declares_restore_terminal(submission) -> bool:
+    diagnostics = dict(submission.diagnostics or {})
+    if str(diagnostics.get("restore_status") or "") == "terminal_pending":
+        return True
+    return bool(str(submission.runtime_state.get("restore_terminal_reason") or "").strip())
 
 
 def restored_result(job: JobRecord, *, pending_items: list) -> ExecutionRestoreResult:
@@ -293,6 +337,7 @@ __all__ = [
     'resume_or_result',
     'persist_restored_submission',
     'restored_result',
+    'terminal_submission_result',
     'terminal_pending_result',
     'terminal_decision_from_applied_state',
 ]

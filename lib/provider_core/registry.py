@@ -7,6 +7,7 @@ from .manifests import ProviderManifest
 from .registry_runtime import (
     CORE_PROVIDER_NAMES,
     OPTIONAL_PROVIDER_NAMES,
+    P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS,
     TEST_DOUBLE_PROVIDER_NAMES,
     build_builtin_backends,
     build_test_double_backends,
@@ -100,6 +101,7 @@ def build_default_runtime_launcher_map(*, include_optional: bool = True) -> dict
 __all__ = [
     "CORE_PROVIDER_NAMES",
     "OPTIONAL_PROVIDER_NAMES",
+    "P0_DETERMINISTIC_CANARY_AGENT_PROVIDERS",
     "ProviderBackendRegistry",
     "TEST_DOUBLE_PROVIDER_NAMES",
     "build_default_backend_registry",

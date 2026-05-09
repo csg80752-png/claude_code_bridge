@@ -107,6 +107,7 @@ def initialize_app(app, project_root: str | Path, *, clock, pid: int | None) -> 
         app.config,
         app.registry,
         runtime_service=app.runtime_service,
+        runtime_reconciler=app.runtime_supervision.reconcile_agent,
         execution_service=app.execution_service,
         auto_reply_delivery_on_complete=True,
         require_actionable_runtime_binding_for_execution=True,

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from agents.models import AgentState
 from ccbd.api_models import DeliveryScope, JobRecord, MessageEnvelope, TargetKind
 from mailbox_runtime.targets import CMD_ACTOR
 from message_bureau import AttemptState, AttemptStore, MessageStore
 
+from .runtime_guard import ensure_dispatch_target_ready
 from .submission_models import _JobDraft, _message_for_agent, _SubmissionPlan
 
 _TERMINAL_ATTEMPT_STATES = frozenset(
@@ -109,12 +109,7 @@ def _latest_attempts_by_agent(dispatcher, message_id: str) -> dict[str, object]:
 
 
 def _ensure_agent_target_ready(dispatcher, agent_name: str) -> None:
-    dispatcher._registry.spec_for(agent_name)
-    runtime = dispatcher._registry.get(agent_name)
-    if runtime is None or runtime.state in {AgentState.STOPPED, AgentState.FAILED}:
-        if dispatcher._runtime_service is None:
-            raise dispatcher._dispatch_error(f'agent {agent_name} is not running')
-        dispatcher._runtime_service.ensure_ready(agent_name)
+    ensure_dispatch_target_ready(dispatcher, agent_name)
 
 
 def _drafts_for_agents(dispatcher, request: MessageEnvelope, targets) -> list[_JobDraft]:

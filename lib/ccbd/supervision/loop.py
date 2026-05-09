@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agents.models import AgentState
 from ccbd.system import utc_now
 
 from .cmd_slot import reconcile_cmd_slot
@@ -50,10 +51,15 @@ class RuntimeSupervisionLoop:
             statuses[agent_name] = self._reconcile_agent(agent_name)
         return statuses
 
-    def _reconcile_agent(self, agent_name: str) -> str:
+    def reconcile_agent(self, agent_name: str, *, force_mount: bool = False) -> str:
+        return self._reconcile_agent(agent_name, force_mount=force_mount)
+
+    def _reconcile_agent(self, agent_name: str, *, force_mount: bool = False) -> str:
         runtime = resolved_runtime(self._ctx, agent_name)
         if runtime is None:
             return ensure_agent_mounted(self._ctx, agent_name, runtime=None)
+        if force_mount and runtime.state in {AgentState.STARTING, AgentState.STOPPED, AgentState.FAILED}:
+            return ensure_agent_mounted(self._ctx, agent_name, runtime=runtime, force=True)
         if runtime_is_unbound_starting(runtime):
             return fail_unbound_starting_runtime(self._ctx, agent_name, runtime=runtime)
         if runtime_requires_mount(runtime):

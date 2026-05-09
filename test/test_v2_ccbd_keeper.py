@@ -10,6 +10,7 @@ from ccbd.models import CcbdLease, LeaseHealth, LeaseInspection, MountState
 from cli.context import CliContext
 from cli.models import ParsedStartCommand
 import cli.services.daemon as daemon_service
+import cli.services.daemon_runtime.keeper as daemon_keeper_runtime
 import ccbd.keeper as keeper_module
 from project.resolver import bootstrap_project
 from storage.paths import PathLayout
@@ -142,6 +143,60 @@ def test_project_keeper_default_run_forever_uses_extended_start_timeout(
         'poll_interval': 0.5,
         'start_timeout_s': keeper_module.DEFAULT_KEEPER_START_TIMEOUT_S,
     }
+
+
+def test_ensure_keeper_started_ignores_stale_running_state(tmp_path: Path) -> None:
+    project_root = tmp_path / 'repo-stale-keeper-state'
+    ctx = _context(project_root, 'agent1:codex\n')
+    KeeperStateStore(ctx.paths).save(
+        KeeperState(
+            project_id=ctx.project.project_id,
+            keeper_pid=777,
+            started_at='2026-04-02T00:00:00Z',
+            last_check_at='2026-04-02T00:00:00Z',
+            state='running',
+        )
+    )
+    spawn_calls: list[Path] = []
+
+    class FakeStartupLock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeGuard:
+        def startup_lock(self):
+            return FakeStartupLock()
+
+    started = daemon_keeper_runtime.ensure_keeper_started(
+        ctx,
+        mount_manager_factory=lambda paths: object(),
+        ownership_guard_factory=lambda paths, manager: FakeGuard(),
+        process_exists_fn=lambda pid: pid == 777,
+        spawn_keeper_process_fn=lambda context: spawn_calls.append(context.project.project_root),
+        ready_timeout_s=0.0,
+    )
+
+    assert started is False
+    assert spawn_calls == [project_root]
+
+
+def test_keeper_start_ready_rejects_future_check_timestamp() -> None:
+    state = KeeperState(
+        project_id='project-1',
+        keeper_pid=777,
+        started_at='2026-04-02T00:00:00Z',
+        last_check_at='2026-04-02T00:01:00Z',
+        state='running',
+    )
+
+    assert daemon_keeper_runtime._keeper_state_is_start_ready(
+        state,
+        process_exists_fn=lambda pid: pid == 777,
+        clock=lambda: '2026-04-02T00:00:00Z',
+    ) is False
 
 
 def test_project_keeper_spawn_failure_records_exception_type_for_empty_message(tmp_path: Path) -> None:

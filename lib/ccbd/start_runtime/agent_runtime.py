@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from ccbd.models import CcbdStartupAgentResult
 
-from .agent_runtime_binding import resolve_runtime_binding_state
-from .agent_runtime_models import StartAgentExecution
+from .agent_runtime_binding import LaunchBindingError, resolve_runtime_binding_state
+from .agent_runtime_models import RuntimeBindingState, StartAgentExecution
 
 
 def start_agent_runtime(
@@ -29,24 +29,32 @@ def start_agent_runtime(
     workspace_window_id: str | None = None,
     workspace_epoch: int | None = None,
 ) -> StartAgentExecution:
-    binding_state = resolve_runtime_binding_state(
-        context=context,
-        command=command,
-        agent_name=agent_name,
-        spec=spec,
-        plan=plan,
-        binding=binding,
-        raw_binding=raw_binding,
-        stale_binding=stale_binding,
-        assigned_pane_id=assigned_pane_id,
-        style_index=style_index,
-        project_id=project_id,
-        tmux_socket_path=tmux_socket_path,
-        namespace_epoch=namespace_epoch,
-        ensure_agent_runtime_fn=ensure_agent_runtime_fn,
-        launch_binding_hint_fn=launch_binding_hint_fn,
-        relabel_project_namespace_pane_fn=relabel_project_namespace_pane_fn,
-        same_tmux_socket_path_fn=same_tmux_socket_path_fn,
+    try:
+        binding_state = resolve_runtime_binding_state(
+            context=context,
+            command=command,
+            agent_name=agent_name,
+            spec=spec,
+            plan=plan,
+            binding=binding,
+            raw_binding=raw_binding,
+            stale_binding=stale_binding,
+            assigned_pane_id=assigned_pane_id,
+            style_index=style_index,
+            project_id=project_id,
+            tmux_socket_path=tmux_socket_path,
+            namespace_epoch=namespace_epoch,
+            ensure_agent_runtime_fn=ensure_agent_runtime_fn,
+            launch_binding_hint_fn=launch_binding_hint_fn,
+            relabel_project_namespace_pane_fn=relabel_project_namespace_pane_fn,
+            same_tmux_socket_path_fn=same_tmux_socket_path_fn,
+        )
+    except LaunchBindingError as exc:
+        binding_state = _launch_failure_binding_state(agent_name=agent_name, exc=exc)
+    actions_taken = list(binding_state.actions_taken)
+    failure_reason = _failure_reason_for_binding_state(
+        action=binding_state.agent_action,
+        actions_taken=actions_taken,
     )
     runtime = runtime_service.attach(
         agent_name=agent_name,
@@ -73,9 +81,10 @@ def start_agent_runtime(
         lifecycle_state=binding_state.lifecycle_state,
         managed_by='ccbd',
         binding_source='provider-session',
+        last_failure_reason=failure_reason,
+        clear_failure_reason=failure_reason is None,
     )
 
-    actions_taken = list(binding_state.actions_taken)
     if command.restore and binding_state.agent_action != 'degraded':
         runtime_service.restore(agent_name)
         actions_taken.append(f'restore_runtime:{agent_name}')
@@ -101,13 +110,44 @@ def start_agent_runtime(
             pane_state=runtime.pane_state,
             runtime_pid=runtime.runtime_pid,
             runtime_root=runtime.runtime_root,
-            failure_reason='stale_binding_unresolved' if binding_state.agent_action == 'degraded' else None,
+            failure_reason=failure_reason,
         ),
         actions_taken=tuple(actions_taken),
         socket_name=binding_state.socket_name,
         runtime_pane_id=binding_state.runtime_pane_id,
         project_socket_active_pane_id=binding_state.project_socket_active_pane_id,
     )
+
+
+def _launch_failure_binding_state(*, agent_name: str, exc: Exception) -> RuntimeBindingState:
+    reason = f'{exc}'
+    return RuntimeBindingState(
+        binding=None,
+        agent_action='degraded',
+        actions_taken=(f'degraded_launch_error:{agent_name}:{reason}',),
+        runtime_ref='',
+        session_ref='',
+        health='degraded',
+        lifecycle_state='degraded',
+        socket_name=None,
+        runtime_pane_id=None,
+        project_socket_active_pane_id=None,
+    )
+
+
+def _failure_reason_for_binding_state(*, action: str, actions_taken: list[str]) -> str | None:
+    if action != 'degraded':
+        return None
+    launch_error_prefix = 'degraded_launch_error:'
+    for item in actions_taken:
+        if item.startswith(launch_error_prefix):
+            parts = item.split(':', 2)
+            return f'launch_binding_failed: {parts[2]}' if len(parts) == 3 else 'launch_binding_failed'
+    if any(item.startswith('degraded_partial_binding:') for item in actions_taken):
+        return 'partial_binding_unresolved'
+    if any(item.startswith('degraded_missing_binding:') for item in actions_taken):
+        return 'binding_missing_after_launch'
+    return 'stale_binding_unresolved'
 
 
 __all__ = ['start_agent_runtime']

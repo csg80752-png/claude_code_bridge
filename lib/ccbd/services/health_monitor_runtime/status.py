@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from agents.models import AgentState, RuntimeBindingSource, normalize_runtime_binding_source
+from ccbd.runtime_failure_policy import UNBOUND_MOUNT_FAILURE_REASON, runtime_active_binding_missing
 
 
 def daemon_health(monitor):
@@ -28,6 +29,16 @@ def runtime_health(monitor, runtime) -> str:
     )
     if runtime.state in {AgentState.STOPPED, AgentState.FAILED}:
         return runtime.health
+    if runtime_active_binding_missing(runtime):
+        updated = replace(
+            runtime,
+            state=AgentState.FAILED,
+            health='start-failed',
+            last_seen_at=monitor._clock(),
+            last_failure_reason=UNBOUND_MOUNT_FAILURE_REASON,
+        )
+        monitor._registry.upsert(updated)
+        return updated.health
     pane_status = monitor._pane_health(runtime)
     if pane_status is not None:
         return pane_status

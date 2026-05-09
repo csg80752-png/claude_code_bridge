@@ -32,3 +32,17 @@ def test_tmux_pane_state_prefers_tmux_alive_method(monkeypatch) -> None:
     )
 
     assert tmux_pane_state(object(), backend, "%1") == "alive"
+
+
+def test_tmux_pane_state_treats_shell_prompt_as_shell(monkeypatch) -> None:
+    backend = SimpleNamespace(
+        pane_exists=lambda pane_id: True,
+        is_tmux_pane_alive=lambda pane_id: True,
+        pane_current_command=lambda pane_id: 'bash',
+    )
+    monkeypatch.setattr(
+        "ccbd.services.health_assessment.tmux_runtime.state.inspect_tmux_pane_ownership",
+        lambda session, backend, pane_id: SimpleNamespace(is_owned=True),
+    )
+
+    assert tmux_pane_state(object(), backend, "%1") == "shell"

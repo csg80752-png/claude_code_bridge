@@ -48,6 +48,7 @@ class RuntimeSupervisor(SupervisorRuntimeStateMixin):
         recreate_namespace: bool = False,
         reflow_workspace: bool = False,
         recreate_reason: str | None = None,
+        skip_auto_start_blocked: bool = False,
     ) -> StartFlowSummary:
         return start_supervisor(
             self,
@@ -59,6 +60,7 @@ class RuntimeSupervisor(SupervisorRuntimeStateMixin):
             recreate_namespace=recreate_namespace,
             reflow_workspace=reflow_workspace,
             recreate_reason=recreate_reason,
+            skip_auto_start_blocked=skip_auto_start_blocked,
             run_start_flow_fn=run_start_flow,
         )
 

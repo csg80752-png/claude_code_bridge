@@ -36,6 +36,8 @@ def attach_runtime(
     lifecycle_state: str | None = None,
     managed_by: str | None = None,
     binding_source: str | RuntimeBindingSource | None = None,
+    last_failure_reason: str | None = None,
+    clear_failure_reason: bool = False,
 ) -> AgentRuntime:
     spec = registry.spec_for(agent_name)
     existing = registry.get(agent_name)
@@ -67,6 +69,8 @@ def attach_runtime(
         lifecycle_state=lifecycle_state,
         managed_by=managed_by,
         binding_source=binding_source,
+        last_failure_reason=last_failure_reason,
+        clear_failure_reason=clear_failure_reason,
     )
 
     if should_update_existing(existing):
