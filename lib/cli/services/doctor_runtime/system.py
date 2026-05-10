@@ -9,6 +9,9 @@ from cli.management import find_install_dir, get_version_info
 from provider_core.registry import CORE_PROVIDER_NAMES, OPTIONAL_PROVIDER_NAMES
 from provider_core.runtime_shared import provider_executable
 
+SUPPORTED_PROVIDER_DISPLAY_ORDER = ('claude', 'codex', 'gemini', 'opencode', 'droid')
+STALE_PROVIDER_DIRECTORIES = ('qwen', 'codebuddy', 'copilot')
+
 
 def installation_summary() -> dict[str, object]:
     install_dir = find_install_dir(_script_root())
@@ -30,8 +33,9 @@ def installation_summary() -> dict[str, object]:
 
 def requirements_summary() -> dict[str, object]:
     tmux_path = shutil.which('tmux')
+    wired_providers = tuple(CORE_PROVIDER_NAMES + OPTIONAL_PROVIDER_NAMES)
     providers = []
-    for provider in tuple(CORE_PROVIDER_NAMES + OPTIONAL_PROVIDER_NAMES):
+    for provider in wired_providers:
         executable = provider_executable(provider)
         command_path = shutil.which(executable)
         providers.append(
@@ -47,6 +51,8 @@ def requirements_summary() -> dict[str, object]:
         'python_version': platform.python_version(),
         'tmux_available': tmux_path is not None,
         'tmux_path': tmux_path,
+        'supported_providers': SUPPORTED_PROVIDER_DISPLAY_ORDER,
+        'stale_provider_directories': STALE_PROVIDER_DIRECTORIES,
         'provider_commands': providers,
     }
 
@@ -55,4 +61,9 @@ def _script_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
-__all__ = ['installation_summary', 'requirements_summary']
+__all__ = [
+    'STALE_PROVIDER_DIRECTORIES',
+    'SUPPORTED_PROVIDER_DISPLAY_ORDER',
+    'installation_summary',
+    'requirements_summary',
+]
