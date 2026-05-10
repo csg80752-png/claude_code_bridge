@@ -1,0 +1,1 @@
+This provider directory is stale dead code and is not wired. Backend stubs for session, comm, and protocol exist, but `provider_core.registry_runtime.builtin_backends` does not register the `qwen` provider. Listing this provider in `.ccb/ccb.config` will fail at start/doctor with `unknown provider`. Origin: upstream refactor 6638dce, never completed in this fork.

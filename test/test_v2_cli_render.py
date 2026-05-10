@@ -388,6 +388,8 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
             'python_version': '3.11.0',
             'tmux_available': True,
             'tmux_path': '/usr/bin/tmux',
+            'supported_providers': ('codex', 'claude', 'gemini', 'opencode', 'droid'),
+            'stale_provider_directories': ('codebuddy', 'copilot', 'qwen'),
             'provider_commands': (
                 {
                     'provider': 'codex',
@@ -501,6 +503,8 @@ def test_render_ps_and_doctor_keep_expected_line_shapes() -> None:
     assert 'install_mode: release' in doctor_lines
     assert 'install_channel: stable' in doctor_lines
     assert 'requirement_tmux_available: True' in doctor_lines
+    assert 'Supported providers (5): codex, claude, gemini, opencode, droid' in doctor_lines
+    assert 'Stale provider directories (3, not wired): codebuddy, copilot, qwen' in doctor_lines
     assert 'provider_home_sync_enabled: claude' in doctor_lines
     assert 'requirement_provider: name=codex executable=codex available=True path=/usr/bin/codex' in doctor_lines
     assert 'ccbd_state: mounted' in doctor_lines

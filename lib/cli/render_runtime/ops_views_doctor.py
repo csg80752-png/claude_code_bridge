@@ -24,6 +24,12 @@ def render_doctor(payload: Mapping[str, object]) -> tuple[str, ...]:
         f'requirement_python_version: {requirements.get("python_version")}',
         f'requirement_tmux_available: {requirements.get("tmux_available")}',
         f'requirement_tmux_path: {requirements.get("tmux_path")}',
+        _provider_visibility_line('Supported providers', requirements.get('supported_providers')),
+        _provider_visibility_line(
+            'Stale provider directories',
+            requirements.get('stale_provider_directories'),
+            suffix='not wired',
+        ),
         f'provider_home_sync_enabled: {_join_enabled(payload.get("provider_home_sync_enabled"))}',
         f'ccbd_state: {ccbd["state"]}',
         f'ccbd_health: {ccbd["health"]}',
@@ -140,6 +146,16 @@ def render_doctor(payload: Mapping[str, object]) -> tuple[str, ...]:
 
 def _join_enabled(value) -> str:
     return ','.join(str(item) for item in (value or ()))
+
+
+def _join_display(value) -> str:
+    return ', '.join(str(item) for item in (value or ()))
+
+
+def _provider_visibility_line(label: str, providers, *, suffix: str | None = None) -> str:
+    items = tuple(providers or ())
+    detail = f', {suffix}' if suffix else ''
+    return f'{label} ({len(items)}{detail}): {_join_display(items)}'
 
 
 __all__ = ['render_doctor']
