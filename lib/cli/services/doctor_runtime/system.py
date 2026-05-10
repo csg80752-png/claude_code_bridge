@@ -9,8 +9,7 @@ from cli.management import find_install_dir, get_version_info
 from provider_core.registry import CORE_PROVIDER_NAMES, OPTIONAL_PROVIDER_NAMES
 from provider_core.runtime_shared import provider_executable
 
-SUPPORTED_PROVIDER_DISPLAY_ORDER = ('claude', 'codex', 'gemini', 'opencode', 'droid')
-STALE_PROVIDER_DIRECTORIES = ('qwen', 'codebuddy', 'copilot')
+PROVIDER_BACKEND_STUB_FILES = ('comm.py', 'protocol.py', 'session.py')
 
 
 def installation_summary() -> dict[str, object]:
@@ -51,10 +50,32 @@ def requirements_summary() -> dict[str, object]:
         'python_version': platform.python_version(),
         'tmux_available': tmux_path is not None,
         'tmux_path': tmux_path,
-        'supported_providers': SUPPORTED_PROVIDER_DISPLAY_ORDER,
-        'stale_provider_directories': STALE_PROVIDER_DIRECTORIES,
+        'supported_providers': wired_providers,
+        'stale_provider_directories': stale_provider_directories(),
         'provider_commands': providers,
     }
+
+
+def stale_provider_directories(
+    provider_backends_dir: Path | None = None,
+    *,
+    registered_providers: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    backends_dir = provider_backends_dir or _script_root() / 'lib' / 'provider_backends'
+    registered = set(registered_providers or tuple(CORE_PROVIDER_NAMES + OPTIONAL_PROVIDER_NAMES))
+    if not backends_dir.is_dir():
+        return ()
+    stale = []
+    for child in sorted(backends_dir.iterdir(), key=lambda path: path.name):
+        if not child.is_dir() or child.name.startswith('__') or child.name in registered:
+            continue
+        if _looks_like_provider_backend(child):
+            stale.append(child.name)
+    return tuple(stale)
+
+
+def _looks_like_provider_backend(path: Path) -> bool:
+    return (path / '__init__.py').is_file() and all((path / name).is_file() for name in PROVIDER_BACKEND_STUB_FILES)
 
 
 def _script_root() -> Path:
@@ -62,8 +83,7 @@ def _script_root() -> Path:
 
 
 __all__ = [
-    'STALE_PROVIDER_DIRECTORIES',
-    'SUPPORTED_PROVIDER_DISPLAY_ORDER',
     'installation_summary',
     'requirements_summary',
+    'stale_provider_directories',
 ]
